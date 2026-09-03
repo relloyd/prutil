@@ -1,0 +1,76 @@
+{
+  "data": {
+    "search": {
+      "issueCount": 3,
+      "pageInfo": { "hasNextPage": false, "endCursor": "Y3Vyc29yOjM=" },
+      "nodes": [
+        {
+          "__typename": "PullRequest",
+          "number": 42,
+          "title": "  Add retry to the uploader  ",
+          "url": "https://github.com/relloyd/prutil/pull/42",
+          "isDraft": false,
+          "createdAt": "2026-08-30T09:00:00Z",
+          "updatedAt": "2026-09-02T18:30:00Z",
+          "mergeable": "MERGEABLE",
+          "reviewDecision": "APPROVED",
+          "additions": 120,
+          "deletions": 30,
+          "changedFiles": 7,
+          "headRefName": "feat/uploader-retry",
+          "baseRefName": "main",
+          "repository": { "nameWithOwner": "relloyd/prutil" },
+          "comments": { "totalCount": 4 },
+          "commits": {
+            "nodes": [
+              { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }
+            ]
+          }
+        },
+        {
+          "__typename": "PullRequest",
+          "number": 7,
+          "title": "Draft: rework the config loader",
+          "url": "https://github.com/relloyd/other/pull/7",
+          "isDraft": true,
+          "createdAt": "2026-09-01T12:00:00Z",
+          "updatedAt": "2026-09-01T12:30:00Z",
+          "mergeable": "CONFLICTING",
+          "reviewDecision": "CHANGES_REQUESTED",
+          "additions": 3,
+          "deletions": 1,
+          "changedFiles": 1,
+          "headRefName": "chore/config",
+          "baseRefName": "develop",
+          "repository": { "nameWithOwner": "relloyd/other" },
+          "comments": { "totalCount": 0 },
+          "commits": {
+            "nodes": [
+              { "commit": { "statusCheckRollup": { "state": "FAILURE" } } }
+            ]
+          }
+        },
+        {
+          "__typename": "PullRequest",
+          "number": 9,
+          "title": "Bump dependencies",
+          "url": "https://github.com/relloyd/third/pull/9",
+          "isDraft": false,
+          "createdAt": "2026-07-15T08:00:00Z",
+          "updatedAt": "2026-07-16T08:00:00Z",
+          "mergeable": "UNKNOWN",
+          "reviewDecision": null,
+          "additions": 0,
+          "deletions": 0,
+          "changedFiles": 0,
+          "headRefName": "deps/bump",
+          "baseRefName": "main",
+          "repository": { "nameWithOwner": "relloyd/third" },
+          "comments": { "totalCount": 1 },
+          "commits": { "nodes": [ { "commit": { "statusCheckRollup": null } } ] }
+        },
+        { "__typename": "Issue" }
+      ]
+    }
+  }
+}

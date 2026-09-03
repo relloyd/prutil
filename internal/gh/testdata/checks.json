@@ -1,0 +1,61 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "state": "FAILURE",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "test",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/relloyd/prutil/actions/runs/1/job/1",
+                        "startedAt": "2026-09-03T10:00:00Z",
+                        "completedAt": "2026-09-03T10:01:20Z",
+                        "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } }
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "lint",
+                        "status": "COMPLETED",
+                        "conclusion": "FAILURE",
+                        "detailsUrl": "https://github.com/relloyd/prutil/actions/runs/1/job/2",
+                        "startedAt": "2026-09-03T10:00:00Z",
+                        "completedAt": "2026-09-03T10:00:12Z",
+                        "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } }
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "build",
+                        "status": "IN_PROGRESS",
+                        "conclusion": null,
+                        "detailsUrl": "https://github.com/relloyd/prutil/actions/runs/1/job/3",
+                        "startedAt": "2026-09-03T10:00:00Z",
+                        "completedAt": null,
+                        "checkSuite": { "workflowRun": null }
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "context": "codecov/project",
+                        "state": "SUCCESS",
+                        "targetUrl": "https://codecov.io/gh/relloyd/prutil/pull/42",
+                        "description": "85% of diff covered",
+                        "createdAt": "2026-09-03T10:02:00Z"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

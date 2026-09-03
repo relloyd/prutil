@@ -1,0 +1,83 @@
+version: "3"
+
+vars:
+  BINARY: prutil
+  MAIN: ./cmd/prutil
+  BIN_DIR: bin
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  LDFLAGS: -s -w -X main.version={{.VERSION}}
+
+env:
+  # prutil targets Go 1.26; let the go command fetch that toolchain when the
+  # installed one is older.
+  GOTOOLCHAIN: auto
+
+tasks:
+  default:
+    desc: Run the standard checks (fmt, vet, lint, test)
+    cmds:
+      - task: check
+
+  tidy:
+    desc: Sync go.mod and go.sum
+    cmds:
+      - go mod tidy
+
+  fmt:
+    desc: Format the code
+    cmds:
+      - gofmt -w .
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run
+
+  test:
+    desc: Run the unit tests with the race detector
+    cmds:
+      - go test -race ./...
+
+  cover:
+    desc: Run the tests and report coverage per function
+    cmds:
+      - go test -race -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out
+
+  check:
+    desc: Format, vet, lint and test
+    cmds:
+      - task: fmt
+      - task: vet
+      - task: lint
+      - task: test
+
+  build:
+    desc: Build the binary into ./bin
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o {{.BIN_DIR}}/{{.BINARY}} {{.MAIN}}
+
+  run:
+    desc: Build and run prutil against your gh credentials
+    cmds:
+      - go run -ldflags "{{.LDFLAGS}}" {{.MAIN}} {{.CLI_ARGS}}
+
+  install:
+    desc: Tidy, format, vet, lint, test, build and install prutil into GOBIN
+    cmds:
+      - task: tidy
+      - task: check
+      - task: build
+      - go install -trimpath -ldflags "{{.LDFLAGS}}" {{.MAIN}}
+
+  clean:
+    desc: Remove build output
+    cmds:
+      - rm -rf {{.BIN_DIR}} coverage.out
