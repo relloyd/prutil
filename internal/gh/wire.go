@@ -28,6 +28,35 @@ type detailResponse struct {
 	} `json:"repository"`
 }
 
+// repoBatchResponse mirrors the data envelope returned by a batched per-repo
+// query. Its aliases are generated at request time, so the envelope decodes
+// into a map keyed by alias rather than into a struct.
+type repoBatchResponse map[string]struct {
+	Nodes []prNode `json:"nodes"`
+}
+
+// discoveryResponse mirrors the data envelope returned by repoDiscoveryQuery.
+type discoveryResponse struct {
+	Viewer struct {
+		RepositoriesContributedTo struct {
+			Nodes []repoNode `json:"nodes"`
+		} `json:"repositoriesContributedTo"`
+		Organizations struct {
+			Nodes []struct {
+				Repositories struct {
+					Nodes []repoNode `json:"nodes"`
+				} `json:"repositories"`
+			} `json:"nodes"`
+		} `json:"organizations"`
+	} `json:"viewer"`
+}
+
+// repoNode is one repository named by repository discovery.
+type repoNode struct {
+	NameWithOwner string `json:"nameWithOwner"`
+	IsArchived    bool   `json:"isArchived"`
+}
+
 type prNode struct {
 	TypeName       string     `json:"__typename"`
 	Number         int        `json:"number"`
@@ -36,6 +65,9 @@ type prNode struct {
 	IsDraft        bool       `json:"isDraft"`
 	CreatedAt      *time.Time `json:"createdAt"`
 	UpdatedAt      *time.Time `json:"updatedAt"`
+	ClosedAt       *time.Time `json:"closedAt"`
+	MergedAt       *time.Time `json:"mergedAt"`
+	State          string     `json:"state"`
 	Mergeable      string     `json:"mergeable"`
 	ReviewDecision string     `json:"reviewDecision"`
 	Additions      int        `json:"additions"`
@@ -71,6 +103,7 @@ func (n prNode) toPullRequest() (model.PullRequest, bool) {
 		HeadRef:        n.HeadRefName,
 		BaseRef:        n.BaseRefName,
 		IsDraft:        n.IsDraft,
+		State:          model.ParsePRState(n.State),
 		Mergeable:      model.ParseMergeable(n.Mergeable),
 		ReviewDecision: model.ParseReviewDecision(n.ReviewDecision),
 		Additions:      n.Additions,
@@ -84,6 +117,12 @@ func (n prNode) toPullRequest() (model.PullRequest, bool) {
 	}
 	if n.UpdatedAt != nil {
 		pr.UpdatedAt = *n.UpdatedAt
+	}
+	if n.ClosedAt != nil {
+		pr.ClosedAt = *n.ClosedAt
+	}
+	if n.MergedAt != nil {
+		pr.MergedAt = *n.MergedAt
 	}
 	if rollup := n.Commits.rollup(); rollup != nil {
 		pr.Rollup = model.ParseRollupState(rollup.State)

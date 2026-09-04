@@ -46,6 +46,9 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | --- | --- | --- |
 | `-query` | `is:open is:pr author:@me archived:false sort:created-desc` | the GitHub search used to find pull requests |
 | `-limit` | 100 | how many pull requests to load |
+| `-closed-query` | `is:pr author:@me is:closed archived:false sort:updated-desc` | the search used by the recently closed view |
+| `-closed-per-repo` | 3 | how many closed pull requests any one repository contributes |
+| `-closed-repo-limit` | 60 | how many repositories the closed view may query individually |
 | `-skip-auth-check` | false | skip the `gh auth status` check at startup |
 | `-version` | | print the version and exit |
 
@@ -59,12 +62,30 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `h`, `←` or `esc` | go back to the list |
 | `enter` | open the selected pull request, or the selected check, in your browser |
 | `r` | refresh from GitHub |
-| `tab` | reserved for the review-requested view |
+| `tab` | switch between your open and your recently closed pull requests |
 | `?` | toggle the full key list |
 | `q` or `ctrl+c` | quit |
 
 Below 80 columns the two panes collapse into one: the list fills the terminal,
 `l` swaps to the checks, and `h` swaps back.
+
+## Views
+
+`tab` switches the list between your open pull requests and your recently
+closed ones. Each view keeps its own cursor and scroll position, and the closed
+view is not fetched until the first time you show it.
+
+The closed view is grouped: no repository contributes more than
+`-closed-per-repo` rows, so a single busy repository cannot fill the screen and
+hide everywhere else you have been working.
+
+Note that `-closed-query` inherits `archived:false` from the open view. If most
+of your history is in repositories that have since been archived, drop that
+qualifier to see it:
+
+```sh
+prutil -closed-query='is:pr author:@me is:closed sort:updated-desc'
+```
 
 ## How it stays quick
 
@@ -73,3 +94,12 @@ colours each dot, so the first screen appears after a single round trip. The
 individual checks are fetched afterwards, in the background for the top of the
 list and on demand as you move, with at most four gh processes at a time. Both
 are cached until you press `r`.
+
+The closed view usually costs one request too. It sweeps your closed pull
+requests newest first, and when that sweep reaches the end of the search it
+already holds everything, so the grouping is exact and nothing more is fetched.
+Only when the sweep runs out of room first does it go further: it asks GitHub
+which repositories you have sent pull requests to and which repositories your
+organisations pushed to most recently, then queries the ones that came up short
+directly. Those per-repo searches are batched under GraphQL aliases, so eight
+repositories cost one request and one rate limit point.

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,12 +19,17 @@ import (
 
 // fakeRunner replays canned responses and records the arguments it was given.
 type fakeRunner struct {
+	// mu guards everything below: the per-repo fill runs its batches
+	// concurrently, so Run is called from several goroutines at once.
+	mu        sync.Mutex
 	responses [][]byte
 	err       error
 	calls     [][]string
 }
 
 func (f *fakeRunner) Run(_ context.Context, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, args)
 	if f.err != nil {
 		return nil, f.err
@@ -34,6 +40,20 @@ func (f *fakeRunner) Run(_ context.Context, args ...string) ([]byte, error) {
 	out := f.responses[0]
 	f.responses = f.responses[1:]
 	return out, nil
+}
+
+// callCount is the number of gh invocations so far.
+func (f *fakeRunner) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// argsOf returns the arguments of one recorded call, joined for easy matching.
+func (f *fakeRunner) argsOf(i int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.calls[i], " ")
 }
 
 func fixture(t *testing.T, name string) []byte {
@@ -204,4 +224,130 @@ func TestCommandErrorPrefersStderrAndHidesTheQuery(t *testing.T) {
 	assert.Contains(t, err.Error(), "query=...")
 	assert.NotContains(t, err.Error(), "String!")
 	assert.ErrorIs(t, err, err.Err)
+}
+
+func TestClosedSweepThatReachesTheEndCostsOneRequest(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "closed_search.json")}}
+	client := gh.New(runner, 4)
+
+	prs, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3})
+	require.NoError(t, err)
+
+	// This is the property the whole design rests on: when the sweep reaches
+	// the end of the search it already holds every closed pull request, so
+	// repository discovery and the per-repo fill are skipped entirely.
+	assert.Equal(t, 1, runner.callCount(), "an exhausted sweep issues no further requests")
+
+	require.Len(t, prs, 4, "the fourth pull request from one repo is dropped, the Issue node with it")
+	assert.Equal(t, []int{40, 39, 38, 5}, []int{prs[0].Number, prs[1].Number, prs[2].Number, prs[3].Number})
+	assert.Equal(t, "relloyd/other", prs[3].Repo)
+
+	assert.Equal(t, model.PRStateMerged, prs[0].State)
+	assert.Equal(t, model.PRStateClosed, prs[1].State, "a pull request closed without merging stays distinct")
+	assert.Equal(t, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), prs[0].ClosedAt.UTC())
+	assert.Equal(t, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), prs[0].MergedAt.UTC())
+	assert.True(t, prs[1].MergedAt.IsZero(), "an unmerged pull request has no merge time")
+}
+
+func TestClosedSweepSendsExpectedArguments(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "closed_search.json")}}
+	client := gh.New(runner, 1)
+
+	_, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{})
+	require.NoError(t, err)
+	require.Equal(t, 1, runner.callCount())
+
+	args := runner.argsOf(0)
+	assert.Contains(t, args, "api graphql")
+	assert.Contains(t, args, "q="+gh.DefaultClosedSearchQuery, "an empty query falls back to the default")
+	assert.Contains(t, args, "closedAt", "the sweep selects the close timestamp")
+	assert.Contains(t, args, "mergedAt")
+	assert.NotContains(t, args, "mergeable", "mergeable means nothing once a pull request is closed")
+}
+
+func TestClosedFillQueriesOnlyTheRepositoriesThatCameUpShort(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{
+		fixture(t, "closed_search_partial.json"),
+		fixture(t, "discovery.json"),
+		fixture(t, "repo_batch.json"),
+	}}
+	client := gh.New(runner, 4)
+
+	// SweepLimit stops the sweep after one page, which is the case the
+	// per-repo fill exists for: the window ran out before the search did.
+	prs, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
+	require.NoError(t, err)
+	require.Equal(t, 3, runner.callCount(), "sweep, then discovery, then one batch")
+
+	batch := runner.argsOf(2)
+	assert.NotContains(t, batch, "repo:relloyd/prutil",
+		"a repository the sweep already filled to PerRepo is not asked again")
+	assert.Contains(t, batch, "repo:relloyd/quiet")
+	assert.Contains(t, batch, "repo:acme/platform")
+	assert.NotContains(t, batch, "relloyd/retired",
+		"the query excludes archived repositories, so discovery drops them")
+	assert.NotContains(t, batch, "not-a-valid-repo-name", "a malformed repository name is dropped")
+	assert.Contains(t, batch, "$q0: String!", "each repository search is a variable, never spliced into the document")
+
+	repos := make([]string, 0, len(prs))
+	for _, pr := range prs {
+		repos = append(repos, pr.Key().String())
+	}
+	assert.Contains(t, repos, "relloyd/quiet#12", "the fill adds what the sweep could not reach")
+	assert.Contains(t, repos, "acme/platform#300")
+	assert.Contains(t, repos, "relloyd/prutil#40", "the sweep results survive the merge")
+}
+
+func TestClosedResultsAreDedupedAndCapped(t *testing.T) {
+	// The batch replies with a pull request the sweep already returned, which
+	// is what happens whenever a repository is partly covered by both stages.
+	overlap := `{"data": {"r0": {"nodes": [
+		{"__typename": "PullRequest", "number": 40, "state": "MERGED",
+		 "closedAt": "2026-09-02T10:00:00Z", "mergedAt": "2026-09-02T10:00:00Z",
+		 "repository": {"nameWithOwner": "relloyd/prutil"}}
+	]}}}`
+	runner := &fakeRunner{responses: [][]byte{
+		fixture(t, "closed_search_partial.json"),
+		fixture(t, "discovery.json"),
+		[]byte(overlap),
+	}}
+	client := gh.New(runner, 4)
+
+	prs, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 2, SweepLimit: 5})
+	require.NoError(t, err)
+
+	seen := map[model.Key]int{}
+	perRepo := map[string]int{}
+	for _, pr := range prs {
+		seen[pr.Key()]++
+		perRepo[pr.Repo]++
+	}
+	for key, n := range seen {
+		assert.Equal(t, 1, n, "%s appears once", key)
+	}
+	for repo, n := range perRepo {
+		assert.LessOrEqual(t, n, 2, "%s respects PerRepo", repo)
+	}
+}
+
+func TestClosedSweepStopsAtTheLimit(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "closed_search.json")}}
+	client := gh.New(runner, 1)
+
+	_, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{SweepLimit: 5, PerRepo: 3})
+	require.NoError(t, err)
+	assert.Contains(t, runner.argsOf(0), "first=5", "the page size is capped by the sweep limit")
+}
+
+func TestClosedFillPropagatesAFailedBatch(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{
+		fixture(t, "closed_search_partial.json"),
+		fixture(t, "discovery.json"),
+		[]byte(`{"errors": [{"message": "API rate limit exceeded"}]}`),
+	}}
+	client := gh.New(runner, 4)
+
+	_, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
+	require.Error(t, err, "a failed fill surfaces rather than silently returning a partial list")
+	assert.Contains(t, err.Error(), "rate limit")
 }

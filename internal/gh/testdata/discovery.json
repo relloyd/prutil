@@ -1,0 +1,44 @@
+{
+  "data": {
+    "viewer": {
+      "repositoriesContributedTo": {
+        "nodes": [
+          {
+            "nameWithOwner": "relloyd/prutil",
+            "isArchived": false
+          },
+          {
+            "nameWithOwner": "relloyd/quiet",
+            "isArchived": false
+          },
+          {
+            "nameWithOwner": "relloyd/retired",
+            "isArchived": true
+          }
+        ]
+      },
+      "organizations": {
+        "nodes": [
+          {
+            "repositories": {
+              "nodes": [
+                {
+                  "nameWithOwner": "acme/platform",
+                  "isArchived": false
+                },
+                {
+                  "nameWithOwner": "relloyd/quiet",
+                  "isArchived": false
+                },
+                {
+                  "nameWithOwner": "not-a-valid-repo-name",
+                  "isArchived": false
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

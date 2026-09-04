@@ -55,17 +55,18 @@ func (a *App) renderHeader() []string {
 		left += " " + a.styles.Muted.Render(a.version)
 	}
 
+	state := a.cur()
 	meta := []string{}
 	switch {
-	case a.loading && len(a.prs) == 0:
+	case state.loading && len(state.prs) == 0:
 		meta = append(meta, "loading")
-	case len(a.prs) == 1:
-		meta = append(meta, "1 open PR")
+	case len(state.prs) == 1:
+		meta = append(meta, "1 "+a.active.String()+" PR")
 	default:
-		meta = append(meta, fmt.Sprintf("%d open PRs", len(a.prs)))
+		meta = append(meta, fmt.Sprintf("%d %s PRs", len(state.prs), a.active))
 	}
-	if !a.lastRefresh.IsZero() {
-		meta = append(meta, "updated "+a.lastRefresh.Format("15:04:05"))
+	if !state.lastRefresh.IsZero() {
+		meta = append(meta, "updated "+state.lastRefresh.Format("15:04:05"))
 	}
 	if a.narrow() {
 		if a.focus == paneDetail {
@@ -113,9 +114,9 @@ func (a *App) renderBody() []string {
 // footerLines draws the transient status line and the key help.
 func (a *App) footerLines() []string {
 	notice := ""
-	switch {
-	case a.err != nil:
-		notice = a.styles.Error.Render("error: " + ansi.Truncate(a.err.Error(), max(a.width-7, 10), ellipsis))
+	switch err := a.cur().err; {
+	case err != nil:
+		notice = a.styles.Error.Render("error: " + ansi.Truncate(err.Error(), max(a.width-7, 10), ellipsis))
 	case a.status != "":
 		notice = a.styles.Status.Render(ansi.Truncate(a.status, max(a.width, 10), ellipsis))
 	}

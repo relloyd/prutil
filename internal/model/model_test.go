@@ -168,3 +168,98 @@ func TestKeyOwner(t *testing.T) {
 
 	require.Equal(t, "relloyd/prutil#42", model.Key{Repo: "relloyd/prutil", Number: 42}.String())
 }
+
+func TestSortByClosedDescOrdersMostRecentFirst(t *testing.T) {
+	base := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	prs := []model.PullRequest{
+		{Repo: "b/one", Number: 2, ClosedAt: base.Add(-48 * time.Hour)},
+		{Repo: "a/two", Number: 9, ClosedAt: base},
+		// Two closed in the same instant, to pin the tie-break.
+		{Repo: "b/one", Number: 1, ClosedAt: base.Add(-24 * time.Hour)},
+		{Repo: "a/two", Number: 3, ClosedAt: base.Add(-24 * time.Hour)},
+	}
+
+	model.SortByClosedDesc(prs)
+
+	got := make([]string, 0, len(prs))
+	for _, pr := range prs {
+		got = append(got, pr.Key().String())
+	}
+	assert.Equal(t, []string{"a/two#9", "a/two#3", "b/one#1", "b/one#2"}, got,
+		"ties break by repository then number, so the order is stable")
+}
+
+func TestTopNPerRepo(t *testing.T) {
+	prs := func(keys ...string) []model.PullRequest {
+		out := make([]model.PullRequest, 0, len(keys))
+		for i, k := range keys {
+			out = append(out, model.PullRequest{Repo: k, Number: i})
+		}
+		return out
+	}
+
+	tests := []struct {
+		name string
+		in   []model.PullRequest
+		n    int
+		want int
+	}{
+		{"keeps everything under the cap", prs("a/a", "b/b"), 3, 2},
+		{"trims the busy repository", prs("a/a", "a/a", "a/a", "a/a", "b/b"), 3, 4},
+		{"one each", prs("a/a", "a/a", "b/b", "b/b"), 1, 2},
+		{"a cap of zero keeps nothing", prs("a/a"), 0, 0},
+		{"a negative cap keeps nothing", prs("a/a"), -1, 0},
+		{"empty input", nil, 3, 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := model.TopNPerRepo(tc.in, tc.n)
+			assert.Len(t, got, tc.want)
+
+			perRepo := map[string]int{}
+			for _, pr := range got {
+				perRepo[pr.Repo]++
+			}
+			for repo, count := range perRepo {
+				assert.LessOrEqual(t, count, tc.n, "%s is capped", repo)
+			}
+		})
+	}
+}
+
+func TestTopNPerRepoPreservesOrderAndLeavesTheInputAlone(t *testing.T) {
+	in := []model.PullRequest{
+		{Repo: "a/a", Number: 1},
+		{Repo: "b/b", Number: 2},
+		{Repo: "a/a", Number: 3},
+		{Repo: "a/a", Number: 4},
+	}
+
+	got := model.TopNPerRepo(in, 2)
+
+	assert.Equal(t, []int{1, 2, 3}, []int{got[0].Number, got[1].Number, got[2].Number},
+		"the caller's ordering survives, so sorting first is what decides which are kept")
+	assert.Len(t, in, 4, "the input slice is not modified")
+}
+
+func TestParsePRState(t *testing.T) {
+	tests := map[string]model.PRState{
+		"MERGED":   model.PRStateMerged,
+		"merged":   model.PRStateMerged,
+		"CLOSED":   model.PRStateClosed,
+		"OPEN":     model.PRStateOpen,
+		"":         model.PRStateOpen,
+		"NONSENSE": model.PRStateOpen,
+	}
+
+	for in, want := range tests {
+		t.Run(in, func(t *testing.T) {
+			assert.Equal(t, want, model.ParsePRState(in))
+		})
+	}
+
+	assert.Equal(t, "MERGED", model.PRStateMerged.String())
+	assert.Equal(t, "CLOSED", model.PRStateClosed.String())
+	assert.Empty(t, model.PRStateOpen.String(), "an open pull request needs no badge")
+}

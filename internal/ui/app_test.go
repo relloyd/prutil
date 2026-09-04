@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -26,28 +27,28 @@ func TestQuitKeys(t *testing.T) {
 
 func TestListNavigation(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
-	require.Len(t, app.prs, 3)
+	require.Len(t, app.cur().prs, 3)
 
 	send(t, app, press("j"))
-	assert.Equal(t, 1, app.cursor)
+	assert.Equal(t, 1, app.cur().cursor)
 
 	send(t, app, press("down"))
-	assert.Equal(t, 2, app.cursor)
+	assert.Equal(t, 2, app.cur().cursor)
 
 	send(t, app, press("j"))
-	assert.Equal(t, 2, app.cursor, "the cursor stops at the last pull request")
+	assert.Equal(t, 2, app.cur().cursor, "the cursor stops at the last pull request")
 
 	send(t, app, press("k"))
-	assert.Equal(t, 1, app.cursor)
+	assert.Equal(t, 1, app.cur().cursor)
 
 	send(t, app, press("g"))
-	assert.Equal(t, 0, app.cursor)
+	assert.Equal(t, 0, app.cur().cursor)
 
 	send(t, app, press("k"))
-	assert.Equal(t, 0, app.cursor, "the cursor stops at the first pull request")
+	assert.Equal(t, 0, app.cur().cursor, "the cursor stops at the first pull request")
 
 	send(t, app, press("G"))
-	assert.Equal(t, 2, app.cursor)
+	assert.Equal(t, 2, app.cur().cursor)
 }
 
 func TestFocusMovesBetweenPanes(t *testing.T) {
@@ -60,7 +61,7 @@ func TestFocusMovesBetweenPanes(t *testing.T) {
 
 	send(t, app, press("j"))
 	assert.Equal(t, 1, app.detailCursor)
-	assert.Equal(t, 0, app.cursor, "moving in the detail pane leaves the list alone")
+	assert.Equal(t, 0, app.cur().cursor, "moving in the detail pane leaves the list alone")
 
 	send(t, app, press("G"))
 	assert.Equal(t, 2, app.detailCursor, "the detail cursor stops at the last check")
@@ -151,7 +152,7 @@ func TestRefreshStartsANewGenerationAndDropsStaleReplies(t *testing.T) {
 
 	send(t, app, press("r"))
 	assert.Equal(t, before+1, app.gen)
-	assert.True(t, app.loading)
+	assert.True(t, app.cur().loading)
 	assert.Empty(t, app.checks, "the check cache is dropped on refresh")
 
 	// A reply from the previous generation must not be applied.
@@ -159,12 +160,12 @@ func TestRefreshStartsANewGenerationAndDropsStaleReplies(t *testing.T) {
 	assert.Empty(t, app.checks[key].checks)
 
 	send(t, app, prsMsg{gen: before, prs: nil})
-	assert.Len(t, app.prs, 3, "a stale list does not wipe the current one")
-	assert.True(t, app.loading)
+	assert.Len(t, app.cur().prs, 3, "a stale list does not wipe the current one")
+	assert.True(t, app.cur().loading)
 
 	// The current generation is applied.
 	send(t, app, prsMsg{gen: app.gen, prs: samplePRs()})
-	assert.False(t, app.loading)
+	assert.False(t, app.cur().loading)
 	assert.Zero(t, client.listCalls, "the refresh command is returned to Bubble Tea, not run inline")
 }
 
@@ -172,22 +173,22 @@ func TestRefreshKeepsTheCursorOnTheSamePullRequest(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	send(t, app, press("j"))
 	send(t, app, press("j"))
-	require.Equal(t, "relloyd/third", app.prs[app.cursor].Repo)
+	require.Equal(t, "relloyd/third", app.cur().prs[app.cur().cursor].Repo)
 
 	reordered := []model.PullRequest{samplePRs()[2], samplePRs()[0], samplePRs()[1]}
 	send(t, app, prsMsg{gen: app.gen, prs: reordered})
 
-	assert.Equal(t, 0, app.cursor)
-	assert.Equal(t, "relloyd/third", app.prs[app.cursor].Repo)
+	assert.Equal(t, 0, app.cur().cursor)
+	assert.Equal(t, "relloyd/third", app.cur().prs[app.cur().cursor].Repo)
 }
 
 func TestRefreshResetsTheCursorWhenThePullRequestIsGone(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	send(t, app, press("G"))
-	require.Equal(t, 2, app.cursor)
+	require.Equal(t, 2, app.cur().cursor)
 
 	send(t, app, prsMsg{gen: app.gen, prs: samplePRs()[:1]})
-	assert.Equal(t, 0, app.cursor)
+	assert.Equal(t, 0, app.cur().cursor)
 }
 
 func TestSelectionFetchesChecksOnlyForTheCurrentSelection(t *testing.T) {
@@ -242,12 +243,12 @@ func TestListErrorIsShownAndCleared(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 
 	send(t, app, errMsg{gen: app.gen, err: errors.New("HTTP 401: Bad credentials")})
-	assert.False(t, app.loading)
-	require.Error(t, app.err)
+	assert.False(t, app.cur().loading)
+	require.Error(t, app.cur().err)
 	assert.Contains(t, app.render(), "HTTP 401")
 
 	send(t, app, prsMsg{gen: app.gen, prs: samplePRs()})
-	assert.NoError(t, app.err, "a successful load clears the error")
+	assert.NoError(t, app.cur().err, "a successful load clears the error")
 }
 
 func TestCheckErrorIsRecordedAgainstThePullRequest(t *testing.T) {
@@ -270,12 +271,87 @@ func TestStatusMessagesExpire(t *testing.T) {
 	assert.NotContains(t, app.render(), "opened relloyd/prutil#42")
 }
 
-func TestTabAnnouncesTheFutureView(t *testing.T) {
+func TestTabLoadsTheClosedViewOnceAndSwitchesBack(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	require.Equal(t, viewOpen, app.active)
+	require.Zero(t, client.closedCallCount())
+
+	// The closed view is not fetched until it is first shown.
+	cmd := send(t, app, press("tab"))
+	require.Equal(t, viewClosed, app.active)
+	require.NotNil(t, cmd)
+	assert.True(t, app.cur().loading)
+	assert.Empty(t, app.cur().prs, "the closed list is empty until its reply lands")
+
+	for _, msg := range drain(cmd) {
+		send(t, app, msg)
+	}
+	assert.Equal(t, 1, client.closedCallCount())
+	require.Len(t, app.cur().prs, 4)
+	assert.Equal(t, "relloyd/prutil", app.cur().prs[0].Repo)
+
+	// Switching away and back neither refetches nor loses the open list.
+	send(t, app, press("tab"))
+	require.Equal(t, viewOpen, app.active)
+	assert.Len(t, app.cur().prs, 3)
+
+	send(t, app, press("tab"))
+	assert.Equal(t, viewClosed, app.active)
+	assert.Equal(t, 1, client.closedCallCount(), "an already loaded view is not fetched again")
+}
+
+func TestEachViewKeepsItsOwnCursor(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("j"))
+	send(t, app, press("j"))
+	require.Equal(t, 2, app.cur().cursor)
+
+	send(t, app, press("tab"))
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs()})
+	require.Equal(t, 0, app.cur().cursor)
+	send(t, app, press("j"))
+	assert.Equal(t, 1, app.cur().cursor)
+
+	send(t, app, press("tab"))
+	assert.Equal(t, 2, app.cur().cursor, "the open view kept its place")
+}
+
+func TestClosedViewRendersOutcomeBadgesAndCloseAge(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("tab"))
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs()})
+
+	screen := ansi.Strip(app.render())
+	assert.Contains(t, screen, "MERGED")
+	assert.Contains(t, screen, "CLOSED")
+	assert.Contains(t, screen, "4 closed PRs")
+	assert.Contains(t, screen, "1d ago", "the closed view dates rows by when they closed")
+	assert.NotContains(t, screen, "CONFLICT", "a closed pull request cannot conflict any more")
+}
+
+func TestRefreshReloadsTheVisibleViewAndInvalidatesTheOther(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("tab"))
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs()})
+	require.True(t, app.views[viewClosed].loaded)
+
+	// Refreshing the closed view leaves the open list on screen but marks it
+	// for a refetch, so the reader never sees pre-refresh data.
+	send(t, app, press("r"))
+	assert.True(t, app.views[viewClosed].loading)
+	assert.False(t, app.views[viewOpen].loaded)
+	assert.Len(t, app.views[viewOpen].prs, 3, "the stale list stays visible until its replacement lands")
+}
+
+func TestABackgroundViewErrorDoesNotDisturbTheVisibleOne(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 
-	cmd := send(t, app, press("tab"))
-	require.NotNil(t, cmd)
-	assert.Equal(t, statusMsg("the review-requested view is not built yet"), cmd())
+	send(t, app, errMsg{gen: app.gen, view: viewClosed, err: errors.New("HTTP 502")})
+	assert.NoError(t, app.cur().err, "an error in a hidden view is not shown")
+	assert.NotContains(t, app.render(), "HTTP 502")
+
+	send(t, app, press("tab"))
+	assert.Contains(t, app.render(), "HTTP 502")
 }
 
 func TestHelpToggles(t *testing.T) {
@@ -338,4 +414,23 @@ func TestClampOffset(t *testing.T) {
 			assert.Equal(t, c.want, clampOffset(c.offset, c.cursor, c.window, c.count))
 		})
 	}
+}
+
+func TestRefreshKeepsThePlaceInABackgroundView(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("tab"))
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs()})
+	send(t, app, press("j"))
+	send(t, app, press("j"))
+	require.Equal(t, 2, app.cur().cursor)
+
+	// Refresh from the open view, which invalidates the closed one.
+	send(t, app, press("tab"))
+	require.Equal(t, viewOpen, app.active)
+	send(t, app, press("r"))
+	require.False(t, app.views[viewClosed].loaded)
+
+	assert.Equal(t, 2, app.views[viewClosed].cursor,
+		"an invalidated view keeps the cursor, so its reload can restore the selection")
+	assert.Len(t, app.views[viewClosed].prs, 4, "and keeps its list to show while reloading")
 }

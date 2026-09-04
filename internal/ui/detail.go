@@ -11,7 +11,7 @@ import (
 func (a *App) renderDetail(width, height int) []string {
 	pr, ok := a.selectedPR()
 	if !ok {
-		if a.loading {
+		if a.cur().loading {
 			return a.centeredNotice("", width, a.styles.Meta)
 		}
 		return a.centeredNotice("nothing selected", width, a.styles.Meta)
@@ -62,7 +62,20 @@ func (a *App) detailHeader(pr model.PullRequest, width int) []string {
 	lines = append(lines, "")
 
 	timings := []seg{{text: "opened " + model.HumanAge(a.now().Sub(pr.CreatedAt)) + " ago", style: a.styles.Meta}}
-	if !pr.UpdatedAt.IsZero() {
+	switch {
+	// For a closed pull request the close is the useful second date. Its last
+	// update is nearly always that same moment, so showing both would waste the
+	// line.
+	case !pr.ClosedAt.IsZero():
+		verb := "closed "
+		if !pr.MergedAt.IsZero() {
+			verb = "merged "
+		}
+		timings = append(timings, seg{
+			text:  verb + model.HumanAge(a.now().Sub(pr.ClosedAt)) + " ago",
+			style: a.styles.Meta,
+		})
+	case !pr.UpdatedAt.IsZero():
 		timings = append(timings, seg{
 			text:  "updated " + model.HumanAge(a.now().Sub(pr.UpdatedAt)) + " ago",
 			style: a.styles.Meta,

@@ -160,6 +160,16 @@ func (s Styles) badges(pr model.PullRequest) []seg {
 	if pr.IsDraft {
 		out = append(out, seg{text: "DRAFT", style: s.BadgeDraft})
 	}
+	// State is only set for a pull request that has been closed, and such a
+	// pull request can never merge again, so its outcome replaces the
+	// mergeable badge rather than sitting beside it.
+	if text := pr.State.String(); text != "" {
+		style := s.BadgeMerged
+		if pr.State == model.PRStateClosed {
+			style = s.BadgeClosed
+		}
+		return append(out, seg{text: text, style: style})
+	}
 	if pr.Mergeable == model.MergeConflicting {
 		out = append(out, seg{text: "CONFLICT", style: s.BadgeConflict})
 	}

@@ -1,0 +1,191 @@
+{
+  "data": {
+    "search": {
+      "issueCount": 5,
+      "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": "Y3Vyc29yOjU="
+      },
+      "nodes": [
+        {
+          "__typename": "PullRequest",
+          "number": 40,
+          "title": "Cache the rollup",
+          "url": "https://github.com/relloyd/prutil/pull/40",
+          "isDraft": false,
+          "state": "MERGED",
+          "createdAt": "2026-08-01T09:00:00Z",
+          "updatedAt": "2026-09-02T10:00:00Z",
+          "closedAt": "2026-09-02T10:00:00Z",
+          "mergedAt": "2026-09-02T10:00:00Z",
+          "reviewDecision": null,
+          "additions": 10,
+          "deletions": 2,
+          "changedFiles": 3,
+          "headRefName": "topic",
+          "baseRefName": "main",
+          "repository": {
+            "nameWithOwner": "relloyd/prutil"
+          },
+          "comments": {
+            "totalCount": 0
+          },
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "statusCheckRollup": {
+                    "state": "SUCCESS"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "__typename": "PullRequest",
+          "number": 39,
+          "title": "Trim the cursor",
+          "url": "https://github.com/relloyd/prutil/pull/39",
+          "isDraft": false,
+          "state": "CLOSED",
+          "createdAt": "2026-08-01T09:00:00Z",
+          "updatedAt": "2026-09-01T10:00:00Z",
+          "closedAt": "2026-09-01T10:00:00Z",
+          "mergedAt": null,
+          "reviewDecision": null,
+          "additions": 10,
+          "deletions": 2,
+          "changedFiles": 3,
+          "headRefName": "topic",
+          "baseRefName": "main",
+          "repository": {
+            "nameWithOwner": "relloyd/prutil"
+          },
+          "comments": {
+            "totalCount": 0
+          },
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "statusCheckRollup": null
+                }
+              }
+            ]
+          }
+        },
+        {
+          "__typename": "PullRequest",
+          "number": 38,
+          "title": "Bump deps",
+          "url": "https://github.com/relloyd/prutil/pull/38",
+          "isDraft": false,
+          "state": "MERGED",
+          "createdAt": "2026-08-01T09:00:00Z",
+          "updatedAt": "2026-08-31T10:00:00Z",
+          "closedAt": "2026-08-31T10:00:00Z",
+          "mergedAt": "2026-08-31T10:00:00Z",
+          "reviewDecision": null,
+          "additions": 10,
+          "deletions": 2,
+          "changedFiles": 3,
+          "headRefName": "topic",
+          "baseRefName": "main",
+          "repository": {
+            "nameWithOwner": "relloyd/prutil"
+          },
+          "comments": {
+            "totalCount": 0
+          },
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "statusCheckRollup": {
+                    "state": "SUCCESS"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "__typename": "PullRequest",
+          "number": 37,
+          "title": "Old one",
+          "url": "https://github.com/relloyd/prutil/pull/37",
+          "isDraft": false,
+          "state": "MERGED",
+          "createdAt": "2026-08-01T09:00:00Z",
+          "updatedAt": "2026-08-30T10:00:00Z",
+          "closedAt": "2026-08-30T10:00:00Z",
+          "mergedAt": "2026-08-30T10:00:00Z",
+          "reviewDecision": null,
+          "additions": 10,
+          "deletions": 2,
+          "changedFiles": 3,
+          "headRefName": "topic",
+          "baseRefName": "main",
+          "repository": {
+            "nameWithOwner": "relloyd/prutil"
+          },
+          "comments": {
+            "totalCount": 0
+          },
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "statusCheckRollup": {
+                    "state": "SUCCESS"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "__typename": "PullRequest",
+          "number": 5,
+          "title": "Config v2",
+          "url": "https://github.com/relloyd/other/pull/5",
+          "isDraft": false,
+          "state": "MERGED",
+          "createdAt": "2026-08-01T09:00:00Z",
+          "updatedAt": "2026-08-29T10:00:00Z",
+          "closedAt": "2026-08-29T10:00:00Z",
+          "mergedAt": "2026-08-29T10:00:00Z",
+          "reviewDecision": null,
+          "additions": 10,
+          "deletions": 2,
+          "changedFiles": 3,
+          "headRefName": "topic",
+          "baseRefName": "main",
+          "repository": {
+            "nameWithOwner": "relloyd/other"
+          },
+          "comments": {
+            "totalCount": 0
+          },
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "statusCheckRollup": {
+                    "state": "SUCCESS"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "__typename": "Issue",
+          "number": 99,
+          "title": "not a pull request"
+        }
+      ]
+    }
+  }
+}

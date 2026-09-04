@@ -1,0 +1,82 @@
+{
+  "data": {
+    "r0": {
+      "nodes": [
+        {
+          "__typename": "PullRequest",
+          "number": 12,
+          "title": "Quiet repo work",
+          "url": "https://github.com/relloyd/quiet/pull/12",
+          "isDraft": false,
+          "state": "MERGED",
+          "createdAt": "2026-08-01T09:00:00Z",
+          "updatedAt": "2026-07-01T10:00:00Z",
+          "closedAt": "2026-07-01T10:00:00Z",
+          "mergedAt": "2026-07-01T10:00:00Z",
+          "reviewDecision": null,
+          "additions": 10,
+          "deletions": 2,
+          "changedFiles": 3,
+          "headRefName": "topic",
+          "baseRefName": "main",
+          "repository": {
+            "nameWithOwner": "relloyd/quiet"
+          },
+          "comments": {
+            "totalCount": 0
+          },
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "statusCheckRollup": {
+                    "state": "SUCCESS"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "r1": {
+      "nodes": [
+        {
+          "__typename": "PullRequest",
+          "number": 300,
+          "title": "Platform change",
+          "url": "https://github.com/acme/platform/pull/300",
+          "isDraft": false,
+          "state": "MERGED",
+          "createdAt": "2026-08-01T09:00:00Z",
+          "updatedAt": "2026-06-01T10:00:00Z",
+          "closedAt": "2026-06-01T10:00:00Z",
+          "mergedAt": "2026-06-01T10:00:00Z",
+          "reviewDecision": null,
+          "additions": 10,
+          "deletions": 2,
+          "changedFiles": 3,
+          "headRefName": "topic",
+          "baseRefName": "main",
+          "repository": {
+            "nameWithOwner": "acme/platform"
+          },
+          "comments": {
+            "totalCount": 0
+          },
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "statusCheckRollup": {
+                    "state": "SUCCESS"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

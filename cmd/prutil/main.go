@@ -40,10 +40,13 @@ func main() {
 
 func run() error {
 	var (
-		query      = flag.String("query", gh.DefaultSearchQuery, "GitHub search query used to find pull requests")
-		limit      = flag.Int("limit", 100, "maximum number of pull requests to load")
-		showVer    = flag.Bool("version", false, "print the version and exit")
-		skipVerify = flag.Bool("skip-auth-check", false, "do not verify gh authentication before starting")
+		query       = flag.String("query", gh.DefaultSearchQuery, "GitHub search query used to find pull requests")
+		limit       = flag.Int("limit", 100, "maximum number of pull requests to load")
+		closedQuery = flag.String("closed-query", gh.DefaultClosedSearchQuery, "GitHub search query used by the recently closed view")
+		perRepo     = flag.Int("closed-per-repo", gh.DefaultPerRepo, "maximum closed pull requests shown per repository")
+		repoLimit   = flag.Int("closed-repo-limit", gh.DefaultRepoLimit, "maximum repositories the recently closed view queries individually")
+		showVer     = flag.Bool("version", false, "print the version and exit")
+		skipVerify  = flag.Bool("skip-auth-check", false, "do not verify gh authentication before starting")
 	)
 	flag.Parse()
 
@@ -70,10 +73,18 @@ func run() error {
 	}
 
 	app := ui.New(ui.Config{
-		Client:  client,
-		Opener:  browser.New(os.Getenv("BROWSER")),
-		Query:   *query,
-		Limit:   *limit,
+		Client: client,
+		Opener: browser.New(os.Getenv("BROWSER")),
+		Query:  *query,
+		Limit:  *limit,
+		Closed: gh.ClosedOptions{
+			Query:   *closedQuery,
+			PerRepo: *perRepo,
+			// The sweep and the open list are both "how much to load", so one
+			// flag drives both.
+			SweepLimit: *limit,
+			RepoLimit:  *repoLimit,
+		},
 		Version: version,
 	})
 

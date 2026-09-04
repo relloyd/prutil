@@ -28,15 +28,21 @@ func TestRenderFitsEveryTerminalSize(t *testing.T) {
 	for _, size := range sizes {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
 			app, _, _ := newTestApp(t, size.width, size.height)
+			// The closed view carries longer badges than the open one, so both
+			// views are measured at every size.
+			send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs()})
 
-			for _, focus := range []pane{paneList, paneDetail} {
-				app.focus = focus
-				rendered := lines(app)
+			for _, active := range []view{viewOpen, viewClosed} {
+				app.active = active
+				for _, focus := range []pane{paneList, paneDetail} {
+					app.focus = focus
+					rendered := lines(app)
 
-				assert.LessOrEqual(t, len(rendered), size.height, "the screen must not overflow vertically")
-				for i, line := range rendered {
-					assert.LessOrEqual(t, ansi.StringWidth(line), size.width,
-						"line %d overflows the terminal: %q", i, line)
+					assert.LessOrEqual(t, len(rendered), size.height, "the screen must not overflow vertically")
+					for i, line := range rendered {
+						assert.LessOrEqual(t, ansi.StringWidth(line), size.width,
+							"line %d overflows the terminal in the %s view: %q", i, active, line)
+					}
 				}
 			}
 		})
@@ -113,7 +119,7 @@ func TestLongTitlesWrapRatherThanOverflow(t *testing.T) {
 
 func TestListScrollsToKeepTheCursorVisible(t *testing.T) {
 	app, _, _ := newTestApp(t, 100, 14)
-	require.Less(t, app.bodyHeight()/rowHeight, len(app.prs), "the test needs a list taller than the pane")
+	require.Less(t, app.bodyHeight()/rowHeight, len(app.cur().prs), "the test needs a list taller than the pane")
 
 	assert.Contains(t, plain(app.render()), "#42")
 

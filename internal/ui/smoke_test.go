@@ -34,7 +34,7 @@ func TestProgramRunsEndToEnd(t *testing.T) {
 
 	final, ok := tm.FinalModel(t).(*App)
 	if assert.True(t, ok, "the final model is the app") {
-		assert.Len(t, final.prs, 3)
+		assert.Len(t, final.cur().prs, 3)
 		assert.Positive(t, client.listCalls, "the program fetched the list itself")
 	}
 }

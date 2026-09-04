@@ -56,8 +56,9 @@ func (c Check) Duration(now time.Time) time.Duration {
 	return end.Sub(c.StartedAt)
 }
 
-// PullRequest is the headline information prutil shows for one open pull
-// request. Checks are fetched separately and cached by the UI.
+// PullRequest is the headline information prutil shows for one pull request,
+// open or closed. Checks are fetched separately and cached by the UI. The
+// closed-only fields stay zero for an open pull request.
 type PullRequest struct {
 	Repo           string
 	Number         int
@@ -67,7 +68,10 @@ type PullRequest struct {
 	BaseRef        string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	ClosedAt       time.Time
+	MergedAt       time.Time
 	IsDraft        bool
+	State          PRState
 	Mergeable      Mergeable
 	ReviewDecision ReviewDecision
 	Additions      int
@@ -139,6 +143,39 @@ func SortByCreatedDesc(prs []PullRequest) {
 		}
 		return prs[i].Number < prs[j].Number
 	})
+}
+
+// SortByClosedDesc orders pull requests most recently closed first, falling
+// back to the key so that the order is stable when timestamps tie.
+func SortByClosedDesc(prs []PullRequest) {
+	sort.SliceStable(prs, func(i, j int) bool {
+		if !prs[i].ClosedAt.Equal(prs[j].ClosedAt) {
+			return prs[i].ClosedAt.After(prs[j].ClosedAt)
+		}
+		if prs[i].Repo != prs[j].Repo {
+			return prs[i].Repo < prs[j].Repo
+		}
+		return prs[i].Number < prs[j].Number
+	})
+}
+
+// TopNPerRepo keeps at most n pull requests from any one repository and drops
+// the rest, preserving the order of the input. Callers sort first, so "at most
+// n" means the n most interesting by whichever order they chose.
+func TopNPerRepo(prs []PullRequest, n int) []PullRequest {
+	if n <= 0 {
+		return nil
+	}
+	kept := make(map[string]int, len(prs))
+	out := make([]PullRequest, 0, len(prs))
+	for _, pr := range prs {
+		if kept[pr.Repo] >= n {
+			continue
+		}
+		kept[pr.Repo]++
+		out = append(out, pr)
+	}
+	return out
 }
 
 // HumanAge renders a duration the way a dashboard should: coarse, short, and

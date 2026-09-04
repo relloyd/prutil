@@ -156,3 +156,40 @@ func ParseReviewDecision(decision string) ReviewDecision {
 		return ReviewNone
 	}
 }
+
+// PRState describes whether a pull request is open, merged, or closed without
+// being merged.
+type PRState int
+
+// Pull request states.
+const (
+	PRStateOpen PRState = iota
+	PRStateMerged
+	PRStateClosed
+)
+
+// String returns the badge text for a list row, or an empty string for an open
+// pull request, which needs no badge because the open view holds nothing else.
+func (p PRState) String() string {
+	switch p {
+	case PRStateMerged:
+		return "MERGED"
+	case PRStateClosed:
+		return "CLOSED"
+	default:
+		return ""
+	}
+}
+
+// ParsePRState maps GitHub's PullRequestState onto a PRState. GitHub reports a
+// merged pull request as MERGED rather than CLOSED, so the two stay distinct.
+func ParsePRState(state string) PRState {
+	switch strings.ToUpper(state) {
+	case "MERGED":
+		return PRStateMerged
+	case "CLOSED":
+		return PRStateClosed
+	default:
+		return PRStateOpen
+	}
+}

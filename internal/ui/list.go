@@ -8,26 +8,27 @@ import (
 
 // renderList draws the pull request list pane.
 func (a *App) renderList(width, height int) []string {
+	state := a.cur()
 	switch {
-	case a.err != nil && len(a.prs) == 0:
-		return a.centeredNotice("could not reach GitHub: "+a.err.Error(), width, a.styles.Error)
-	case a.loading && len(a.prs) == 0:
-		return a.centeredNotice(a.spin.View()+" loading your open pull requests…", width, a.styles.Meta)
-	case len(a.prs) == 0:
-		return a.centeredNotice("no open pull requests. press r to refresh.", width, a.styles.Meta)
+	case state.err != nil && len(state.prs) == 0:
+		return a.centeredNotice("could not reach GitHub: "+state.err.Error(), width, a.styles.Error)
+	case state.loading && len(state.prs) == 0:
+		return a.centeredNotice(a.spin.View()+" loading your "+a.active.String()+" pull requests…", width, a.styles.Meta)
+	case len(state.prs) == 0:
+		return a.centeredNotice("no "+a.active.String()+" pull requests. press r to refresh.", width, a.styles.Meta)
 	}
 
 	// One line is held back for the position indicator, so it is never clipped.
 	rows := max((height-1)/rowHeight, 1)
-	start := min(a.listOffset, max(len(a.prs)-1, 0))
-	end := min(start+rows, len(a.prs))
+	start := min(state.listOffset, max(len(state.prs)-1, 0))
+	end := min(start+rows, len(state.prs))
 
 	lines := make([]string, 0, height)
 	for i := start; i < end; i++ {
-		lines = append(lines, a.renderRow(a.prs[i], width, i == a.cursor)...)
+		lines = append(lines, a.renderRow(state.prs[i], width, i == state.cursor)...)
 	}
-	if end < len(a.prs) || start > 0 {
-		lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("  %d–%d of %d", start+1, end, len(a.prs))))
+	if end < len(state.prs) || start > 0 {
+		lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("  %d–%d of %d", start+1, end, len(state.prs))))
 	}
 	return lines
 }
@@ -44,7 +45,7 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 		titleStyle = a.styles.Title
 	}
 
-	age := a.styles.Meta.Render(model.HumanAge(a.now().Sub(pr.CreatedAt)) + " old")
+	age := a.styles.Meta.Render(a.ageText(pr))
 	identity := fitSegs(max(inner-lenOf(age)-1, 1), " ",
 		a.styles.dot(a.rollupFor(pr)),
 		seg{text: "#" + fmt.Sprint(pr.Number), style: a.styles.Number},
@@ -71,7 +72,10 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 	if diff := diffText(pr); diff != "" {
 		metaSegs = append(metaSegs, seg{text: diff, style: a.styles.Meta})
 	}
-	if !pr.UpdatedAt.IsZero() {
+	// A closed pull request is already dated by its close time on the right of
+	// the row, and its last update is almost always that same moment, so
+	// repeating it here would be noise.
+	if pr.ClosedAt.IsZero() && !pr.UpdatedAt.IsZero() {
 		metaSegs = append(metaSegs, seg{
 			text:  "upd " + model.HumanAge(a.now().Sub(pr.UpdatedAt)),
 			style: a.styles.Meta,
@@ -86,6 +90,15 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 		prefix + fitSegs(inner, "  ", metaSegs...),
 		"",
 	}
+}
+
+// ageText is the timestamp on the right of a list row: how long an open pull
+// request has been waiting, or how long ago a closed one was closed.
+func (a *App) ageText(pr model.PullRequest) string {
+	if pr.ClosedAt.IsZero() {
+		return model.HumanAge(a.now().Sub(pr.CreatedAt)) + " old"
+	}
+	return model.HumanAge(a.now().Sub(pr.ClosedAt)) + " ago"
 }
 
 // checksSummary describes the state of a pull request's checks for a list row,

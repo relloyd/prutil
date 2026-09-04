@@ -55,7 +55,7 @@ func defaultKeys() keyMap {
 		),
 		NextTab: key.NewBinding(
 			key.WithKeys("tab"),
-			key.WithHelp("tab", "next view"),
+			key.WithHelp("tab", "open/closed"),
 		),
 		Help: key.NewBinding(
 			key.WithKeys("?"),
@@ -70,7 +70,7 @@ func defaultKeys() keyMap {
 
 // ShortHelp implements help.KeyMap.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Into, k.Back, k.Open, k.Refresh, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Into, k.Back, k.Open, k.NextTab, k.Refresh, k.Help, k.Quit}
 }
 
 // FullHelp implements help.KeyMap.

@@ -44,6 +44,42 @@ const (
 	paneDetail
 )
 
+// view selects which list of pull requests the list pane shows. A third view
+// for review-requested pull requests would slot in before viewCount.
+type view int
+
+const (
+	viewOpen view = iota
+	viewClosed
+	viewCount
+)
+
+// next cycles to the following view, wrapping at the end.
+func (v view) next() view {
+	return (v + 1) % viewCount
+}
+
+// String names the view the way the header and the empty-list notice read it.
+func (v view) String() string {
+	if v == viewClosed {
+		return "closed"
+	}
+	return "open"
+}
+
+// viewState is everything belonging to one list of pull requests. Each view
+// keeps its own cursor and scroll position, so switching back and forth does
+// not lose the reader's place.
+type viewState struct {
+	prs         []model.PullRequest
+	cursor      int
+	listOffset  int
+	loading     bool
+	loaded      bool
+	err         error
+	lastRefresh time.Time
+}
+
 // checkState is the cache entry for one pull request's checks.
 type checkState struct {
 	checks  []model.Check
@@ -54,10 +90,13 @@ type checkState struct {
 
 // Config wires the application to its collaborators.
 type Config struct {
-	Client  gh.Client
-	Opener  browser.Opener
-	Query   string
-	Limit   int
+	Client gh.Client
+	Opener browser.Opener
+	Query  string
+	Limit  int
+	// Closed configures the recently-closed view, which loads the first time
+	// that view is shown.
+	Closed  gh.ClosedOptions
 	Now     func() time.Time
 	Version string
 }
@@ -68,6 +107,7 @@ type App struct {
 	opener  browser.Opener
 	query   string
 	limit   int
+	closed  gh.ClosedOptions
 	now     func() time.Time
 	version string
 
@@ -76,22 +116,21 @@ type App struct {
 	help   help.Model
 	spin   spinner.Model
 
-	prs        []model.PullRequest
-	checks     map[model.Key]checkState
-	cursor     int
-	listOffset int
+	views  [viewCount]viewState
+	active view
+
+	// checks is shared by every view. It is keyed by repository and number, so
+	// a pull request that appears in two views is only ever fetched once.
+	checks map[model.Key]checkState
 
 	detailCursor int
 	detailOffset int
 
-	focus       pane
-	width       int
-	height      int
-	loading     bool
-	err         error
-	status      string
-	lastRefresh time.Time
-	showHelp    bool
+	focus    pane
+	width    int
+	height   int
+	status   string
+	showHelp bool
 
 	// gen is bumped on every refresh; replies carrying an older generation are
 	// discarded so a slow request cannot overwrite fresher data.
@@ -108,11 +147,12 @@ func New(cfg Config) *App {
 	styles := newStyles(true)
 	sp.Style = styles.Accent
 
-	return &App{
+	a := &App{
 		client:  cfg.Client,
 		opener:  cfg.Opener,
 		query:   cfg.Query,
 		limit:   cfg.Limit,
+		closed:  cfg.Closed,
 		now:     now,
 		version: cfg.Version,
 		keys:    defaultKeys(),
@@ -120,8 +160,9 @@ func New(cfg Config) *App {
 		help:    help.New(),
 		spin:    sp,
 		checks:  map[model.Key]checkState{},
-		loading: true,
 	}
+	a.views[viewOpen].loading = true
+	return a
 }
 
 // Init implements tea.Model.
@@ -129,7 +170,7 @@ func (a *App) Init() tea.Cmd {
 	return tea.Batch(
 		tea.Cmd(tea.RequestBackgroundColor),
 		a.spin.Tick,
-		a.loadPRs(a.gen),
+		a.loadOpen(a.gen),
 	)
 }
 
@@ -143,7 +184,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The detail pane is only reachable by focusing it once the panes
 			// no longer sit side by side, but a resize should never leave the
 			// user stranded on an empty pane.
-			if len(a.prs) == 0 {
+			if len(a.cur().prs) == 0 {
 				a.focus = paneList
 			}
 		}
@@ -170,15 +211,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != a.gen {
 			return a, nil
 		}
-		a.applyPRs(msg.prs)
+		a.applyPRs(msg.view, msg.prs)
+		if msg.view != a.active {
+			// A background view finished loading; leave the visible one alone
+			// and warm its checks only once the reader switches to it.
+			return a, nil
+		}
 		return a, a.withSpinner(tea.Batch(a.prefetch()...))
 
 	case errMsg:
 		if msg.gen != a.gen {
 			return a, nil
 		}
-		a.loading = false
-		a.err = msg.err
+		state := &a.views[msg.view]
+		state.loading = false
+		state.err = msg.err
 		return a, nil
 
 	case checksMsg:
@@ -229,10 +276,10 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, a.refresh()
 
 	case key.Matches(msg, a.keys.NextTab):
-		return a, status("the review-requested view is not built yet")
+		return a, a.switchView(a.active.next())
 
 	case key.Matches(msg, a.keys.Into):
-		if a.focus == paneList && len(a.prs) > 0 {
+		if a.focus == paneList && len(a.cur().prs) > 0 {
 			a.focus = paneDetail
 			a.detailCursor, a.detailOffset = 0, 0
 			return a, a.withSpinner(a.ensureChecks(a.selectedKey()))
@@ -281,10 +328,10 @@ func (a *App) jump(index int) tea.Cmd {
 		return nil
 	}
 
-	if index == a.cursor {
+	if index == a.cur().cursor {
 		return nil
 	}
-	a.cursor = index
+	a.cur().cursor = index
 	a.detailCursor, a.detailOffset = 0, 0
 	a.clampScroll()
 
@@ -323,34 +370,77 @@ func (a *App) open() tea.Cmd {
 	}
 }
 
-// refresh discards everything and reloads from GitHub.
+// refresh discards everything and reloads the visible view. The other views
+// are marked unloaded rather than reloaded now, so that a refresh costs one
+// request; they refetch the next time they are shown instead of quietly
+// serving data from before the refresh.
 func (a *App) refresh() tea.Cmd {
 	a.gen++
-	a.loading = true
-	a.err = nil
 	a.checks = map[model.Key]checkState{}
-	return tea.Batch(a.loadPRs(a.gen), a.spin.Tick, status("refreshing…"))
+
+	for i := range a.views {
+		if view(i) == a.active {
+			continue
+		}
+		// The list and the reader's place in it stay put, so switching over
+		// shows something familiar rather than an empty pane. Only the load
+		// state is cleared, which is what makes the view refetch when shown.
+		a.views[i].loaded = false
+		a.views[i].loading = false
+		a.views[i].err = nil
+		a.views[i].lastRefresh = time.Time{}
+	}
+	return tea.Batch(a.load(a.active), a.spin.Tick, status("refreshing…"))
 }
 
-// applyPRs installs a freshly loaded list, keeping the cursor on the same pull
-// request when it is still open.
-func (a *App) applyPRs(prs []model.PullRequest) {
-	previous, hadSelection := a.selectedPR()
-	a.prs = prs
-	a.loading = false
-	a.err = nil
-	a.lastRefresh = a.now()
+// switchView moves the list pane to another view, loading it the first time it
+// is shown. Focus returns to the list, because the detail pane belongs to the
+// pull request selected in the view being left.
+func (a *App) switchView(v view) tea.Cmd {
+	if v == a.active {
+		return nil
+	}
+	a.active = v
+	a.focus = paneList
+	a.detailCursor, a.detailOffset = 0, 0
+	a.clampScroll()
 
-	a.cursor = 0
+	// A view that has never been fetched loads now. One that failed keeps its
+	// error on screen instead of retrying on every switch, so the reader can
+	// see what went wrong and retry deliberately with r.
+	if state := a.cur(); !state.loaded && !state.loading && state.err == nil {
+		return tea.Batch(a.load(v), a.spin.Tick)
+	}
+	return a.withSpinner(tea.Batch(a.prefetch()...))
+}
+
+// cur is the state of the view currently on screen.
+func (a *App) cur() *viewState {
+	return &a.views[a.active]
+}
+
+// applyPRs installs a freshly loaded list into one view, keeping the cursor on
+// the same pull request when it is still in the list.
+func (a *App) applyPRs(v view, prs []model.PullRequest) {
+	state := &a.views[v]
+	previous, hadSelection := prAt(state.prs, state.cursor)
+
+	state.prs = prs
+	state.loading = false
+	state.loaded = true
+	state.err = nil
+	state.lastRefresh = a.now()
+
+	state.cursor = 0
 	if hadSelection {
 		for i, pr := range prs {
 			if pr.Key() == previous.Key() {
-				a.cursor = i
+				state.cursor = i
 				break
 			}
 		}
 	}
-	if len(prs) == 0 {
+	if len(prs) == 0 && v == a.active {
 		a.focus = paneList
 	}
 	a.clampScroll()
@@ -358,7 +448,8 @@ func (a *App) applyPRs(prs []model.PullRequest) {
 
 // prefetch returns commands that warm the check cache for the top of the list.
 func (a *App) prefetch() []tea.Cmd {
-	limit := min(len(a.prs), prefetchLimit)
+	prs := a.cur().prs
+	limit := min(len(prs), prefetchLimit)
 	cmds := make([]tea.Cmd, 0, limit)
 
 	// The selected pull request goes first so its detail pane fills in before
@@ -366,7 +457,7 @@ func (a *App) prefetch() []tea.Cmd {
 	if cmd := a.ensureChecks(a.selectedKey()); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
-	for _, pr := range a.prs[:limit] {
+	for _, pr := range prs[:limit] {
 		if cmd := a.ensureChecks(pr.Key()); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -397,17 +488,42 @@ func (a *App) ensureChecks(prKey model.Key) tea.Cmd {
 	return a.loadChecks(a.gen, prKey)
 }
 
-// loadPRs fetches the headline list.
-func (a *App) loadPRs(gen int) tea.Cmd {
+// load returns the command that fills one view and marks it in flight.
+func (a *App) load(v view) tea.Cmd {
+	a.views[v].loading = true
+	a.views[v].err = nil
+	if v == viewClosed {
+		return a.loadClosed(a.gen)
+	}
+	return a.loadOpen(a.gen)
+}
+
+// loadOpen fetches the open pull request list.
+func (a *App) loadOpen(gen int) tea.Cmd {
 	client, query, limit := a.client, a.query, a.limit
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		defer cancel()
 		prs, err := client.ListPullRequests(ctx, query, limit)
 		if err != nil {
-			return errMsg{gen: gen, err: err}
+			return errMsg{gen: gen, view: viewOpen, err: err}
 		}
-		return prsMsg{gen: gen, prs: prs}
+		return prsMsg{gen: gen, view: viewOpen, prs: prs}
+	}
+}
+
+// loadClosed fetches the recently closed list, which the client groups so that
+// no single repository can fill the whole view.
+func (a *App) loadClosed(gen int) tea.Cmd {
+	client, opts := a.client, a.closed
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		prs, err := client.ListClosedPullRequests(ctx, opts)
+		if err != nil {
+			return errMsg{gen: gen, view: viewClosed, err: err}
+		}
+		return prsMsg{gen: gen, view: viewClosed, prs: prs}
 	}
 }
 
@@ -425,12 +541,20 @@ func (a *App) loadChecks(gen int, prKey model.Key) tea.Cmd {
 	}
 }
 
-// selectedPR returns the pull request under the list cursor.
+// selectedPR returns the pull request under the list cursor of the visible
+// view.
 func (a *App) selectedPR() (model.PullRequest, bool) {
-	if a.cursor < 0 || a.cursor >= len(a.prs) {
+	state := a.cur()
+	return prAt(state.prs, state.cursor)
+}
+
+// prAt returns the pull request at index i, reporting false when the index is
+// out of range.
+func prAt(prs []model.PullRequest, i int) (model.PullRequest, bool) {
+	if i < 0 || i >= len(prs) {
 		return model.PullRequest{}, false
 	}
-	return a.prs[a.cursor], true
+	return prs[i], true
 }
 
 // selectedKey returns the key of the pull request under the list cursor.
@@ -452,7 +576,7 @@ func (a *App) cursorIndex() int {
 	if a.focus == paneDetail {
 		return a.detailCursor
 	}
-	return a.cursor
+	return a.cur().cursor
 }
 
 // itemCount is the number of rows in the focused pane.
@@ -460,13 +584,15 @@ func (a *App) itemCount() int {
 	if a.focus == paneDetail {
 		return len(a.selectedChecks().checks)
 	}
-	return len(a.prs)
+	return len(a.cur().prs)
 }
 
 // busy reports whether anything is still loading, which drives the spinner.
 func (a *App) busy() bool {
-	if a.loading {
-		return true
+	for i := range a.views {
+		if a.views[i].loading {
+			return true
+		}
 	}
 	for _, state := range a.checks {
 		if state.loading {
@@ -484,9 +610,10 @@ func (a *App) narrow() bool {
 // clampScroll keeps both scroll offsets consistent with their cursors and the
 // current window size.
 func (a *App) clampScroll() {
-	a.cursor = min(max(a.cursor, 0), max(len(a.prs)-1, 0))
+	state := a.cur()
+	state.cursor = min(max(state.cursor, 0), max(len(state.prs)-1, 0))
 	rows := max(a.bodyHeight()/rowHeight, 1)
-	a.listOffset = clampOffset(a.listOffset, a.cursor, rows, len(a.prs))
+	state.listOffset = clampOffset(state.listOffset, state.cursor, rows, len(state.prs))
 
 	checks := a.selectedChecks().checks
 	a.detailCursor = min(max(a.detailCursor, 0), max(len(checks)-1, 0))
@@ -516,12 +643,14 @@ func status(text string) tea.Cmd {
 // Messages exchanged inside the app.
 type (
 	prsMsg struct {
-		gen int
-		prs []model.PullRequest
+		gen  int
+		view view
+		prs  []model.PullRequest
 	}
 	errMsg struct {
-		gen int
-		err error
+		gen  int
+		view view
+		err  error
 	}
 	checksMsg struct {
 		gen    int

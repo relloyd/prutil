@@ -75,12 +75,29 @@ list query that force it to walk `contexts`.
   asserts it; keep it passing.
 - Below 80 columns (`narrowWidth`) the layout collapses to a single pane.
 
-## Adding the review-requested view
+## Views
 
-`tab` is already bound and currently reports that the view does not exist. The
-intended shape is a second list backed by the same `gh.Client` with the search
-query `is:open is:pr review-requested:@me`, a `view` field on `App` selecting
-which slice the list pane renders, and the detail pane left untouched.
+`tab` cycles the `view` enum in `internal/ui/app.go`. Each view owns a
+`viewState` (its own list, cursor, scroll offset, load state and error), and
+`a.cur()` is the one on screen. `a.checks` is deliberately *not* per view: it is
+keyed by `model.Key`, so a pull request appearing in two views is fetched once.
+
+Adding a third view (review-requested was the original plan) means a constant
+before `viewCount`, a case in `load`, and nothing else. Do not reintroduce a
+flat `a.prs`; the five places that used to assume it are `applyPRs`,
+`itemCount`, `clampScroll`, `renderHeader` and `renderList`.
+
+The closed view's two-stage fetch lives in `CLI.ListClosedPullRequests`. The
+load-bearing property is the exhaustion check: when the sweep reaches the end of
+the search, the grouping is already exact and the per-repo fill is skipped.
+`TestClosedSweepThatReachesTheEndCostsOneRequest` pins it. Enumerating every
+repository in a large organisation is not feasible, which is why discovery only
+asks for contributed-to repositories and recently pushed organisation
+repositories, both bounded.
+
+Repository names reach `buildRepoBatchQuery` from the API, so its search strings
+travel as GraphQL variables and any name failing `repoNamePattern` is dropped.
+Keep it that way: never splice a repository name into the document text.
 
 ## Things to avoid
 

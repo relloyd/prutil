@@ -23,6 +23,8 @@ type Styles struct {
 	SectionHdr lipgloss.Style
 
 	BadgeDraft    lipgloss.Style
+	BadgeMerged   lipgloss.Style
+	BadgeClosed   lipgloss.Style
 	BadgeConflict lipgloss.Style
 	BadgeApproved lipgloss.Style
 	BadgeChanges  lipgloss.Style
@@ -77,6 +79,8 @@ func newStyles(isDark bool) Styles {
 		SectionHdr: base.Foreground(muted).Bold(true),
 
 		BadgeDraft:    badge.Foreground(grey),
+		BadgeMerged:   badge.Foreground(accent),
+		BadgeClosed:   badge.Foreground(red),
 		BadgeConflict: badge.Foreground(red),
 		BadgeApproved: badge.Foreground(green),
 		BadgeChanges:  badge.Foreground(amber),

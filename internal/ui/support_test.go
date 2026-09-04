@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
+	"github.com/relloyd/prutil/internal/gh"
 	"github.com/relloyd/prutil/internal/model"
 )
 
@@ -17,17 +18,25 @@ var testNow = time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 
 // fakeClient serves canned pull requests and checks.
 type fakeClient struct {
-	mu         sync.Mutex
-	prs        []model.PullRequest
-	checks     map[model.Key][]model.Check
-	listErr    error
-	checksErr  error
-	listCalls  int
-	checkCalls map[model.Key]int
+	mu          sync.Mutex
+	prs         []model.PullRequest
+	closed      []model.PullRequest
+	checks      map[model.Key][]model.Check
+	listErr     error
+	closedErr   error
+	checksErr   error
+	listCalls   int
+	closedCalls int
+	checkCalls  map[model.Key]int
 }
 
 func newFakeClient(prs []model.PullRequest, checks map[model.Key][]model.Check) *fakeClient {
-	return &fakeClient{prs: prs, checks: checks, checkCalls: map[model.Key]int{}}
+	return &fakeClient{
+		prs:        prs,
+		closed:     sampleClosedPRs(),
+		checks:     checks,
+		checkCalls: map[model.Key]int{},
+	}
 }
 
 func (f *fakeClient) Ping(context.Context) error { return nil }
@@ -40,6 +49,22 @@ func (f *fakeClient) ListPullRequests(_ context.Context, _ string, _ int) ([]mod
 		return nil, f.listErr
 	}
 	return f.prs, nil
+}
+
+func (f *fakeClient) ListClosedPullRequests(_ context.Context, _ gh.ClosedOptions) ([]model.PullRequest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closedCalls++
+	if f.closedErr != nil {
+		return nil, f.closedErr
+	}
+	return f.closed, nil
+}
+
+func (f *fakeClient) closedCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closedCalls
 }
 
 func (f *fakeClient) Checks(_ context.Context, key model.Key) ([]model.Check, error) {
@@ -117,6 +142,58 @@ func samplePRs() []model.PullRequest {
 	}
 }
 
+// sampleClosedPRs returns four closed pull requests, most recently closed
+// first, with two from one repository so that per-repo grouping has something
+// to bite on.
+func sampleClosedPRs() []model.PullRequest {
+	return []model.PullRequest{
+		{
+			Repo: "relloyd/prutil", Number: 40,
+			Title:   "Cache the check rollup between refreshes",
+			URL:     "https://github.com/relloyd/prutil/pull/40",
+			HeadRef: "perf/rollup-cache", BaseRef: "main",
+			CreatedAt: testNow.Add(-120 * time.Hour), UpdatedAt: testNow.Add(-24 * time.Hour),
+			ClosedAt: testNow.Add(-24 * time.Hour), MergedAt: testNow.Add(-24 * time.Hour),
+			State:     model.PRStateMerged,
+			Additions: 88, Deletions: 12, ChangedFiles: 4,
+			Rollup: model.StatusSuccess,
+		},
+		{
+			Repo: "relloyd/prutil", Number: 38,
+			Title:   "Drop the unused pagination cursor",
+			URL:     "https://github.com/relloyd/prutil/pull/38",
+			HeadRef: "chore/cursor", BaseRef: "main",
+			CreatedAt: testNow.Add(-200 * time.Hour), UpdatedAt: testNow.Add(-72 * time.Hour),
+			ClosedAt:  testNow.Add(-72 * time.Hour),
+			State:     model.PRStateClosed,
+			Additions: 2, Deletions: 40, ChangedFiles: 2,
+			Rollup: model.StatusUnknown,
+		},
+		{
+			Repo: "relloyd/other", Number: 5,
+			Title:   "Switch the loader to the new config format",
+			URL:     "https://github.com/relloyd/other/pull/5",
+			HeadRef: "feat/config-v2", BaseRef: "develop",
+			CreatedAt: testNow.Add(-300 * time.Hour), UpdatedAt: testNow.Add(-96 * time.Hour),
+			ClosedAt: testNow.Add(-96 * time.Hour), MergedAt: testNow.Add(-96 * time.Hour),
+			State:     model.PRStateMerged,
+			Additions: 310, Deletions: 205, ChangedFiles: 18,
+			Rollup: model.StatusSuccess,
+		},
+		{
+			Repo: "relloyd/third", Number: 8,
+			Title:   "Pin the linter version",
+			URL:     "https://github.com/relloyd/third/pull/8",
+			HeadRef: "ci/pin-linter", BaseRef: "main",
+			CreatedAt: testNow.Add(-400 * time.Hour), UpdatedAt: testNow.Add(-240 * time.Hour),
+			ClosedAt: testNow.Add(-240 * time.Hour), MergedAt: testNow.Add(-240 * time.Hour),
+			State:     model.PRStateMerged,
+			Additions: 1, Deletions: 1, ChangedFiles: 1,
+			Rollup: model.StatusSuccess,
+		},
+	}
+}
+
 // sampleChecks returns the checks belonging to the first sample pull request.
 func sampleChecks() map[model.Key][]model.Check {
 	return map[model.Key][]model.Check{
@@ -159,7 +236,7 @@ func newTestApp(t *testing.T, width, height int) (*App, *fakeClient, *fakeOpener
 	// Settle the prefetch the list load kicked off, so tests start from a fully
 	// loaded cache rather than a spinner.
 	checks := sampleChecks()
-	for _, pr := range app.prs {
+	for _, pr := range app.cur().prs {
 		send(t, app, checksMsg{gen: app.gen, key: pr.Key(), checks: checks[pr.Key()]})
 	}
 	return app, client, opener
