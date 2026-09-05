@@ -93,8 +93,15 @@ const DefaultClosedSearchQuery = "is:pr author:@me is:closed archived:false sort
 
 // closedPRFields is the field set shared by every closed pull request query. It
 // lives in a fragment because the batched per-repo query would otherwise repeat
-// it once per repository, turning a sixty-repo request into a document tens of
+// it once per repository, turning a thirty-repo request into a document tens of
 // kilobytes long.
+//
+// It deliberately omits the check rollup that listQuery selects. Resolving the
+// head commit's rollup costs about a quarter of the request, and GitHub gives a
+// document roughly ten seconds before returning 502, which is budget this view
+// cannot spare. A closed pull request's CI is history anyway: the list dot
+// starts hollow and fills in when the check prefetch lands, and detailQuery
+// still fetches the individual checks when a row is selected.
 const closedPRFields = `
 fragment prFields on PullRequest {
   number
@@ -114,9 +121,6 @@ fragment prFields on PullRequest {
   baseRefName
   repository { nameWithOwner }
   comments { totalCount }
-  commits(last: 1) {
-    nodes { commit { statusCheckRollup { state } } }
-  }
 }`
 
 // closedListQuery is the global sweep: one search across every repository the
@@ -132,30 +136,25 @@ query($q: String!, $first: Int!, $after: String) {
   }
 }` + closedPRFields
 
-// repoDiscoveryQuery names the repositories worth asking about individually
-// when the global sweep did not reach far enough back. Enumerating every
-// repository in a large organisation is not feasible, so this asks for two
-// bounded sets instead: the repositories the user has actually sent pull
-// requests to, and the most recently pushed repositories in each of their
-// organisations.
-const repoDiscoveryQuery = `
-query($repos: Int!, $orgs: Int!, $orgRepos: Int!) {
-  viewer {
-    repositoriesContributedTo(
-      first: $repos
-      contributionTypes: [PULL_REQUEST]
-      includeUserRepositories: true
-      orderBy: {field: PUSHED_AT, direction: DESC}
-    ) {
-      nodes { nameWithOwner isArchived }
-    }
-    organizations(first: $orgs) {
-      nodes {
-        repositories(first: $orgRepos, orderBy: {field: PUSHED_AT, direction: DESC}) {
-          nodes { nameWithOwner isArchived }
-        }
-      }
-    }
+// repoNamesQuery reads repository names off the closed search, and nothing
+// else. It is how the per-repo fill learns which repositories to ask about.
+//
+// The obvious alternative, enumerating the viewer's organisations and their
+// repositories, does not work: it is a guess that both misses repositories the
+// user has worked in and returns hundreds they have never opened a pull request
+// against, each of which would then cost an alias to learn nothing. Reading the
+// names off the search the view is already running is exact by construction,
+// costs one small field per node, and does not care how large the organisation
+// is.
+//
+// GitHub's repositoriesContributedTo is not a substitute either. It is
+// recency-biased: on a real account it returned six repositories while omitting
+// one holding 125 of that user's closed pull requests.
+const repoNamesQuery = `
+query($q: String!, $first: Int!, $after: String) {
+  search(query: $q, type: ISSUE, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest { repository { nameWithOwner } } }
   }
 }`
 

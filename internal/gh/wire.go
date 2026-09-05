@@ -35,26 +35,19 @@ type repoBatchResponse map[string]struct {
 	Nodes []prNode `json:"nodes"`
 }
 
-// discoveryResponse mirrors the data envelope returned by repoDiscoveryQuery.
-type discoveryResponse struct {
-	Viewer struct {
-		RepositoriesContributedTo struct {
-			Nodes []repoNode `json:"nodes"`
-		} `json:"repositoriesContributedTo"`
-		Organizations struct {
-			Nodes []struct {
-				Repositories struct {
-					Nodes []repoNode `json:"nodes"`
-				} `json:"repositories"`
-			} `json:"nodes"`
-		} `json:"organizations"`
-	} `json:"viewer"`
-}
-
-// repoNode is one repository named by repository discovery.
-type repoNode struct {
-	NameWithOwner string `json:"nameWithOwner"`
-	IsArchived    bool   `json:"isArchived"`
+// repoNamesResponse mirrors the data envelope returned by repoNamesQuery.
+type repoNamesResponse struct {
+	Search struct {
+		PageInfo struct {
+			HasNextPage bool   `json:"hasNextPage"`
+			EndCursor   string `json:"endCursor"`
+		} `json:"pageInfo"`
+		Nodes []struct {
+			Repository struct {
+				NameWithOwner string `json:"nameWithOwner"`
+			} `json:"repository"`
+		} `json:"nodes"`
+	} `json:"search"`
 }
 
 type prNode struct {

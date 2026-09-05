@@ -3,6 +3,7 @@ package gh_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -230,14 +231,16 @@ func TestClosedSweepThatReachesTheEndCostsOneRequest(t *testing.T) {
 	runner := &fakeRunner{responses: [][]byte{fixture(t, "closed_search.json")}}
 	client := gh.New(runner, 4)
 
-	prs, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3})
+	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3})
 	require.NoError(t, err)
 
 	// This is the property the whole design rests on: when the sweep reaches
 	// the end of the search it already holds every closed pull request, so
 	// repository discovery and the per-repo fill are skipped entirely.
 	assert.Equal(t, 1, runner.callCount(), "an exhausted sweep issues no further requests")
+	assert.Zero(t, res.Unavailable, "nothing was skipped, so nothing is reported missing")
 
+	prs := res.PRs
 	require.Len(t, prs, 4, "the fourth pull request from one repo is dropped, the Issue node with it")
 	assert.Equal(t, []int{40, 39, 38, 5}, []int{prs[0].Number, prs[1].Number, prs[2].Number, prs[3].Number})
 	assert.Equal(t, "relloyd/other", prs[3].Repo)
@@ -263,6 +266,8 @@ func TestClosedSweepSendsExpectedArguments(t *testing.T) {
 	assert.Contains(t, args, "closedAt", "the sweep selects the close timestamp")
 	assert.Contains(t, args, "mergedAt")
 	assert.NotContains(t, args, "mergeable", "mergeable means nothing once a pull request is closed")
+	assert.NotContains(t, args, "statusCheckRollup",
+		"resolving the rollup costs budget the ten-second document limit cannot spare")
 }
 
 func TestClosedFillQueriesOnlyTheRepositoriesThatCameUpShort(t *testing.T) {
@@ -275,18 +280,25 @@ func TestClosedFillQueriesOnlyTheRepositoriesThatCameUpShort(t *testing.T) {
 
 	// SweepLimit stops the sweep after one page, which is the case the
 	// per-repo fill exists for: the window ran out before the search did.
-	prs, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
+	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
 	require.NoError(t, err)
 	require.Equal(t, 3, runner.callCount(), "sweep, then discovery, then one batch")
+	assert.Zero(t, res.Unavailable)
 
+	prs := res.PRs
 	batch := runner.argsOf(2)
 	assert.NotContains(t, batch, "repo:relloyd/prutil",
 		"a repository the sweep already filled to PerRepo is not asked again")
 	assert.Contains(t, batch, "repo:relloyd/quiet")
 	assert.Contains(t, batch, "repo:acme/platform")
-	assert.NotContains(t, batch, "relloyd/retired",
-		"the query excludes archived repositories, so discovery drops them")
 	assert.NotContains(t, batch, "not-a-valid-repo-name", "a malformed repository name is dropped")
+
+	discovery := runner.argsOf(1)
+	assert.Contains(t, discovery, "repository { nameWithOwner }",
+		"discovery reads names off the same search rather than enumerating repositories")
+	assert.NotContains(t, discovery, "organizations",
+		"enumerating an organisation's repositories does not scale and is not done")
+	assert.Contains(t, discovery, "after=", "discovery reads on from where the sweep stopped")
 	assert.Contains(t, batch, "$q0: String!", "each repository search is a variable, never spliced into the document")
 
 	repos := make([]string, 0, len(prs))
@@ -313,9 +325,10 @@ func TestClosedResultsAreDedupedAndCapped(t *testing.T) {
 	}}
 	client := gh.New(runner, 4)
 
-	prs, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 2, SweepLimit: 5})
+	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 2, SweepLimit: 5})
 	require.NoError(t, err)
 
+	prs := res.PRs
 	seen := map[model.Key]int{}
 	perRepo := map[string]int{}
 	for _, pr := range prs {
@@ -339,15 +352,136 @@ func TestClosedSweepStopsAtTheLimit(t *testing.T) {
 	assert.Contains(t, runner.argsOf(0), "first=5", "the page size is capped by the sweep limit")
 }
 
-func TestClosedFillPropagatesAFailedBatch(t *testing.T) {
+func TestClosedFillDegradesWhenABatchFails(t *testing.T) {
+	// This is what a large organisation produces: GitHub answers an over-budget
+	// document with a 502.
 	runner := &fakeRunner{responses: [][]byte{
 		fixture(t, "closed_search_partial.json"),
 		fixture(t, "discovery.json"),
-		[]byte(`{"errors": [{"message": "API rate limit exceeded"}]}`),
+		[]byte(`{"errors": [{"message": "Something went wrong while executing your query."}]}`),
+	}}
+	client := gh.New(runner, 4)
+
+	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
+	require.NoError(t, err, "a failed batch costs its repositories, not the whole view")
+
+	assert.Equal(t, 2, res.Unavailable,
+		"both valid repositories in the failed batch are reported unreachable")
+	require.NotEmpty(t, res.PRs, "the sweep results survive")
+	for _, pr := range res.PRs {
+		assert.NotEqual(t, "relloyd/quiet", pr.Repo, "the failed batch contributed nothing")
+	}
+}
+
+func TestClosedFillFailsWhenDiscoveryDoes(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{
+		fixture(t, "closed_search_partial.json"),
+		[]byte(`{"errors": [{"message": "Bad credentials"}]}`),
 	}}
 	client := gh.New(runner, 4)
 
 	_, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
-	require.Error(t, err, "a failed fill surfaces rather than silently returning a partial list")
-	assert.Contains(t, err.Error(), "rate limit")
+	require.Error(t, err, "discovery is one small request, so its failure is a real problem")
+	assert.Contains(t, err.Error(), "Bad credentials")
+}
+
+func TestClosedFillChunksRepositoriesIntoSmallDocuments(t *testing.T) {
+	// Seven repositories the sweep never saw, so all seven need asking about.
+	names := make([]string, 0, 7)
+	for i := range 7 {
+		names = append(names, fmt.Sprintf(`{"repository": {"nameWithOwner": "acme/r%d"}}`, i))
+	}
+	discovery := fmt.Sprintf(
+		`{"data": {"search": {"pageInfo": {"hasNextPage": false, "endCursor": ""}, "nodes": [%s]}}}`,
+		strings.Join(names, ","))
+	empty := []byte(`{"data": {"r0": {"nodes": []}}}`)
+
+	runner := &fakeRunner{responses: [][]byte{
+		fixture(t, "closed_search_partial.json"),
+		[]byte(discovery),
+		empty, empty, empty,
+	}}
+	client := gh.New(runner, 4)
+
+	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
+	require.NoError(t, err)
+	assert.Zero(t, res.Unavailable)
+
+	// Three documents of three, three and one. Batches are deliberately small:
+	// GitHub gives a document about ten seconds, and latency grows with the
+	// number of aliased searches in it.
+	require.Equal(t, 5, runner.callCount(), "sweep, discovery, then three batches")
+
+	aliases := 0
+	for i := 2; i < 5; i++ {
+		n := strings.Count(runner.argsOf(i), "type: ISSUE")
+		assert.LessOrEqual(t, n, 3, "no document carries more than repoBatchSize searches")
+		aliases += n
+	}
+	assert.Equal(t, 7, aliases, "every repository is asked about exactly once")
+}
+
+func TestClosedDiscoveryPagesOnFromTheSweepAndStops(t *testing.T) {
+	page := func(hasNext bool, cursor string, repos ...string) []byte {
+		nodes := make([]string, 0, len(repos))
+		for _, r := range repos {
+			nodes = append(nodes, fmt.Sprintf(`{"repository": {"nameWithOwner": %q}}`, r))
+		}
+		return fmt.Appendf(nil,
+			`{"data": {"search": {"pageInfo": {"hasNextPage": %t, "endCursor": %q}, "nodes": [%s]}}}`,
+			hasNext, cursor, strings.Join(nodes, ","))
+	}
+	empty := []byte(`{"data": {"r0": {"nodes": []}}}`)
+
+	// Four pages are offered but discoverPages caps the read at three.
+	runner := &fakeRunner{responses: [][]byte{
+		fixture(t, "closed_search_partial.json"),
+		page(true, "c1", "acme/a"),
+		page(true, "c2", "acme/b"),
+		page(true, "c3", "acme/c"),
+		empty,
+	}}
+	client := gh.New(runner, 4)
+
+	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
+	require.NoError(t, err)
+	assert.Zero(t, res.Unavailable)
+
+	require.Equal(t, 5, runner.callCount(), "sweep, three discovery pages, then one batch")
+	assert.Contains(t, runner.argsOf(1), "after=Y3Vyc29yOjU=", "the first page continues the sweep's cursor")
+	assert.Contains(t, runner.argsOf(2), "after=c1")
+	assert.Contains(t, runner.argsOf(3), "after=c2")
+	assert.Contains(t, runner.argsOf(4), "type: ISSUE", "the fourth page is never read; this is the batch")
+
+	batch := runner.argsOf(4)
+	for _, repo := range []string{"acme/a", "acme/b", "acme/c"} {
+		assert.Contains(t, batch, "repo:"+repo)
+	}
+}
+
+func TestClosedDiscoveryRespectsTheRepoLimit(t *testing.T) {
+	nodes := make([]string, 0, 20)
+	for i := range 20 {
+		nodes = append(nodes, fmt.Sprintf(`{"repository": {"nameWithOwner": "acme/r%d"}}`, i))
+	}
+	discovery := fmt.Sprintf(
+		`{"data": {"search": {"pageInfo": {"hasNextPage": false, "endCursor": ""}, "nodes": [%s]}}}`,
+		strings.Join(nodes, ","))
+	empty := []byte(`{"data": {"r0": {"nodes": []}}}`)
+
+	runner := &fakeRunner{responses: [][]byte{
+		fixture(t, "closed_search_partial.json"),
+		[]byte(discovery),
+		empty, empty,
+	}}
+	client := gh.New(runner, 4)
+
+	_, err := client.ListClosedPullRequests(context.Background(),
+		gh.ClosedOptions{PerRepo: 3, SweepLimit: 5, RepoLimit: 5})
+	require.NoError(t, err)
+
+	// Five repositories, three to a document, is two documents.
+	require.Equal(t, 4, runner.callCount(), "sweep, discovery, then two batches")
+	aliases := strings.Count(runner.argsOf(2), "type: ISSUE") + strings.Count(runner.argsOf(3), "type: ISSUE")
+	assert.Equal(t, 5, aliases, "RepoLimit bounds the fan-out")
 }

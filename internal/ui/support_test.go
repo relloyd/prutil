@@ -21,6 +21,7 @@ type fakeClient struct {
 	mu          sync.Mutex
 	prs         []model.PullRequest
 	closed      []model.PullRequest
+	closedShort int
 	checks      map[model.Key][]model.Check
 	listErr     error
 	closedErr   error
@@ -51,14 +52,14 @@ func (f *fakeClient) ListPullRequests(_ context.Context, _ string, _ int) ([]mod
 	return f.prs, nil
 }
 
-func (f *fakeClient) ListClosedPullRequests(_ context.Context, _ gh.ClosedOptions) ([]model.PullRequest, error) {
+func (f *fakeClient) ListClosedPullRequests(_ context.Context, _ gh.ClosedOptions) (gh.ClosedResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closedCalls++
 	if f.closedErr != nil {
-		return nil, f.closedErr
+		return gh.ClosedResult{}, f.closedErr
 	}
-	return f.closed, nil
+	return gh.ClosedResult{PRs: f.closed, Unavailable: f.closedShort}, nil
 }
 
 func (f *fakeClient) closedCallCount() int {

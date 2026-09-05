@@ -434,3 +434,26 @@ func TestRefreshKeepsThePlaceInABackgroundView(t *testing.T) {
 		"an invalidated view keeps the cursor, so its reload can restore the selection")
 	assert.Len(t, app.views[viewClosed].prs, 4, "and keeps its list to show while reloading")
 }
+
+func TestClosedViewReportsUnreachableRepositories(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("tab"))
+
+	// A large organisation can make GitHub refuse some of the batched
+	// searches. The rows that did arrive are still worth showing, so the app
+	// renders them and says the list is short rather than showing an error.
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs(), unavailable: 3})
+
+	screen := ansi.Strip(app.render())
+	assert.Contains(t, screen, "4 closed PRs")
+	assert.Contains(t, screen, "3 repos unreachable")
+	assert.NoError(t, app.cur().err, "an incomplete list is not an error")
+}
+
+func TestCompleteClosedViewSaysNothingAboutReachability(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("tab"))
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs()})
+
+	assert.NotContains(t, ansi.Strip(app.render()), "unreachable")
+}

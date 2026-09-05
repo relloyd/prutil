@@ -24,17 +24,6 @@
           },
           "comments": {
             "totalCount": 0
-          },
-          "commits": {
-            "nodes": [
-              {
-                "commit": {
-                  "statusCheckRollup": {
-                    "state": "SUCCESS"
-                  }
-                }
-              }
-            ]
           }
         }
       ]
@@ -63,17 +52,6 @@
           },
           "comments": {
             "totalCount": 0
-          },
-          "commits": {
-            "nodes": [
-              {
-                "commit": {
-                  "statusCheckRollup": {
-                    "state": "SUCCESS"
-                  }
-                }
-              }
-            ]
           }
         }
       ]

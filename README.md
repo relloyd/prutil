@@ -48,7 +48,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `-limit` | 100 | how many pull requests to load |
 | `-closed-query` | `is:pr author:@me is:closed archived:false sort:updated-desc` | the search used by the recently closed view |
 | `-closed-per-repo` | 3 | how many closed pull requests any one repository contributes |
-| `-closed-repo-limit` | 60 | how many repositories the closed view may query individually |
+| `-closed-repo-limit` | 30 | how many repositories the closed view may query individually |
 | `-skip-auth-check` | false | skip the `gh auth status` check at startup |
 | `-version` | | print the version and exit |
 
@@ -79,6 +79,10 @@ The closed view is grouped: no repository contributes more than
 `-closed-per-repo` rows, so a single busy repository cannot fill the screen and
 hide everywhere else you have been working.
 
+If GitHub refuses some of those per-repository queries, which a very large
+organisation can provoke, the header says how many repositories were
+unreachable and the rest of the list is shown anyway. Press `r` to try again.
+
 Note that `-closed-query` inherits `archived:false` from the open view. If most
 of your history is in repositories that have since been archived, drop that
 qualifier to see it:
@@ -98,8 +102,13 @@ are cached until you press `r`.
 The closed view usually costs one request too. It sweeps your closed pull
 requests newest first, and when that sweep reaches the end of the search it
 already holds everything, so the grouping is exact and nothing more is fetched.
-Only when the sweep runs out of room first does it go further: it asks GitHub
-which repositories you have sent pull requests to and which repositories your
-organisations pushed to most recently, then queries the ones that came up short
-directly. Those per-repo searches are batched under GraphQL aliases, so eight
-repositories cost one request and one rate limit point.
+Only when the sweep runs out of room first does it go further. It reads a little
+further down the same search, collecting nothing but repository names, then
+queries the ones that came up short directly. Nothing enumerates an
+organisation's repositories, so the work does not grow with the size of the
+organisations you belong to. Those per-repo searches are batched under GraphQL
+aliases, so three repositories cost one request and one rate limit point.
+
+Batches are small on purpose. GitHub gives a single GraphQL document about ten
+seconds before returning a 502, and that budget is spent faster in a large
+organisation, so the closed view trades round trips for headroom.

@@ -53,24 +53,12 @@ func TestBuildRepoBatchQueryKeepsTheGoodNamesAndRenumbers(t *testing.T) {
 	assert.Equal(t, "is:pr repo:c/d", vars["q1"])
 }
 
-func TestExcludesArchivedMatchesWholeQualifiersOnly(t *testing.T) {
-	tests := []struct {
-		query string
-		want  bool
-	}{
-		{"is:pr author:@me is:closed archived:false sort:updated-desc", true},
-		{"archived:false", true},
-		{"is:pr author:@me is:closed", false},
-		{"archived:true", false},
-		{"", false},
-		{"is:pr archived:falsey", false},
-		{`is:pr "archived:false"`, false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.query, func(t *testing.T) {
-			assert.Equal(t, tc.want, excludesArchived(tc.query))
-		})
+func TestRepoNamesQueryStaysCheapPerNode(t *testing.T) {
+	// Discovery reads names off the same search the view already runs. Adding
+	// fields here would make it as expensive as the sweep and defeat the point.
+	assert.Contains(t, repoNamesQuery, "repository { nameWithOwner }")
+	for _, field := range []string{"title", "additions", "statusCheckRollup", "comments", "closedAt"} {
+		assert.NotContains(t, repoNamesQuery, field, "discovery selects names and nothing else")
 	}
 }
 

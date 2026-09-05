@@ -1,44 +1,37 @@
 {
   "data": {
-    "viewer": {
-      "repositoriesContributedTo": {
-        "nodes": [
-          {
-            "nameWithOwner": "relloyd/prutil",
-            "isArchived": false
-          },
-          {
-            "nameWithOwner": "relloyd/quiet",
-            "isArchived": false
-          },
-          {
-            "nameWithOwner": "relloyd/retired",
-            "isArchived": true
-          }
-        ]
+    "search": {
+      "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": ""
       },
-      "organizations": {
-        "nodes": [
-          {
-            "repositories": {
-              "nodes": [
-                {
-                  "nameWithOwner": "acme/platform",
-                  "isArchived": false
-                },
-                {
-                  "nameWithOwner": "relloyd/quiet",
-                  "isArchived": false
-                },
-                {
-                  "nameWithOwner": "not-a-valid-repo-name",
-                  "isArchived": false
-                }
-              ]
-            }
+      "nodes": [
+        {
+          "repository": {
+            "nameWithOwner": "relloyd/prutil"
           }
-        ]
-      }
+        },
+        {
+          "repository": {
+            "nameWithOwner": "relloyd/quiet"
+          }
+        },
+        {
+          "repository": {
+            "nameWithOwner": "relloyd/quiet"
+          }
+        },
+        {
+          "repository": {
+            "nameWithOwner": "acme/platform"
+          }
+        },
+        {
+          "repository": {
+            "nameWithOwner": "not-a-valid-repo-name"
+          }
+        }
+      ]
     }
   }
 }

@@ -28,9 +28,10 @@ func TestRenderFitsEveryTerminalSize(t *testing.T) {
 	for _, size := range sizes {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
 			app, _, _ := newTestApp(t, size.width, size.height)
-			// The closed view carries longer badges than the open one, so both
-			// views are measured at every size.
-			send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs()})
+			// The closed view carries longer badges than the open one, and an
+			// unreachable count in its header, so both views are measured at
+			// every size with that count set.
+			send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs(), unavailable: 12})
 
 			for _, active := range []view{viewOpen, viewClosed} {
 				app.active = active

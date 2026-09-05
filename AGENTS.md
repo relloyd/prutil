@@ -90,10 +90,33 @@ flat `a.prs`; the five places that used to assume it are `applyPRs`,
 The closed view's two-stage fetch lives in `CLI.ListClosedPullRequests`. The
 load-bearing property is the exhaustion check: when the sweep reaches the end of
 the search, the grouping is already exact and the per-repo fill is skipped.
-`TestClosedSweepThatReachesTheEndCostsOneRequest` pins it. Enumerating every
-repository in a large organisation is not feasible, which is why discovery only
-asks for contributed-to repositories and recently pushed organisation
-repositories, both bounded.
+`TestClosedSweepThatReachesTheEndCostsOneRequest` pins it.
+
+Enumerating every repository in a large organisation is not feasible, so
+discovery does not try. It reads on from the sweep's own cursor with
+`repoNamesQuery`, which selects nothing but `repository { nameWithOwner }`, and
+so learns exactly the repositories that hold matching pull requests. Two
+tempting alternatives are both wrong and were tried: walking each organisation's
+repositories returns hundreds the user has never opened a pull request against,
+each costing an alias to learn nothing, and `repositoriesContributedTo` is
+recency-biased, on a real account naming six repositories while omitting one
+holding 125 of that user's closed pull requests.
+
+**GitHub gives one GraphQL document roughly ten seconds before the edge returns
+`HTTP 502`, and cost grows with the number of aliased searches in it.** Measured
+against public repositories: 8 aliases 4.1s, 16 aliases 7.4s, 30 aliases 10.6s
+and intermittently 502. A large organisation spends the same budget faster on
+private-repo permission checks. That is why `repoBatchSize` is 3, why
+`closedPageSize` is 25 rather than the open list's 50, and why `closedPRFields`
+omits the check rollup that `listQuery` selects. Do not raise any of them to
+save round trips: the rate limit charge is one point per document either way,
+and the failure they prevent is a 502 that empties the view.
+
+A failed batch is counted, never returned as an error. `searchRepoBatches`
+reports how many repositories went unanswered and the sweep results are shown
+regardless, because losing three repositories' rows beats losing the screen. A
+failed *discovery* is still fatal; it is one small request and its failure means
+something else is wrong.
 
 Repository names reach `buildRepoBatchQuery` from the API, so its search strings
 travel as GraphQL variables and any name failing `repoNamePattern` is dropped.

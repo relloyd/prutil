@@ -78,6 +78,9 @@ type viewState struct {
 	loaded      bool
 	err         error
 	lastRefresh time.Time
+	// unavailable counts repositories the closed view could not reach, so the
+	// header can admit the list is incomplete instead of implying it is whole.
+	unavailable int
 }
 
 // checkState is the cache entry for one pull request's checks.
@@ -211,7 +214,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != a.gen {
 			return a, nil
 		}
-		a.applyPRs(msg.view, msg.prs)
+		a.applyPRs(msg.view, msg.prs, msg.unavailable)
 		if msg.view != a.active {
 			// A background view finished loading; leave the visible one alone
 			// and warm its checks only once the reader switches to it.
@@ -421,7 +424,7 @@ func (a *App) cur() *viewState {
 
 // applyPRs installs a freshly loaded list into one view, keeping the cursor on
 // the same pull request when it is still in the list.
-func (a *App) applyPRs(v view, prs []model.PullRequest) {
+func (a *App) applyPRs(v view, prs []model.PullRequest, unavailable int) {
 	state := &a.views[v]
 	previous, hadSelection := prAt(state.prs, state.cursor)
 
@@ -429,6 +432,7 @@ func (a *App) applyPRs(v view, prs []model.PullRequest) {
 	state.loading = false
 	state.loaded = true
 	state.err = nil
+	state.unavailable = unavailable
 	state.lastRefresh = a.now()
 
 	state.cursor = 0
@@ -519,11 +523,11 @@ func (a *App) loadClosed(gen int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		defer cancel()
-		prs, err := client.ListClosedPullRequests(ctx, opts)
+		res, err := client.ListClosedPullRequests(ctx, opts)
 		if err != nil {
 			return errMsg{gen: gen, view: viewClosed, err: err}
 		}
-		return prsMsg{gen: gen, view: viewClosed, prs: prs}
+		return prsMsg{gen: gen, view: viewClosed, prs: res.PRs, unavailable: res.Unavailable}
 	}
 }
 
@@ -643,9 +647,10 @@ func status(text string) tea.Cmd {
 // Messages exchanged inside the app.
 type (
 	prsMsg struct {
-		gen  int
-		view view
-		prs  []model.PullRequest
+		gen         int
+		view        view
+		prs         []model.PullRequest
+		unavailable int
 	}
 	errMsg struct {
 		gen  int
