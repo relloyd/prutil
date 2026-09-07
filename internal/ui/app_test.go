@@ -457,3 +457,66 @@ func TestCompleteClosedViewSaysNothingAboutReachability(t *testing.T) {
 
 	assert.NotContains(t, ansi.Strip(app.render()), "unreachable")
 }
+
+func TestClosedViewShowsThePartialSweepImmediatelyThenFillsInTheRest(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.closedPartial = true
+
+	cmd := send(t, app, press("tab"))
+	require.NotNil(t, cmd)
+
+	// Draining the tab command yields the partial reply and a spinner tick.
+	// The partial reply must render immediately and dispatch the background
+	// finish stage, without that stage having run yet.
+	var finishCmd tea.Cmd
+	for _, msg := range drain(cmd) {
+		c := send(t, app, msg)
+		if _, ok := msg.(prsMsg); ok {
+			finishCmd = c
+		}
+	}
+	assert.Equal(t, 1, client.closedCallCount())
+	assert.Zero(t, client.closedFinishCallCount(), "the background fill has not run yet")
+	require.Len(t, app.cur().prs, 1, "only the sweep's first page is on screen so far")
+	assert.True(t, app.views[viewClosed].enriching)
+	assert.Contains(t, ansi.Strip(app.render()), "loading more…")
+
+	require.NotNil(t, finishCmd, "the partial reply must dispatch the background finish")
+	for _, msg := range drain(finishCmd) {
+		send(t, app, msg)
+	}
+	assert.Equal(t, 1, client.closedFinishCallCount())
+	require.Len(t, app.cur().prs, 4, "the finish reply replaces the partial list with the full one")
+	assert.False(t, app.views[viewClosed].enriching)
+	assert.NotContains(t, ansi.Strip(app.render()), "loading more…")
+}
+
+func TestRefreshDuringTheBackgroundFillDropsTheStaleReply(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.closedPartial = true
+
+	cmd := send(t, app, press("tab"))
+	var finishCmd tea.Cmd
+	staleGen := app.gen
+	for _, msg := range drain(cmd) {
+		c := send(t, app, msg)
+		if _, ok := msg.(prsMsg); ok {
+			finishCmd = c
+		}
+	}
+	require.NotNil(t, finishCmd)
+	require.Len(t, app.cur().prs, 1)
+
+	// A refresh while the background fill is still in flight bumps the
+	// generation, which is what must make the stale finish reply, when it
+	// eventually lands, a no-op.
+	send(t, app, press("r"))
+	require.NotEqual(t, staleGen, app.gen)
+	require.True(t, app.cur().loading, "a fresh load is in flight after the refresh")
+
+	for _, msg := range drain(finishCmd) {
+		send(t, app, msg)
+	}
+	assert.Len(t, app.cur().prs, 1, "the stale finish reply must not replace the list")
+	assert.True(t, app.cur().loading, "the fresh load is still what is in flight")
+}

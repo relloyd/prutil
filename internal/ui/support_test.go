@@ -29,6 +29,13 @@ type fakeClient struct {
 	listCalls   int
 	closedCalls int
 	checkCalls  map[model.Key]int
+	// closedPartial, when true, makes SweepClosedPullRequests behave like a
+	// large organisation's sweep would: it returns only the first pull
+	// request as an unexhausted partial, and FinishClosedPullRequests must be
+	// called to see the rest.
+	closedPartial     bool
+	closedFinishCalls int
+	closedFinishErr   error
 }
 
 func newFakeClient(prs []model.PullRequest, checks map[model.Key][]model.Check) *fakeClient {
@@ -62,10 +69,40 @@ func (f *fakeClient) ListClosedPullRequests(_ context.Context, _ gh.ClosedOption
 	return gh.ClosedResult{PRs: f.closed, Unavailable: f.closedShort}, nil
 }
 
+func (f *fakeClient) SweepClosedPullRequests(_ context.Context, _ gh.ClosedOptions) (gh.ClosedResult, gh.ClosedSweepState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closedCalls++
+	if f.closedErr != nil {
+		return gh.ClosedResult{}, gh.ClosedSweepState{}, f.closedErr
+	}
+	if f.closedPartial {
+		partial := f.closed[:min(1, len(f.closed))]
+		return gh.ClosedResult{PRs: partial}, gh.NewClosedSweepState(false), nil
+	}
+	return gh.ClosedResult{PRs: f.closed, Unavailable: f.closedShort}, gh.NewClosedSweepState(true), nil
+}
+
+func (f *fakeClient) FinishClosedPullRequests(_ context.Context, _ gh.ClosedOptions, _ gh.ClosedSweepState) (gh.ClosedResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closedFinishCalls++
+	if f.closedFinishErr != nil {
+		return gh.ClosedResult{}, f.closedFinishErr
+	}
+	return gh.ClosedResult{PRs: f.closed, Unavailable: f.closedShort}, nil
+}
+
 func (f *fakeClient) closedCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.closedCalls
+}
+
+func (f *fakeClient) closedFinishCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closedFinishCalls
 }
 
 func (f *fakeClient) Checks(_ context.Context, key model.Key) ([]model.Check, error) {

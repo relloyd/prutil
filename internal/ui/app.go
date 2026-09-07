@@ -81,6 +81,12 @@ type viewState struct {
 	// unavailable counts repositories the closed view could not reach, so the
 	// header can admit the list is incomplete instead of implying it is whole.
 	unavailable int
+	// enriching reports that the closed view is showing a first-page partial
+	// result while FinishClosedPullRequests fills in the rest in the
+	// background. Distinct from loading: the rows on screen are already
+	// interactive, only the header's "loading more…" note and the spinner say
+	// there is more still coming.
+	enriching bool
 }
 
 // checkState is the cache entry for one pull request's checks.
@@ -215,6 +221,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.applyPRs(msg.view, msg.prs, msg.unavailable)
+		if msg.partial {
+			// The sweep's first page is on screen and already interactive;
+			// the rest is filled in behind it without blocking the reader.
+			a.views[msg.view].enriching = true
+			return a, a.loadClosedFinish(msg.gen, msg.sweepState)
+		}
+		a.views[msg.view].enriching = false
 		if msg.view != a.active {
 			// A background view finished loading; leave the visible one alone
 			// and warm its checks only once the reader switches to it.
@@ -230,6 +243,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		state.loading = false
 		state.err = msg.err
 		return a, nil
+
+	case closedFinishErrMsg:
+		if msg.gen != a.gen {
+			return a, nil
+		}
+		// The sweep's partial result is still valid and stays on screen; only
+		// the "loading more…" note clears, with a transient explanation.
+		a.views[viewClosed].enriching = false
+		return a, status("closed list may be incomplete: " + msg.err.Error())
 
 	case checksMsg:
 		if msg.gen != a.gen {
@@ -495,6 +517,7 @@ func (a *App) ensureChecks(prKey model.Key) tea.Cmd {
 // load returns the command that fills one view and marks it in flight.
 func (a *App) load(v view) tea.Cmd {
 	a.views[v].loading = true
+	a.views[v].enriching = false
 	a.views[v].err = nil
 	if v == viewClosed {
 		return a.loadClosed(a.gen)
@@ -516,16 +539,43 @@ func (a *App) loadOpen(gen int) tea.Cmd {
 	}
 }
 
-// loadClosed fetches the recently closed list, which the client groups so that
-// no single repository can fill the whole view.
+// loadClosed fetches the first page of the recently closed sweep and returns
+// it immediately, so the view has something to show without waiting on the
+// discovery and per-repo fill that a large organisation can otherwise turn
+// into a ten-second wait. Update dispatches loadClosedFinish behind it
+// whenever the reply says the sweep was not already exhausted.
 func (a *App) loadClosed(gen int) tea.Cmd {
 	client, opts := a.client, a.closed
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		defer cancel()
-		res, err := client.ListClosedPullRequests(ctx, opts)
+		res, state, err := client.SweepClosedPullRequests(ctx, opts)
 		if err != nil {
 			return errMsg{gen: gen, view: viewClosed, err: err}
+		}
+		return prsMsg{
+			gen:         gen,
+			view:        viewClosed,
+			prs:         res.PRs,
+			unavailable: res.Unavailable,
+			partial:     !state.Exhausted(),
+			sweepState:  state,
+		}
+	}
+}
+
+// loadClosedFinish resumes the sweep from state in the background: any
+// remaining sweep pages, then repository discovery and the per-repo fill,
+// exactly as ListClosedPullRequests would have done from the start. Its reply
+// replaces the partial list loadClosed already applied.
+func (a *App) loadClosedFinish(gen int, state gh.ClosedSweepState) tea.Cmd {
+	client, opts := a.client, a.closed
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		res, err := client.FinishClosedPullRequests(ctx, opts, state)
+		if err != nil {
+			return closedFinishErrMsg{gen: gen, err: err}
 		}
 		return prsMsg{gen: gen, view: viewClosed, prs: res.PRs, unavailable: res.Unavailable}
 	}
@@ -594,7 +644,7 @@ func (a *App) itemCount() int {
 // busy reports whether anything is still loading, which drives the spinner.
 func (a *App) busy() bool {
 	for i := range a.views {
-		if a.views[i].loading {
+		if a.views[i].loading || a.views[i].enriching {
 			return true
 		}
 	}
@@ -651,11 +701,24 @@ type (
 		view        view
 		prs         []model.PullRequest
 		unavailable int
+		// partial marks a closed-view reply that is only the sweep's first
+		// page. The rows apply immediately; sweepState carries what
+		// FinishClosedPullRequests needs to fetch the rest in the background.
+		partial    bool
+		sweepState gh.ClosedSweepState
 	}
 	errMsg struct {
 		gen  int
 		view view
 		err  error
+	}
+	// closedFinishErrMsg reports that the background enrichment stage failed.
+	// Unlike errMsg it does not replace the list: the sweep's partial result
+	// is still valid and stays on screen, only the header's "loading more…"
+	// note clears, and a transient status line explains what happened.
+	closedFinishErrMsg struct {
+		gen int
+		err error
 	}
 	checksMsg struct {
 		gen    int

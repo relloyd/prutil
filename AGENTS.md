@@ -87,10 +87,32 @@ before `viewCount`, a case in `load`, and nothing else. Do not reintroduce a
 flat `a.prs`; the five places that used to assume it are `applyPRs`,
 `itemCount`, `clampScroll`, `renderHeader` and `renderList`.
 
-The closed view's two-stage fetch lives in `CLI.ListClosedPullRequests`. The
-load-bearing property is the exhaustion check: when the sweep reaches the end of
-the search, the grouping is already exact and the per-repo fill is skipped.
-`TestClosedSweepThatReachesTheEndCostsOneRequest` pins it.
+The closed view loads in two stages so a large organisation's fetch, which can
+run to 20+ seconds end to end, does not block the first paint. `CLI.load`
+calls `Client.SweepClosedPullRequests`, which fetches exactly one page sized to
+`closedFirstPageSize` (smaller than the `closedPageSize` the rest of the sweep
+uses) and applies it to the view immediately; unless that page already
+exhausted the search, `Update` dispatches `Client.FinishClosedPullRequests` in
+the background to resume the sweep, discover repositories, and run the
+per-repo fill, replacing the partial list when it lands. `viewState.enriching`
+tracks the background stage so the header can say "loading more…" without the
+rows already on screen being any less interactive. Measured against a real
+account, this cut first paint from 19-23s to about 2s; see
+`internal/gh/client.go`'s doc comments for the underlying `SweepClosedPullRequests`
+and `FinishClosedPullRequests` methods.
+
+Both stages share the same exhaustion check inside `sweepClosedPages`: when the
+sweep reaches the end of the search, the grouping is already exact and the
+per-repo fill is skipped. `TestClosedSweepThatReachesTheEndCostsOneRequest` and
+`TestFinishClosedPullRequestsSkipsWorkWhenTheSweepIsAlreadyExhausted` pin it.
+`CLI.ListClosedPullRequests` still does the whole fetch in one blocking call,
+built on the same helpers, for any caller that does not need the two-stage
+split.
+
+Repository discovery (`discoverRepos`) also stops reading pages as soon as it
+has found enough not-yet-filled repositories to satisfy `RepoLimit`, rather
+than always reading `discoverPages` of them; `TestClosedDiscoveryStopsEarlyOnceEnoughRepositoriesAreFound`
+pins that.
 
 Enumerating every repository in a large organisation is not feasible, so
 discovery does not try. It reads on from the sweep's own cursor with

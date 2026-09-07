@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,8 +23,23 @@ type Client interface {
 	// matching the search query, newest first.
 	ListPullRequests(ctx context.Context, query string, limit int) ([]model.PullRequest, error)
 	// ListClosedPullRequests returns the user's most recently closed pull
-	// requests, contributing at most PerRepo from any one repository.
+	// requests, contributing at most PerRepo from any one repository. It
+	// blocks until the whole fetch (sweep, discovery and per-repo fill) has
+	// finished; SweepClosedPullRequests/FinishClosedPullRequests split the
+	// same work into a fast first page and a background continuation, which
+	// is what the UI uses so that the view paints before the fill completes.
 	ListClosedPullRequests(ctx context.Context, opts ClosedOptions) (ClosedResult, error)
+	// SweepClosedPullRequests fetches exactly one page of the recently-closed
+	// sweep and returns it immediately, along with the state
+	// FinishClosedPullRequests needs to continue the same search. Because it
+	// never loops for a second page, it costs exactly one gh round trip.
+	SweepClosedPullRequests(ctx context.Context, opts ClosedOptions) (ClosedResult, ClosedSweepState, error)
+	// FinishClosedPullRequests resumes a sweep from the state
+	// SweepClosedPullRequests returned: it reads any remaining sweep pages up
+	// to SweepLimit, then, if the search still was not exhausted, discovers
+	// and fills the repositories that came up short, exactly as
+	// ListClosedPullRequests does in one call.
+	FinishClosedPullRequests(ctx context.Context, opts ClosedOptions, state ClosedSweepState) (ClosedResult, error)
 	// Checks returns the individual checks on a pull request's head commit.
 	Checks(ctx context.Context, key model.Key) ([]model.Check, error)
 }
@@ -94,6 +110,14 @@ const (
 	// against far more results, and a full page of fifty measured close enough
 	// to GitHub's document budget to fail intermittently.
 	closedPageSize = 25
+	// closedFirstPageSize is the page size SweepClosedPullRequests uses for its
+	// single, fast round trip. Measured against a real account, one page of
+	// the closed search costs roughly a fixed ~2s below ten items, ~4s at
+	// closedPageSize (25), and grows further from there; a small first page is
+	// what keeps the closed view's first paint fast even though the same
+	// search, resumed at closedPageSize a page, is what the background finish
+	// stage still uses to reach SweepLimit.
+	closedFirstPageSize = 10
 	// repoBatchSize is how many repositories share one GraphQL document.
 	// GitHub gives a document roughly ten seconds before the edge returns 502,
 	// and latency grows with the number of aliased searches: eight measured
@@ -202,57 +226,135 @@ func (c *CLI) ListClosedPullRequests(ctx context.Context, opts ClosedOptions) (C
 	return c.fillPerRepo(ctx, opts, swept)
 }
 
-// sweep is the outcome of the global sweep.
-type sweep struct {
+// ClosedSweepState is the outcome of one or more pages of the global,
+// closed-pull-request sweep. SweepClosedPullRequests returns it after one
+// page so a caller can render that page immediately; FinishClosedPullRequests
+// takes it back to continue the same search in the background.
+type ClosedSweepState struct {
 	prs []model.PullRequest
 	// exhausted reports that the search ran out before the window filled, so
 	// the grouping is already exact and the fill can be skipped.
 	exhausted bool
-	// cursor is where the search left off, so repository discovery can read on
-	// from the same ordering rather than starting again.
+	// cursor is where the search left off, so repository discovery (or a
+	// further page) can read on from the same ordering rather than starting
+	// again.
 	cursor string
+}
+
+// Exhausted reports whether the search behind this state has already run out,
+// meaning every closed pull request there is has been seen and
+// FinishClosedPullRequests has no further work to do.
+func (s ClosedSweepState) Exhausted() bool { return s.exhausted }
+
+// NewClosedSweepState builds a ClosedSweepState directly. It exists for test
+// doubles of Client: a fake can't otherwise produce a state with a chosen
+// Exhausted() value, since sweepPage's real fields stay unexported.
+func NewClosedSweepState(exhausted bool) ClosedSweepState {
+	return ClosedSweepState{exhausted: exhausted}
+}
+
+// sweepPage runs one page of the closed search and reports the raw pagination
+// state alongside the pull requests it decoded.
+func (c *CLI) sweepPage(ctx context.Context, query, cursor string, want int) (prs []model.PullRequest, hasNext bool, nextCursor string, err error) {
+	vars := map[string]any{"q": query, "first": want}
+	if cursor != "" {
+		vars["after"] = cursor
+	}
+
+	var page listResponse
+	if err := c.graphql(ctx, closedListQuery, vars, &page); err != nil {
+		return nil, false, "", err
+	}
+	for _, node := range page.Search.Nodes {
+		if pr, ok := node.toPullRequest(); ok {
+			prs = append(prs, pr)
+		}
+	}
+	return prs, page.Search.PageInfo.HasNextPage, page.Search.PageInfo.EndCursor, nil
+}
+
+// sweepClosedPages resumes from start and fetches up to maxPages further
+// pages of the closed search, stopping early once limit results have been
+// collected or the search runs out. It reports whether the search was
+// exhausted, which is what tells a caller that the per-repo fill can be
+// skipped.
+func (c *CLI) sweepClosedPages(ctx context.Context, query string, limit, maxPages int, start ClosedSweepState) (ClosedSweepState, error) {
+	if start.exhausted {
+		return start, nil
+	}
+	out := start
+	for pages := 0; pages < maxPages && len(out.prs) < limit; pages++ {
+		want := min(limit-len(out.prs), closedPageSize)
+		prs, hasNext, cursor, err := c.sweepPage(ctx, query, out.cursor, want)
+		if err != nil {
+			return ClosedSweepState{}, err
+		}
+		out.prs = append(out.prs, prs...)
+		if !hasNext || cursor == "" {
+			out.exhausted = true
+			return out, nil
+		}
+		out.cursor = cursor
+	}
+	return out, nil
 }
 
 // sweepClosed runs the global search, following pages until it has limit
 // results or the search runs out. It reports whether the search was exhausted,
 // which is what tells the caller that the per-repo fill can be skipped.
-func (c *CLI) sweepClosed(ctx context.Context, query string, limit int) (sweep, error) {
-	var out sweep
-	for len(out.prs) < limit {
-		want := min(limit-len(out.prs), closedPageSize)
-		vars := map[string]any{"q": query, "first": want}
-		if out.cursor != "" {
-			vars["after"] = out.cursor
-		}
+func (c *CLI) sweepClosed(ctx context.Context, query string, limit int) (ClosedSweepState, error) {
+	return c.sweepClosedPages(ctx, query, limit, math.MaxInt, ClosedSweepState{})
+}
 
-		var page listResponse
-		if err := c.graphql(ctx, closedListQuery, vars, &page); err != nil {
-			return sweep{}, err
-		}
-		for _, node := range page.Search.Nodes {
-			if pr, ok := node.toPullRequest(); ok {
-				out.prs = append(out.prs, pr)
-			}
-		}
-		if !page.Search.PageInfo.HasNextPage || page.Search.PageInfo.EndCursor == "" {
-			out.exhausted = true
-			return out, nil
-		}
-		out.cursor = page.Search.PageInfo.EndCursor
+// SweepClosedPullRequests implements Client. It fetches exactly one page of
+// the closed sweep, sized to closedFirstPageSize (or SweepLimit, if that is
+// smaller) rather than the larger closedPageSize the background continuation
+// uses, and returns the state FinishClosedPullRequests needs to continue.
+// Because it never loops for a second page regardless of how many nodes the
+// page decodes to pull requests, it always costs exactly one gh round trip,
+// sized to be fast, which is what lets the UI paint the closed view long
+// before the full per-repo fill (which may cost several more, larger
+// requests) has even started.
+func (c *CLI) SweepClosedPullRequests(ctx context.Context, opts ClosedOptions) (ClosedResult, ClosedSweepState, error) {
+	opts = opts.withDefaults()
+	want := min(closedFirstPageSize, opts.SweepLimit)
+	prs, hasNext, cursor, err := c.sweepPage(ctx, opts.Query, "", want)
+	if err != nil {
+		return ClosedResult{}, ClosedSweepState{}, err
 	}
-	return out, nil
+	state := ClosedSweepState{prs: prs, cursor: cursor}
+	if !hasNext || cursor == "" {
+		state.exhausted = true
+	}
+	return ClosedResult{PRs: groupClosed(append([]model.PullRequest(nil), prs...), opts.PerRepo)}, state, nil
+}
+
+// FinishClosedPullRequests implements Client. It resumes the sweep from state,
+// reading any remaining pages up to SweepLimit; if the search still was not
+// exhausted, it then discovers and fills the repositories that came up short,
+// exactly as ListClosedPullRequests would have from the start.
+func (c *CLI) FinishClosedPullRequests(ctx context.Context, opts ClosedOptions, state ClosedSweepState) (ClosedResult, error) {
+	opts = opts.withDefaults()
+	swept, err := c.sweepClosedPages(ctx, opts.Query, opts.SweepLimit, math.MaxInt, state)
+	if err != nil {
+		return ClosedResult{}, err
+	}
+	if swept.exhausted {
+		return ClosedResult{PRs: groupClosed(swept.prs, opts.PerRepo)}, nil
+	}
+	return c.fillPerRepo(ctx, opts, swept)
 }
 
 // fillPerRepo tops up the repositories the global sweep did not see PerRepo
 // pull requests for, by asking those repositories directly.
-func (c *CLI) fillPerRepo(ctx context.Context, opts ClosedOptions, swept sweep) (ClosedResult, error) {
+func (c *CLI) fillPerRepo(ctx context.Context, opts ClosedOptions, swept ClosedSweepState) (ClosedResult, error) {
 	grouped := groupClosed(swept.prs, opts.PerRepo)
 	filled := make(map[string]int, len(grouped))
 	for _, pr := range grouped {
 		filled[pr.Repo]++
 	}
 
-	repos, err := c.discoverRepos(ctx, opts.Query, swept.cursor)
+	repos, err := c.discoverRepos(ctx, opts.Query, swept.cursor, opts.RepoLimit, filled, opts.PerRepo)
 	if err != nil {
 		// Discovery is a small, cheap request. If it fails, something is wrong
 		// beyond a slow search, so say so rather than quietly showing a list
@@ -336,12 +438,18 @@ func (c *CLI) searchRepoBatches(ctx context.Context, opts ClosedOptions, repos [
 // pull requests, so no alias in the fill is spent learning nothing.
 //
 // Names come back in the search's own recency order, so a caller trimming to a
-// limit keeps the repositories whose work is most recent.
-func (c *CLI) discoverRepos(ctx context.Context, query, cursor string) ([]string, error) {
+// limit keeps the repositories whose work is most recent. It stops reading
+// pages as soon as it has found at least limit repository names that filled
+// (from the sweep) has not already brought to perRepo, since the fill never
+// asks about more repositories than that anyway; the common case where a
+// handful of busy repositories account for the whole shortfall then costs one
+// discovery page rather than always paying for discoverPages of them.
+func (c *CLI) discoverRepos(ctx context.Context, query, cursor string, limit int, filled map[string]int, perRepo int) ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
+	needed := 0
 
-	for page := 0; page < discoverPages && cursor != ""; page++ {
+	for page := 0; page < discoverPages && cursor != "" && needed < limit; page++ {
 		vars := map[string]any{"q": query, "first": discoverPageSize, "after": cursor}
 
 		var resp repoNamesResponse
@@ -355,6 +463,9 @@ func (c *CLI) discoverRepos(ctx context.Context, query, cursor string) ([]string
 			}
 			seen[name] = true
 			out = append(out, name)
+			if filled[name] < perRepo {
+				needed++
+			}
 		}
 		if !resp.Search.PageInfo.HasNextPage {
 			break

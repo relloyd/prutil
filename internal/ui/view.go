@@ -68,6 +68,9 @@ func (a *App) renderHeader() []string {
 	if state.unavailable > 0 {
 		meta = append(meta, fmt.Sprintf("%d repos unreachable", state.unavailable))
 	}
+	if state.enriching {
+		meta = append(meta, "loading more…")
+	}
 	if !state.lastRefresh.IsZero() {
 		meta = append(meta, "updated "+state.lastRefresh.Format("15:04:05"))
 	}

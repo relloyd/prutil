@@ -485,3 +485,104 @@ func TestClosedDiscoveryRespectsTheRepoLimit(t *testing.T) {
 	aliases := strings.Count(runner.argsOf(2), "type: ISSUE") + strings.Count(runner.argsOf(3), "type: ISSUE")
 	assert.Equal(t, 5, aliases, "RepoLimit bounds the fan-out")
 }
+
+func TestClosedDiscoveryStopsEarlyOnceEnoughRepositoriesAreFound(t *testing.T) {
+	// The first page alone names two repositories the fill needs (RepoLimit
+	// is 2), and offers a second page. Discovery must stop without reading it.
+	page1 := []byte(`{"data": {"search": {"pageInfo": {"hasNextPage": true, "endCursor": "c1"},
+		"nodes": [{"repository": {"nameWithOwner": "acme/a"}}, {"repository": {"nameWithOwner": "acme/b"}}]}}}`)
+	batchEmpty := []byte(`{"data": {"r0": {"nodes": []}, "r1": {"nodes": []}}}`)
+
+	runner := &fakeRunner{responses: [][]byte{
+		fixture(t, "closed_search_partial.json"),
+		page1,
+		batchEmpty,
+	}}
+	client := gh.New(runner, 4)
+
+	res, err := client.ListClosedPullRequests(context.Background(),
+		gh.ClosedOptions{PerRepo: 3, SweepLimit: 5, RepoLimit: 2})
+	require.NoError(t, err)
+	assert.Zero(t, res.Unavailable)
+
+	require.Equal(t, 3, runner.callCount(),
+		"sweep, one discovery page, then one batch; the second discovery page is never read")
+	assert.Contains(t, runner.argsOf(2), "repo:acme/a")
+	assert.Contains(t, runner.argsOf(2), "repo:acme/b")
+}
+
+func TestSweepClosedPullRequestsFetchesExactlyOnePage(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "closed_search_partial.json")}}
+	client := gh.New(runner, 4)
+
+	res, state, err := client.SweepClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, runner.callCount(), "the fast path costs exactly one gh round trip")
+	assert.Contains(t, runner.argsOf(0), "first=10", "one page is sized to closedFirstPageSize, smaller than the background page size")
+	assert.False(t, state.Exhausted(), "the fixture's page offers a next page")
+
+	// The partial page is already grouped so the UI can render it immediately.
+	require.Len(t, res.PRs, 4)
+	assert.Equal(t, []int{40, 39, 38, 5}, []int{res.PRs[0].Number, res.PRs[1].Number, res.PRs[2].Number, res.PRs[3].Number})
+}
+
+func TestSweepClosedPullRequestsWhenTheSearchIsAlreadyExhausted(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "closed_search.json")}}
+	client := gh.New(runner, 4)
+
+	res, state, err := client.SweepClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, runner.callCount())
+	assert.True(t, state.Exhausted(), "a page that runs out needs no further work")
+	require.Len(t, res.PRs, 4, "the one page already holds everything")
+}
+
+func TestFinishClosedPullRequestsContinuesFromTheSweepState(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{
+		fixture(t, "closed_search_partial.json"),
+		fixture(t, "discovery.json"),
+		fixture(t, "repo_batch.json"),
+	}}
+	client := gh.New(runner, 4)
+	opts := gh.ClosedOptions{PerRepo: 3, SweepLimit: 5}
+
+	_, state, err := client.SweepClosedPullRequests(context.Background(), opts)
+	require.NoError(t, err)
+	require.False(t, state.Exhausted())
+	require.Equal(t, 1, runner.callCount())
+
+	res, err := client.FinishClosedPullRequests(context.Background(), opts, state)
+	require.NoError(t, err)
+
+	// One sweep call already spent, then discovery, then one batch: the same
+	// total cost as the one-shot ListClosedPullRequests for this fixture set.
+	require.Equal(t, 3, runner.callCount())
+	assert.Zero(t, res.Unavailable)
+
+	repos := make([]string, 0, len(res.PRs))
+	for _, pr := range res.PRs {
+		repos = append(repos, pr.Key().String())
+	}
+	assert.Contains(t, repos, "relloyd/quiet#12", "the fill adds what the sweep could not reach")
+	assert.Contains(t, repos, "acme/platform#300")
+	assert.Contains(t, repos, "relloyd/prutil#40", "the sweep results survive the merge")
+}
+
+func TestFinishClosedPullRequestsSkipsWorkWhenTheSweepIsAlreadyExhausted(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "closed_search.json")}}
+	client := gh.New(runner, 4)
+	opts := gh.ClosedOptions{PerRepo: 3}
+
+	partial, state, err := client.SweepClosedPullRequests(context.Background(), opts)
+	require.NoError(t, err)
+	require.True(t, state.Exhausted())
+	require.Equal(t, 1, runner.callCount())
+
+	res, err := client.FinishClosedPullRequests(context.Background(), opts, state)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, runner.callCount(), "an already-exhausted state costs no further requests")
+	assert.Equal(t, partial.PRs, res.PRs)
+}
