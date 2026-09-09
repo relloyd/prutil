@@ -60,8 +60,12 @@ func (c Check) Duration(now time.Time) time.Duration {
 // open or closed. Checks are fetched separately and cached by the UI. The
 // closed-only fields stay zero for an open pull request.
 type PullRequest struct {
-	Repo           string
-	Number         int
+	Repo   string
+	Number int
+	// NodeID is GitHub's global identifier for the pull request. It is what
+	// lets the watcher ask about every armed pull request in one request,
+	// whatever repositories they are spread across.
+	NodeID         string
 	Title          string
 	URL            string
 	HeadRef        string
@@ -85,6 +89,46 @@ type PullRequest struct {
 func (p PullRequest) Key() Key {
 	return Key{Repo: p.Repo, Number: p.Number}
 }
+
+// Snapshot is the cheap reading the watcher takes of a pull request: enough to
+// notice that something moved, and nothing more.
+//
+// It is deliberately not the whole pull request. Asking GitHub what changed is
+// a question the watcher repeats for as long as a pull request is armed, so it
+// selects only fields that cost nothing to resolve and leaves the expensive,
+// precise question of what the change was to a second request aimed at the few
+// pull requests this one flagged.
+type Snapshot struct {
+	// Key names the pull request, and NodeID is how GitHub was asked about it.
+	Key    Key
+	NodeID string
+	// UpdatedAt is the field that catches what the counts miss: a reply inside
+	// an existing review thread changes neither count, and resolving a thread
+	// moves the thread count the wrong way.
+	UpdatedAt time.Time
+	// HeadOID is the head commit, which changing means the work was pushed to.
+	HeadOID string
+	// Rollup is the check state, which is what says whether CI is still busy.
+	Rollup Status
+	// Comments is the issue-comment total and Threads the review-thread total,
+	// resolved ones included.
+	Comments int
+	Threads  int
+}
+
+// Moved reports whether anything prutil watches for differs between two
+// readings.
+func (s Snapshot) Moved(previous Snapshot) bool {
+	return s.HeadOID != previous.HeadOID ||
+		s.Rollup != previous.Rollup ||
+		!s.UpdatedAt.Equal(previous.UpdatedAt) ||
+		s.Comments != previous.Comments ||
+		s.Threads != previous.Threads
+}
+
+// Busy reports whether the pull request has checks still running, which is the
+// one state worth polling quickly.
+func (s Snapshot) Busy() bool { return s.Rollup == StatusPending }
 
 // CheckCounts is the breakdown shown on a list row so a red dot can be sized up
 // without opening the detail pane.

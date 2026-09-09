@@ -263,3 +263,59 @@ func TestParsePRState(t *testing.T) {
 	assert.Equal(t, "CLOSED", model.PRStateClosed.String())
 	assert.Empty(t, model.PRStateOpen.String(), "an open pull request needs no badge")
 }
+
+// threads returns two open conversations and one the viewer answered
+// themselves, which is the shape every dedup question turns on.
+func threads() []model.ReviewThread {
+	return []model.ReviewThread{
+		{ID: "T1", Opener: "reviewer", LatestBy: "reviewer", LatestID: "C1"},
+		{ID: "T2", Opener: "reviewer", LatestBy: "relloyd", LatestID: "C2"},
+		{ID: "T3", Opener: "reviewer", LatestBy: "reviewer", LatestID: "C3", Resolved: true},
+		{ID: "T4", Opener: "reviewer", LatestBy: "reviewer", LatestID: "C4", Outdated: true},
+	}
+}
+
+func TestAThreadNeedsAttentionUntilItIsResolvedOrTheViewerHasTheLastWord(t *testing.T) {
+	all := threads()
+	assert.True(t, all[0].NeedsAttention("relloyd"))
+	assert.False(t, all[1].NeedsAttention("relloyd"), "the viewer already answered it")
+	assert.False(t, all[2].NeedsAttention("relloyd"), "resolved is finished with")
+	assert.True(t, all[3].NeedsAttention("relloyd"), "outdated lines may still hide an unanswered point")
+}
+
+func TestAThreadNeedsAttentionWhoeverTheViewerIsWhenThereIsNoViewer(t *testing.T) {
+	assert.True(t, model.ReviewThread{LatestBy: "relloyd"}.NeedsAttention(""),
+		"without a login prutil cannot rule a thread out, so it does not")
+}
+
+func TestTheViewerLoginIsMatchedWithoutRegardToCase(t *testing.T) {
+	assert.False(t, model.ReviewThread{LatestBy: "RelLoyd"}.NeedsAttention("relloyd"))
+}
+
+func TestFeedbackKeepsOnlyWhatIsStillWaitingAndInOrder(t *testing.T) {
+	got := model.Feedback(threads(), "relloyd")
+	require.Len(t, got, 2)
+	assert.Equal(t, "T1", got[0].ID)
+	assert.Equal(t, "T4", got[1].ID)
+}
+
+func TestUnhandledDropsThreadsAlreadyGivenToAnAgent(t *testing.T) {
+	got := model.Unhandled(threads(), map[string]string{"T1": "C1"})
+
+	ids := make([]string, 0, len(got))
+	for _, thread := range got {
+		ids = append(ids, thread.ID)
+	}
+	assert.Equal(t, []string{"T2", "T3", "T4"}, ids)
+}
+
+func TestAReplySinceTheHandoffMakesAThreadNewAgain(t *testing.T) {
+	got := model.Unhandled(threads(), map[string]string{"T1": "C0"})
+	require.NotEmpty(t, got)
+	assert.Equal(t, "T1", got[0].ID, "the newest comment changed, so somebody has said something since")
+}
+
+func TestDigestPairsEveryThreadWithItsNewestComment(t *testing.T) {
+	assert.Equal(t, map[string]string{"T1": "C1", "T2": "C2", "T3": "C3", "T4": "C4"},
+		model.Digest(threads()))
+}
