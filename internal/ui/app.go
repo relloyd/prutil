@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/relloyd/prutil/internal/browser"
+	"github.com/relloyd/prutil/internal/clipboard"
 	"github.com/relloyd/prutil/internal/gh"
 	"github.com/relloyd/prutil/internal/model"
 )
@@ -109,8 +110,11 @@ type checkState struct {
 type Config struct {
 	Client gh.Client
 	Opener browser.Opener
-	Query  string
-	Limit  int
+	// Clipboard copies URLs to the system clipboard. Empty means the platform's
+	// own clipboard program, which is what everything but a test wants.
+	Clipboard clipboard.Writer
+	Query     string
+	Limit     int
 	// Closed configures the recently-closed view, which loads the first time
 	// that view is shown.
 	Closed  gh.ClosedOptions
@@ -122,6 +126,7 @@ type Config struct {
 type App struct {
 	client  gh.Client
 	opener  browser.Opener
+	clip    clipboard.Writer
 	query   string
 	limit   int
 	closed  gh.ClosedOptions
@@ -168,6 +173,10 @@ func New(cfg Config) *App {
 	if now == nil {
 		now = time.Now
 	}
+	clip := cfg.Clipboard
+	if clip == nil {
+		clip = clipboard.New()
+	}
 	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	styles := newStyles(true)
 	sp.Style = styles.Accent
@@ -175,6 +184,7 @@ func New(cfg Config) *App {
 	a := &App{
 		client:  cfg.Client,
 		opener:  cfg.Opener,
+		clip:    clip,
 		query:   cfg.Query,
 		limit:   cfg.Limit,
 		closed:  cfg.Closed,
@@ -348,6 +358,9 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Open):
 		return a, a.open()
 
+	case key.Matches(msg, a.keys.Copy):
+		return a, a.copyURL()
+
 	case key.Matches(msg, a.keys.Up):
 		return a, a.move(-1)
 
@@ -400,20 +413,9 @@ func (a *App) jump(index int) tea.Cmd {
 
 // open launches the selected pull request or check in the browser.
 func (a *App) open() tea.Cmd {
-	pr, ok := a.selectedPR()
+	target, label, ok := a.selectedTarget()
 	if !ok {
 		return nil
-	}
-
-	target, label := pr.URL, pr.Key().String()
-	if a.focus == paneDetail {
-		checks := a.checks[pr.Key()].checks
-		if a.detailCursor < len(checks) {
-			check := checks[a.detailCursor]
-			if check.URL != "" {
-				target, label = check.URL, check.Name
-			}
-		}
 	}
 
 	opener := a.opener
@@ -423,6 +425,47 @@ func (a *App) open() tea.Cmd {
 		}
 		return statusMsg("opened " + label)
 	}
+}
+
+// copyURL puts the selected pull request's GitHub URL on the system clipboard,
+// which is what the reader wants when a pull request is ready to be sent to
+// somebody. It follows the focus the same way enter does, so with the checks
+// pane in front it copies the link to the selected check instead.
+func (a *App) copyURL() tea.Cmd {
+	target, label, ok := a.selectedTarget()
+	if !ok {
+		return nil
+	}
+
+	clip := a.clip
+	return func() tea.Msg {
+		if err := clip.Write(target); err != nil {
+			return statusMsg("could not copy: " + err.Error())
+		}
+		return statusMsg("copied " + label + " · " + target)
+	}
+}
+
+// selectedTarget is the URL the enter and copy keys act on: the pull request
+// under the list cursor, or the check under the detail cursor when that pane
+// has focus and the check has a link of its own.
+func (a *App) selectedTarget() (target, label string, ok bool) {
+	pr, ok := a.selectedPR()
+	if !ok {
+		return "", "", false
+	}
+
+	target, label = pr.URL, pr.Key().String()
+	if a.focus == paneDetail {
+		checks := a.checks[pr.Key()].checks
+		if a.detailCursor < len(checks) {
+			check := checks[a.detailCursor]
+			if check.URL != "" {
+				target, label = check.URL, check.Name
+			}
+		}
+	}
+	return target, label, true
 }
 
 // refresh discards everything and reloads the visible view, announcing itself

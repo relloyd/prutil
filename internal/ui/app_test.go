@@ -614,7 +614,78 @@ func TestAutoRefreshSaysHowMuchIsLeftInTheHeaderAndTheStatusLine(t *testing.T) {
 	assert.Contains(t, headerLine(app), "auto-refresh ×4")
 }
 
-func TestTheHelpListsTheAutoRefreshKey(t *testing.T) {
+func TestCopyPutsTheSelectedPullRequestURLOnTheClipboard(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
-	assert.Contains(t, ansi.Strip(app.render()), "a auto-refresh")
+	board := clipboardOf(t, app)
+
+	send(t, app, press("j"))
+	cmd := send(t, app, press("y"))
+	require.NotNil(t, cmd)
+
+	msg := cmd()
+	assert.Equal(t, []string{"https://github.com/relloyd/other/pull/7"}, board.copied())
+	assert.Equal(t, statusMsg("copied relloyd/other#7 · https://github.com/relloyd/other/pull/7"), msg)
+}
+
+func TestCopyIsAlsoBoundToC(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	board := clipboardOf(t, app)
+
+	cmd := send(t, app, press("c"))
+	require.NotNil(t, cmd)
+	cmd()
+
+	assert.Equal(t, []string{"https://github.com/relloyd/prutil/pull/42"}, board.copied())
+}
+
+func TestCopyTakesTheCheckURLWhenTheChecksPaneHasFocus(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	board := clipboardOf(t, app)
+
+	// Copy follows the focus the way enter does, so the link to a failing
+	// check is a keystroke away once that pane is in front.
+	send(t, app, press("l"))
+	send(t, app, press("j"))
+	cmd := send(t, app, press("y"))
+	require.NotNil(t, cmd)
+	cmd()
+
+	assert.Equal(t, []string{"https://github.com/relloyd/prutil/actions/runs/1/job/2"}, board.copied())
+}
+
+func TestCopyFallsBackToThePullRequestWhenACheckHasNoURL(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	board := clipboardOf(t, app)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+	send(t, app, checksMsg{gen: app.gen, key: key, checks: []model.Check{{Name: "unlinked"}}})
+
+	send(t, app, press("l"))
+	cmd := send(t, app, press("y"))
+	require.NotNil(t, cmd)
+	cmd()
+
+	assert.Equal(t, []string{"https://github.com/relloyd/prutil/pull/42"}, board.copied())
+}
+
+func TestCopyReportsAClipboardFailure(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	board := clipboardOf(t, app)
+	board.err = errors.New("no clipboard program found (looked for wl-copy, xclip, xsel)")
+
+	cmd := send(t, app, press("y"))
+	require.NotNil(t, cmd)
+
+	msg, ok := cmd().(statusMsg)
+	require.True(t, ok)
+	assert.Contains(t, string(msg), "could not copy")
+	assert.Contains(t, string(msg), "xclip")
+	assert.Empty(t, board.copied())
+}
+
+func TestCopyDoesNothingWithAnEmptyList(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, prsMsg{gen: app.gen, prs: nil})
+
+	assert.Nil(t, send(t, app, press("y")), "there is no pull request to copy")
+	assert.Empty(t, clipboardOf(t, app).copied())
 }

@@ -61,6 +61,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `l` or `→` | focus the checks pane |
 | `h`, `←` or `esc` | go back to the list |
 | `enter` | open the selected pull request, or the selected check, in your browser |
+| `y` or `c` | copy the selected pull request's URL, or the selected check's, to the clipboard |
 | `r` | refresh from GitHub |
 | `a` | auto-refresh: reload every 30s, five times over. press again to add five more |
 | `tab` | switch between your open and your recently closed pull requests |
@@ -69,6 +70,13 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 
 Below 80 columns the two panes collapse into one: the list fills the terminal,
 `l` swaps to the checks, and `h` swaps back.
+
+The footer has one line, so it lists the actions and leaves moving about to the
+arrow keys. `?` shows every binding.
+
+Copying uses whichever clipboard program your platform provides: `pbcopy` on
+macOS, `clip` on Windows, and `wl-copy`, `xclip` or `xsel` on Linux, whichever
+is installed first. If none is, prutil says which ones it looked for.
 
 ## Auto-refresh
 

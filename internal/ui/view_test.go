@@ -271,5 +271,32 @@ func TestHeaderNamesTheModeWhileTheFirstListIsStillLoading(t *testing.T) {
 	assert.Contains(t, plain(app.render()), "loading open PRs")
 }
 
+func TestTheFooterFitsEveryShortcutAt120Columns(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	footer := plain(strings.Join(app.footerLines(), "\n"))
+
+	// The help component silently drops the bindings that do not fit, and quit
+	// is last, so this is the test that notices when a new binding pushes it
+	// off the screen.
+	for _, want := range []string{
+		"→/l checks", "←/h back", "enter browser", "y copy URL",
+		"tab open/closed", "r refresh", "a auto-refresh", "? help", "q quit",
+	} {
+		assert.Contains(t, footer, want)
+	}
+	assert.NotContains(t, footer, "…", "nothing is dropped from the footer at 120 columns")
+}
+
+func TestTheFullHelpStillListsTheMovementKeysTheFooterLeavesOut(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	require.NotContains(t, plain(app.render()), "↑/k up", "the footer has no room for them")
+
+	send(t, app, press("?"))
+	full := plain(app.render())
+	for _, want := range []string{"↑/k", "↓/j", "g", "G", "y", "a"} {
+		assert.Contains(t, full, want)
+	}
+}
+
 // headerLine returns the title bar with its styling stripped.
 func headerLine(app *App) string { return plain(app.renderHeader()[0]) }

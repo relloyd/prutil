@@ -121,6 +121,37 @@ func (f *fakeClient) callsFor(key model.Key) int {
 	return f.checkCalls[key]
 }
 
+// fakeClipboard records what the app asked to copy.
+type fakeClipboard struct {
+	mu   sync.Mutex
+	text []string
+	err  error
+}
+
+func (f *fakeClipboard) Write(text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.text = append(f.text, text)
+	return nil
+}
+
+func (f *fakeClipboard) copied() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.text...)
+}
+
+// clipboardOf returns the fake clipboard newTestApp handed the app.
+func clipboardOf(t *testing.T, app *App) *fakeClipboard {
+	t.Helper()
+	board, ok := app.clip.(*fakeClipboard)
+	require.True(t, ok, "the app under test must have been given a fake clipboard")
+	return board
+}
+
 // fakeOpener records the URLs the app asked to open.
 type fakeOpener struct {
 	mu   sync.Mutex
@@ -256,16 +287,18 @@ func sampleChecks() map[model.Key][]model.Check {
 }
 
 // newTestApp builds an app sized to the given terminal, with the list already
-// loaded and every check cached, so tests can go straight to behaviour.
+// loaded and every check cached, so tests can go straight to behaviour. Its
+// clipboard is a fake; reach it through app.clip when a test needs to look.
 func newTestApp(t *testing.T, width, height int) (*App, *fakeClient, *fakeOpener) {
 	t.Helper()
 
 	client := newFakeClient(samplePRs(), sampleChecks())
 	opener := &fakeOpener{}
 	app := New(Config{
-		Client: client,
-		Opener: opener,
-		Now:    func() time.Time { return testNow },
+		Client:    client,
+		Opener:    opener,
+		Clipboard: &fakeClipboard{},
+		Now:       func() time.Time { return testNow },
 	})
 
 	send(t, app, tea.WindowSizeMsg{Width: width, Height: height})

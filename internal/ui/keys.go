@@ -12,6 +12,7 @@ type keyMap struct {
 	Into    key.Binding
 	Back    key.Binding
 	Open    key.Binding
+	Copy    key.Binding
 	Refresh key.Binding
 	Auto    key.Binding
 	NextTab key.Binding
@@ -48,7 +49,11 @@ func defaultKeys() keyMap {
 		),
 		Open: key.NewBinding(
 			key.WithKeys("enter"),
-			key.WithHelp("enter", "open in browser"),
+			key.WithHelp("enter", "browser"),
+		),
+		Copy: key.NewBinding(
+			key.WithKeys("y", "c"),
+			key.WithHelp("y", "copy URL"),
 		),
 		Refresh: key.NewBinding(
 			key.WithKeys("r"),
@@ -73,16 +78,20 @@ func defaultKeys() keyMap {
 	}
 }
 
-// ShortHelp implements help.KeyMap.
+// ShortHelp implements help.KeyMap. It is the footer, which has one line to
+// work with, so it names the actions and leaves moving about to the arrow keys
+// and to the full list under ?. Whatever is added here, keep q quit inside 120
+// columns: the help component drops the tail that does not fit, and quit is
+// the one binding a reader must never have to hunt for.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Into, k.Back, k.Open, k.NextTab, k.Refresh, k.Auto, k.Help, k.Quit}
+	return []key.Binding{k.Into, k.Back, k.Open, k.Copy, k.NextTab, k.Refresh, k.Auto, k.Help, k.Quit}
 }
 
 // FullHelp implements help.KeyMap.
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Top, k.Bottom},
-		{k.Into, k.Back, k.Open},
+		{k.Into, k.Back, k.Open, k.Copy},
 		{k.Refresh, k.Auto, k.NextTab},
 		{k.Help, k.Quit},
 	}

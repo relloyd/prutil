@@ -41,6 +41,7 @@ checks.
 | `internal/model` | domain types: `PullRequest`, `Check`, status enums, formatting of ages and durations |
 | `internal/gh` | the `Client` interface and its gh-CLI implementation, the GraphQL documents, and wire decoding |
 | `internal/browser` | the `Opener` interface and the platform handler |
+| `internal/clipboard` | the `Writer` interface and the platform clipboard program |
 | `internal/ui` | the Bubble Tea model, both panes, key bindings and the palette |
 
 ## How the data flows
@@ -59,13 +60,19 @@ list query that force it to walk `contexts`.
 
 ## Conventions
 
-- **Tests never touch the network.** `gh.Runner` and `browser.Opener` are the
-  seams; fake them. GraphQL fixtures live in `internal/gh/testdata`.
+- **Tests never touch the network, and never the real clipboard.** `gh.Runner`,
+  `browser.Opener` and `clipboard.Writer` are the seams; fake them. GraphQL
+  fixtures live in `internal/gh/testdata`. `ui.New` falls back to the real
+  clipboard when `Config.Clipboard` is empty, so a test that presses `y` must
+  build its app through `newTestApp`, or pass a `fakeClipboard` of its own.
 - Use testify's `assert` and `require`, table-driven where the cases are
   uniform, and give each case a sentence-long name.
 - All colour lives in `internal/ui/styles.go`. All key bindings live in
   `internal/ui/keys.go` and are surfaced through `keyMap.ShortHelp`, so a new
-  binding shows up in the footer automatically.
+  binding shows up in the footer automatically. The footer is one line and the
+  help component drops the tail that does not fit, so `ShortHelp` is a curated
+  subset rather than everything; `TestTheFooterFitsEveryShortcutAt120Columns`
+  fails when a new binding pushes `q quit` off a 120-column terminal.
 - Tests must not run a `tea.Tick` command. `drain` calls the command, so
   draining one blocks for the whole interval. Send the message the tick would
   have produced instead, the way the `selectionMsg` and `autoRefreshMsg` tests
@@ -78,6 +85,14 @@ list query that force it to walk `contexts`.
 - Rendering must fit the terminal at any width. `TestRenderFitsEveryTerminalSize`
   asserts it; keep it passing.
 - Below 80 columns (`narrowWidth`) the layout collapses to a single pane.
+
+## Opening and copying
+
+`enter` and `y` both act on `App.selectedTarget`: the pull request under the
+list cursor, or the check under the detail cursor when that pane has focus and
+the check carries a URL of its own. Keep them sharing it. A copy that ignored
+the focus while an open respected it would be the sort of difference nobody
+can remember.
 
 ## Auto-refresh
 

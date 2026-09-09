@@ -20,6 +20,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/relloyd/prutil/internal/browser"
+	"github.com/relloyd/prutil/internal/clipboard"
 	"github.com/relloyd/prutil/internal/gh"
 	"github.com/relloyd/prutil/internal/ui"
 )
@@ -73,10 +74,11 @@ func run() error {
 	}
 
 	app := ui.New(ui.Config{
-		Client: client,
-		Opener: browser.New(os.Getenv("BROWSER")),
-		Query:  *query,
-		Limit:  *limit,
+		Client:    client,
+		Opener:    browser.New(os.Getenv("BROWSER")),
+		Clipboard: clipboard.New(),
+		Query:     *query,
+		Limit:     *limit,
 		Closed: gh.ClosedOptions{
 			Query:   *closedQuery,
 			PerRepo: *perRepo,
