@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -234,4 +235,38 @@ func TestHeaderShowsTheVersionWhenSet(t *testing.T) {
 
 	app.version = "v9.9.9"
 	assert.Contains(t, plain(app.render()), "prutil v9.9.9")
+}
+
+func TestHeaderShowsTheModeInItsOwnHighContrastStyle(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+
+	header := app.renderHeader()[0]
+	assert.Contains(t, header, app.styles.Mode.Render("3 open PRs"),
+		"the mode carries the high-contrast style, not the grey the rest of the meta line uses")
+	assert.NotContains(t, header, app.styles.Meta.Render("3 open PRs"))
+
+	send(t, app, press("tab"))
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs()})
+	assert.Contains(t, app.renderHeader()[0], app.styles.Mode.Render("4 closed PRs"))
+}
+
+func TestTheModeStyleIsBrighterThanTheMetaLine(t *testing.T) {
+	for _, dark := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dark=%t", dark), func(t *testing.T) {
+			s := newStyles(dark)
+			assert.NotEqual(t, s.Meta.GetForeground(), s.Mode.GetForeground(),
+				"the mode must not share the muted colour it was too hard to read in")
+			assert.Equal(t, s.Text.GetForeground(), s.Mode.GetForeground(),
+				"the mode uses the palette's highest-contrast foreground")
+			assert.True(t, s.Mode.GetBold())
+		})
+	}
+}
+
+func TestHeaderNamesTheModeWhileTheFirstListIsStillLoading(t *testing.T) {
+	client := newFakeClient(nil, nil)
+	app := New(Config{Client: client, Opener: &fakeOpener{}, Now: func() time.Time { return testNow }})
+	send(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	assert.Contains(t, plain(app.render()), "loading open PRs")
 }

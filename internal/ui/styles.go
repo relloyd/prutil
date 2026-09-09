@@ -17,6 +17,7 @@ type Styles struct {
 	Arrow      lipgloss.Style
 	PaneBorder lipgloss.Style
 	Header     lipgloss.Style
+	Mode       lipgloss.Style
 	Help       lipgloss.Style
 	Error      lipgloss.Style
 	Status     lipgloss.Style
@@ -39,7 +40,9 @@ type Styles struct {
 
 // newStyles builds the palette for a light or dark terminal. The colours are a
 // modern, high-contrast set: indigo for structure, teal for identifiers, and
-// the conventional green / red / amber for check state.
+// the conventional green / red / amber for check state. Mode is deliberately
+// the brightest thing in the header: it says which view is on screen, and the
+// muted grey the rest of the meta line uses was too easy to overlook.
 func newStyles(isDark bool) Styles {
 	c := lipgloss.LightDark(isDark)
 
@@ -73,6 +76,7 @@ func newStyles(isDark bool) Styles {
 		Arrow:      base.Foreground(faint),
 		PaneBorder: base.Foreground(border),
 		Header:     base.Foreground(accent).Bold(true),
+		Mode:       base.Foreground(text).Bold(true),
 		Help:       base.Foreground(faint),
 		Error:      base.Foreground(red).Bold(true),
 		Status:     base.Foreground(amber),

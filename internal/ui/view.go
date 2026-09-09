@@ -57,14 +57,6 @@ func (a *App) renderHeader() []string {
 
 	state := a.cur()
 	meta := []string{}
-	switch {
-	case state.loading && len(state.prs) == 0:
-		meta = append(meta, "loading")
-	case len(state.prs) == 1:
-		meta = append(meta, "1 "+a.active.String()+" PR")
-	default:
-		meta = append(meta, fmt.Sprintf("%d %s PRs", len(state.prs), a.active))
-	}
 	if state.unavailable > 0 {
 		meta = append(meta, fmt.Sprintf("%d repos unreachable", state.unavailable))
 	}
@@ -74,14 +66,21 @@ func (a *App) renderHeader() []string {
 	if !state.lastRefresh.IsZero() {
 		meta = append(meta, "updated "+state.lastRefresh.Format("15:04:05"))
 	}
+
+	left += "  "
 	if a.narrow() {
+		pane := "pull requests"
 		if a.focus == paneDetail {
-			meta = append([]string{"checks"}, meta...)
-		} else {
-			meta = append([]string{"pull requests"}, meta...)
+			pane = "checks"
 		}
+		left += a.styles.Meta.Render(pane + " · ")
 	}
-	left += "  " + a.styles.Meta.Render(strings.Join(meta, " · "))
+	// The mode is the one part of the header the reader looks for at a glance,
+	// so it is styled apart from the grey the rest of the line uses.
+	left += a.styles.Mode.Render(a.modeText())
+	if len(meta) > 0 {
+		left += a.styles.Meta.Render(" · " + strings.Join(meta, " · "))
+	}
 
 	right := ""
 	if a.busy() {
@@ -91,6 +90,20 @@ func (a *App) renderHeader() []string {
 	return []string{
 		justify(a.width, left, right),
 		a.styles.PaneBorder.Render(strings.Repeat("─", a.width)),
+	}
+}
+
+// modeText names the view on screen and how much it holds. It is the header's
+// answer to "am I looking at open or closed pull requests?".
+func (a *App) modeText() string {
+	state := a.cur()
+	switch {
+	case state.loading && len(state.prs) == 0:
+		return "loading " + a.active.String() + " PRs"
+	case len(state.prs) == 1:
+		return "1 " + a.active.String() + " PR"
+	default:
+		return fmt.Sprintf("%d %s PRs", len(state.prs), a.active)
 	}
 }
 
