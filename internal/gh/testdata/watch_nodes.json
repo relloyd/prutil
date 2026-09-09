@@ -1,0 +1,34 @@
+{
+  "data": {
+    "nodes": [
+      {
+        "__typename": "PullRequest",
+        "id": "PR_42",
+        "updatedAt": "2026-09-09T16:35:21Z",
+        "comments": { "totalCount": 3 },
+        "reviewThreads": { "totalCount": 6 },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "2e078c7c7b91a2ed23ab7da1df679cbd89e3b2e6",
+                "statusCheckRollup": { "state": "PENDING" }
+              }
+            }
+          ]
+        }
+      },
+      null,
+      {
+        "__typename": "PullRequest",
+        "id": "PR_7",
+        "updatedAt": "2026-09-09T15:49:20Z",
+        "comments": { "totalCount": 0 },
+        "reviewThreads": { "totalCount": 0 },
+        "commits": {
+          "nodes": [{ "commit": { "oid": "7901e7ef", "statusCheckRollup": null } }]
+        }
+      }
+    ]
+  }
+}

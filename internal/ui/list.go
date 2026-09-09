@@ -48,6 +48,7 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 	age := a.styles.Meta.Render(a.ageText(pr))
 	identity := fitSegs(max(inner-lenOf(age)-1, 1), " ",
 		a.styles.dot(a.rollupFor(pr)),
+		a.watchSeg(pr),
 		seg{text: "#" + fmt.Sprint(pr.Number), style: a.styles.Number},
 		seg{text: pr.Repo, style: a.styles.Repo},
 	)
@@ -68,6 +69,9 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 	metaSegs := []seg{{text: a.checksSummary(pr), style: a.styles.Meta}}
 	if review := a.styles.reviewBadge(pr); review.text != "" {
 		metaSegs = append(metaSegs, review)
+	}
+	if open := a.feedbackSeg(pr); open.text != "" {
+		metaSegs = append(metaSegs, open)
 	}
 	if diff := diffText(pr); diff != "" {
 		metaSegs = append(metaSegs, seg{text: diff, style: a.styles.Meta})

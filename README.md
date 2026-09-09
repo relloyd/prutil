@@ -50,6 +50,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `-closed-per-repo` | 3 | how many closed pull requests any one repository contributes |
 | `-closed-repo-limit` | 30 | how many repositories the closed view may query individually |
 | `-skip-auth-check` | false | skip the `gh auth status` check at startup |
+| `-dry-run` | false | record what would be sent to a coding agent without sending it |
 | `-version` | | print the version and exit |
 
 ## Keys
@@ -64,6 +65,8 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `y` or `c` | copy the selected pull request's URL, or the selected check's, to the clipboard |
 | `r` | refresh from GitHub |
 | `a` | auto-refresh: reload every 30s, five times over. press again to add five more |
+| `w` | watch the selected pull request, or stop watching it |
+| `W` | hand the selected pull request's open review feedback to a coding agent now |
 | `tab` | switch between your open and your recently closed pull requests |
 | `?` | toggle the full key list |
 | `q` or `ctrl+c` | quit |
@@ -72,7 +75,8 @@ Below 80 columns the two panes collapse into one: the list fills the terminal,
 `l` swaps to the checks, and `h` swaps back.
 
 The footer has one line, so it lists the actions and leaves moving about to the
-arrow keys. `?` shows every binding.
+arrow keys. `?` shows every binding, including `h`, `←` and `esc` for going back
+and `W` for handing a pull request over.
 
 Copying uses whichever clipboard program your platform provides: `pbcopy` on
 macOS, `clip` on Windows, and `wl-copy`, `xclip` or `xsel` on Linux, whichever
@@ -90,6 +94,97 @@ left, and once it runs out prutil is back to refreshing only when you press
 
 Each automatic reload is the same work `r` does, so it costs the same one
 request for the list plus the checks it warms.
+
+## Watching, and handing feedback to an agent
+
+`w` marks a pull request as watched. The row grows a `◉`, the header counts how
+many are marked, and the mark survives quitting: it is kept in prutil's own
+directory, not in the terminal.
+
+From then on prutil watches that pull request for review feedback, and when
+some appears it gives it to a coding agent through
+[herdr](https://herdr.dev). Open feedback means a review thread that is neither
+resolved nor already answered by you, so a conversation you have had the last
+word in is left alone. `W` does the same thing on demand, for a pull request
+you have not armed or one you want looked at again now.
+
+prutil picks the agent rather than asking you to. It lists the agents herdr
+knows about, reads the repository and branch out of each one's working
+directory, and prefers the one sitting on the pull request's head branch. An
+agent one branch away is used too, and told so in the prompt. The terminal
+prutil is itself running in is never given work. If the agent is busy prutil
+waits for it to finish, up to fifteen minutes, and if it is stuck at a prompt of
+its own nothing is sent at all.
+
+Nothing is ever handed over twice. Each thread prutil sends is remembered
+against the comment it ended on, so pressing `W` again on a review whose
+comments you have decided not to act on costs one GitHub request and sends
+nobody anything. That is what makes it safe to leave a pull request watched.
+
+Every attempt is recorded, sent or not, one JSON object per line, in
+`handoffs.jsonl` beside the configuration. Start with `-dry-run`, which writes
+that log and shows the status line without saying anything to an agent.
+
+### What the watching costs
+
+Watching a pull request is two questions, asked at very different rates.
+
+The first is cheap and batched. One GraphQL request covers every watched pull
+request at once, whatever repositories they are spread across, and reads only
+enough to notice that something moved: the head commit, the check state, the
+last-updated time, and the two comment totals. It is one request and one rate
+limit point however many pull requests you have marked.
+
+The second is the expensive one, and it is asked only of the pull requests the
+first one flagged, or of one that has gone five polls without being asked. That
+second part matters: a reply inside an existing review thread moves neither
+comment total, so a counter on its own would miss it.
+
+How often the first question is asked depends on what the pull request is
+doing:
+
+| The pull request | Asked about |
+| --- | --- |
+| has checks running | every 30 seconds |
+| has nothing in progress | after 2 minutes, then 4, 8, 16, and 30 |
+| has been given to an agent | after 10 minutes, then 20, 40, and 60 |
+| has not changed for about two hours | not at all |
+
+Anything at all changing puts a pull request back to the top of that ladder. A
+pull request prutil has stopped asking about is still armed, and its `◉` turns
+hollow to say so; `r` wakes it, along with everything else.
+
+### Configuration
+
+prutil reads `config.yaml` from `$PRUTIL_HOME`, else `$XDG_CONFIG_HOME/prutil`,
+else `~/.config/prutil`. There is no file to begin with and every key is
+optional:
+
+```yaml
+herdr:
+  agent_kind: claude        # only hand work to this kind of agent
+  skill: pr-comment-triage  # the skill the default prompt invokes
+  wait_for_idle: 15m        # how long to wait for a busy agent
+  dry_run: false
+  toast: true               # show a herdr notification alongside each handoff
+watch:
+  active_interval: 30s      # while checks are still running
+  base_interval: 2m         # once nothing is in progress
+  max_interval: 30m         # where the backoff stops growing
+  notified_interval: 10m    # after a handoff, when an agent is at work
+  max_notified_interval: 60m
+  idle_interval: 10s        # how often a busy agent is re-read
+  dormant_after: 3          # polls at the cap before prutil stops asking
+  force_precise_every: 5    # polls before the expensive question is asked anyway
+```
+
+With `skill` set, the prompt is `/<skill> <pull request url>`. Without it,
+prutil spells the job out instead. Either can be replaced with `herdr.prompt`,
+a Go template given `Repo`, `Number`, `URL`, `Title`, `HeadRef`, `BaseRef`,
+`Skill`, `UnresolvedCount`, `NewCount` and `Note`.
+
+Poll intervals are clamped to fifteen seconds at the shortest, so a typo cannot
+turn a dashboard into a load test.
 
 ## Views
 

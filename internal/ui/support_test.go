@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/relloyd/prutil/internal/gh"
+	"github.com/relloyd/prutil/internal/handoff"
+	"github.com/relloyd/prutil/internal/home"
 	"github.com/relloyd/prutil/internal/model"
 )
 
@@ -36,6 +38,18 @@ type fakeClient struct {
 	closedPartial     bool
 	closedFinishCalls int
 	closedFinishErr   error
+	// review is what ReviewThreads returns for every pull request, which is
+	// all the handoff tests need: they care about how many threads are open,
+	// not about which pull request they hang off.
+	review      gh.Review
+	reviewErr   error
+	reviewCalls int
+	// snapshots is what WatchSnapshot returns, keyed by node id, and watchIDs
+	// records every batch it was asked for.
+	snapshots  map[string]model.Snapshot
+	watchErr   error
+	watchIDs   [][]string
+	watchCalls int
 }
 
 func newFakeClient(prs []model.PullRequest, checks map[model.Key][]model.Check) *fakeClient {
@@ -115,6 +129,41 @@ func (f *fakeClient) Checks(_ context.Context, key model.Key) ([]model.Check, er
 	return f.checks[key], nil
 }
 
+func (f *fakeClient) ReviewThreads(_ context.Context, _ model.Key) (gh.Review, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reviewCalls++
+	if f.reviewErr != nil {
+		return gh.Review{}, f.reviewErr
+	}
+	return f.review, nil
+}
+
+func (f *fakeClient) WatchSnapshot(_ context.Context, ids []string) ([]model.Snapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.watchCalls++
+	f.watchIDs = append(f.watchIDs, append([]string(nil), ids...))
+	if f.watchErr != nil {
+		return nil, f.watchErr
+	}
+
+	out := make([]model.Snapshot, 0, len(ids))
+	for _, id := range ids {
+		if snap, ok := f.snapshots[id]; ok {
+			out = append(out, snap)
+		}
+	}
+	return out, nil
+}
+
+// batches returns the node ids of every watch request so far.
+func (f *fakeClient) batches() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]string(nil), f.watchIDs...)
+}
+
 func (f *fakeClient) callsFor(key model.Key) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -180,7 +229,7 @@ func (f *fakeOpener) opened() []string {
 func samplePRs() []model.PullRequest {
 	return []model.PullRequest{
 		{
-			Repo: "relloyd/prutil", Number: 42,
+			Repo: "relloyd/prutil", Number: 42, NodeID: "PR_42",
 			Title:   "Add a retry to the uploader so that flaky networks stop breaking the nightly job",
 			URL:     "https://github.com/relloyd/prutil/pull/42",
 			HeadRef: "feat/uploader-retry", BaseRef: "main",
@@ -190,7 +239,7 @@ func samplePRs() []model.PullRequest {
 			Rollup: model.StatusSuccess,
 		},
 		{
-			Repo: "relloyd/other", Number: 7,
+			Repo: "relloyd/other", Number: 7, NodeID: "PR_7",
 			Title:   "Rework the config loader",
 			URL:     "https://github.com/relloyd/other/pull/7",
 			HeadRef: "chore/config", BaseRef: "develop",
@@ -201,7 +250,7 @@ func samplePRs() []model.PullRequest {
 			Rollup: model.StatusFailure,
 		},
 		{
-			Repo: "relloyd/third", Number: 9,
+			Repo: "relloyd/third", Number: 9, NodeID: "PR_9",
 			Title:   "Bump dependencies",
 			URL:     "https://github.com/relloyd/third/pull/9",
 			HeadRef: "deps/bump", BaseRef: "main",
@@ -286,19 +335,97 @@ func sampleChecks() map[model.Key][]model.Check {
 	}
 }
 
+// fakeDispatcher records the handoffs the app asked for and replies with a
+// canned result.
+type fakeDispatcher struct {
+	mu     sync.Mutex
+	reqs   []handoff.Request
+	result handoff.Result
+	err    error
+	dry    bool
+}
+
+func (f *fakeDispatcher) Dispatch(_ context.Context, req handoff.Request) (handoff.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reqs = append(f.reqs, req)
+	return f.result, f.err
+}
+
+func (f *fakeDispatcher) DryRun() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.dry
+}
+
+func (f *fakeDispatcher) requests() []handoff.Request {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]handoff.Request(nil), f.reqs...)
+}
+
+// dispatcherOf returns the fake handoff dispatcher newTestApp handed the app.
+func dispatcherOf(t *testing.T, app *App) *fakeDispatcher {
+	t.Helper()
+	got, ok := app.hand.(*fakeDispatcher)
+	require.True(t, ok, "the app under test must have been given a fake dispatcher")
+	return got
+}
+
+// sampleThreads returns two review threads waiting on the viewer and one the
+// viewer answered themselves, which is the shape every dedup question needs.
+func sampleThreads() gh.Review {
+	return gh.Review{
+		Viewer: "relloyd",
+		Threads: []model.ReviewThread{
+			{
+				ID: "T1", Path: "internal/gh/client.go", Opener: "reviewer",
+				Body: "This retries forever.", LatestBy: "reviewer", LatestID: "C1",
+				URL: "https://github.com/relloyd/prutil/pull/42#discussion_r1",
+			},
+			{
+				ID: "T2", Path: "README.md", Opener: "reviewer",
+				Body: "Typo.", LatestBy: "reviewer", LatestID: "C2",
+				URL: "https://github.com/relloyd/prutil/pull/42#discussion_r2",
+			},
+			{
+				ID: "T3", Path: "internal/ui/app.go", Opener: "reviewer",
+				Body: "Why here?", LatestBy: "relloyd", LatestID: "C3",
+				URL: "https://github.com/relloyd/prutil/pull/42#discussion_r3",
+			},
+			{
+				ID: "T4", Path: "internal/ui/view.go", Resolved: true, Opener: "reviewer",
+				Body: "Done.", LatestBy: "reviewer", LatestID: "C4",
+				URL: "https://github.com/relloyd/prutil/pull/42#discussion_r4",
+			},
+		},
+	}
+}
+
 // newTestApp builds an app sized to the given terminal, with the list already
 // loaded and every check cached, so tests can go straight to behaviour. Its
-// clipboard is a fake; reach it through app.clip when a test needs to look.
+// clipboard, its handoff dispatcher and its application directory are all
+// fakes; reach them through app.clip, dispatcherOf and app.store.
 func newTestApp(t *testing.T, width, height int) (*App, *fakeClient, *fakeOpener) {
 	t.Helper()
 
 	client := newFakeClient(samplePRs(), sampleChecks())
+	client.review = sampleThreads()
+	client.snapshots = map[string]model.Snapshot{
+		"PR_42": {NodeID: "PR_42", HeadOID: "abc", UpdatedAt: testNow, Rollup: model.StatusSuccess},
+		"PR_7":  {NodeID: "PR_7", HeadOID: "def", UpdatedAt: testNow, Rollup: model.StatusFailure},
+		"PR_9":  {NodeID: "PR_9", HeadOID: "ghi", UpdatedAt: testNow},
+	}
 	opener := &fakeOpener{}
 	app := New(Config{
 		Client:    client,
 		Opener:    opener,
 		Clipboard: &fakeClipboard{},
 		Now:       func() time.Time { return testNow },
+		Store:     home.OpenIn(t.TempDir()),
+		State:     home.NewState(),
+		Home:      fastWatch(),
+		Handoff:   &fakeDispatcher{},
 	})
 
 	send(t, app, tea.WindowSizeMsg{Width: width, Height: height})
@@ -311,6 +438,27 @@ func newTestApp(t *testing.T, width, height int) (*App, *fakeClient, *fakeOpener
 		send(t, app, checksMsg{gen: app.gen, key: pr.Key(), checks: checks[pr.Key()]})
 	}
 	return app, client, opener
+}
+
+// fastWatch is the configuration the UI tests build an app on. The engine's
+// own tests cover the real intervals; here the point is the wiring, and a test
+// has no business waiting two minutes for a tick.
+func fastWatch() home.Config {
+	cfg := home.DefaultConfig()
+	tiny := home.Duration(time.Millisecond)
+	cfg.Watch = home.WatchConfig{
+		ActiveInterval: tiny, BaseInterval: tiny, MaxInterval: tiny,
+		NotifiedInterval: tiny, MaxNotifiedInterval: tiny, IdleInterval: tiny,
+		DormantAfter: 3, ForcePreciseEvery: 5,
+	}
+	return cfg
+}
+
+// advance moves the app's clock, which is what lets a test reach the watcher's
+// next poll without waiting for it.
+func advance(app *App, d time.Duration) {
+	at := app.now().Add(d)
+	app.now = func() time.Time { return at }
 }
 
 // send delivers one message and returns the command it produced.

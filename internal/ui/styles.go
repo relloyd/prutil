@@ -19,6 +19,7 @@ type Styles struct {
 	Header     lipgloss.Style
 	Mode       lipgloss.Style
 	Auto       lipgloss.Style
+	Watch      lipgloss.Style
 	Help       lipgloss.Style
 	Error      lipgloss.Style
 	Status     lipgloss.Style
@@ -79,6 +80,7 @@ func newStyles(isDark bool) Styles {
 		Header:     base.Foreground(accent).Bold(true),
 		Mode:       base.Foreground(text).Bold(true),
 		Auto:       base.Foreground(amber).Bold(true),
+		Watch:      base.Foreground(amber).Bold(true),
 		Help:       base.Foreground(faint),
 		Error:      base.Foreground(red).Bold(true),
 		Status:     base.Foreground(amber),

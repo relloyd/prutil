@@ -586,3 +586,113 @@ func TestFinishClosedPullRequestsSkipsWorkWhenTheSweepIsAlreadyExhausted(t *test
 	assert.Equal(t, 1, runner.callCount(), "an already-exhausted state costs no further requests")
 	assert.Equal(t, partial.PRs, res.PRs)
 }
+
+func TestReviewThreadsDecodesTheConversationsAndTheViewer(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "review_threads.json")}}
+	client := gh.New(runner, 1)
+
+	review, err := client.ReviewThreads(context.Background(), model.Key{Repo: "relloyd/prutil", Number: 42})
+	require.NoError(t, err)
+
+	assert.Equal(t, "relloyd", review.Viewer)
+	assert.False(t, review.Truncated, "four threads of four is the whole conversation")
+	require.Len(t, review.Threads, 3, "a thread GitHub returned with no comments is dropped")
+
+	first := review.Threads[0]
+	assert.Equal(t, "PRRT_1", first.ID)
+	assert.False(t, first.Resolved)
+	assert.Equal(t, "internal/gh/client.go", first.Path)
+	assert.Equal(t, "reviewer", first.Opener)
+	assert.Equal(t, "This retries forever.", first.Body, "the body is trimmed")
+	assert.Equal(t, "PRRC_9", first.LatestID, "the newest comment is what says whether a thread moved")
+	assert.Equal(t, "https://github.com/relloyd/prutil/pull/42#discussion_r9", first.URL)
+	assert.Equal(t, 2, first.Comments)
+	assert.Equal(t, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), first.LatestAt)
+}
+
+func TestReviewThreadsSelectsOnlyWhatIsStillWaitingOnTheViewer(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "review_threads.json")}}
+	client := gh.New(runner, 1)
+
+	review, err := client.ReviewThreads(context.Background(), model.Key{Repo: "relloyd/prutil", Number: 42})
+	require.NoError(t, err)
+
+	feedback := review.Feedback()
+	require.Len(t, feedback, 1)
+	assert.Equal(t, "PRRT_1", feedback[0].ID,
+		"the resolved thread and the one the viewer answered themselves are both finished with")
+}
+
+func TestReviewThreadsAdmitsWhenAPullRequestHasMoreThanOnePageOfThem(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{[]byte(
+		`{"data":{"viewer":{"login":"relloyd"},"repository":{"pullRequest":{"reviewThreads":{"totalCount":150,"nodes":[]}}}}}`,
+	)}}
+	client := gh.New(runner, 1)
+
+	review, err := client.ReviewThreads(context.Background(), model.Key{Repo: "relloyd/prutil", Number: 42})
+	require.NoError(t, err)
+	assert.True(t, review.Truncated)
+}
+
+func TestReviewThreadsRejectsAMalformedRepositoryBeforeAskingGitHub(t *testing.T) {
+	runner := &fakeRunner{}
+	client := gh.New(runner, 1)
+
+	_, err := client.ReviewThreads(context.Background(), model.Key{Repo: "prutil", Number: 42})
+	require.Error(t, err)
+	assert.Zero(t, runner.callCount())
+}
+
+func TestWatchSnapshotCoversEveryPullRequestInOneRequest(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "watch_nodes.json")}}
+	client := gh.New(runner, 1)
+
+	snaps, err := client.WatchSnapshot(context.Background(), []string{"PR_42", "PR_1", "PR_7"})
+	require.NoError(t, err)
+	require.Equal(t, 1, runner.callCount(), "three pull requests, one round trip")
+	require.Len(t, snaps, 2, "a node the token can no longer see comes back null and is dropped")
+
+	first := snaps[0]
+	assert.Equal(t, "PR_42", first.NodeID)
+	assert.Equal(t, "2e078c7c7b91a2ed23ab7da1df679cbd89e3b2e6", first.HeadOID)
+	assert.Equal(t, model.StatusPending, first.Rollup)
+	assert.True(t, first.Busy())
+	assert.Equal(t, 3, first.Comments)
+	assert.Equal(t, 6, first.Threads)
+	assert.Equal(t, time.Date(2026, 9, 9, 16, 35, 21, 0, time.UTC), first.UpdatedAt)
+
+	assert.Equal(t, model.StatusUnknown, snaps[1].Rollup, "a head commit with no rollup is not busy")
+	assert.False(t, snaps[1].Busy())
+}
+
+func TestWatchSnapshotPassesTheIdsAsAJsonArray(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "watch_nodes.json")}}
+	client := gh.New(runner, 1)
+
+	_, err := client.WatchSnapshot(context.Background(), []string{"PR_42", "PR_7"})
+	require.NoError(t, err)
+	assert.Contains(t, runner.argsOf(0), "ids[]=PR_42")
+	assert.Contains(t, runner.argsOf(0), "ids[]=PR_7")
+}
+
+func TestWatchSnapshotAsksNothingWhenThereIsNothingToAskAbout(t *testing.T) {
+	runner := &fakeRunner{}
+	client := gh.New(runner, 1)
+
+	snaps, err := client.WatchSnapshot(context.Background(), []string{"", "   "})
+	require.NoError(t, err)
+	assert.Empty(t, snaps)
+	assert.Zero(t, runner.callCount())
+}
+
+func TestTheListCarriesTheNodeIdTheWatcherNeeds(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "search.json")}}
+	client := gh.New(runner, 2)
+
+	prs, err := client.ListPullRequests(context.Background(), "", 100)
+	require.NoError(t, err)
+	assert.Contains(t, runner.argsOf(0), "id", "the list query selects it")
+	for _, pr := range prs {
+		assert.NotEmpty(t, pr.NodeID, pr.Key().String())
+	}
+}

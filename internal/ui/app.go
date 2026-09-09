@@ -5,6 +5,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -16,7 +17,9 @@ import (
 	"github.com/relloyd/prutil/internal/browser"
 	"github.com/relloyd/prutil/internal/clipboard"
 	"github.com/relloyd/prutil/internal/gh"
+	"github.com/relloyd/prutil/internal/home"
 	"github.com/relloyd/prutil/internal/model"
+	"github.com/relloyd/prutil/internal/watch"
 )
 
 const (
@@ -120,6 +123,21 @@ type Config struct {
 	Closed  gh.ClosedOptions
 	Now     func() time.Time
 	Version string
+
+	// Store remembers which pull requests are watched, between runs. Nil
+	// disables arming; StoreErr says why, and the watch key reports it rather
+	// than doing nothing.
+	Store    *home.Store
+	StoreErr error
+	// State is what Store held at startup. Nil is an empty state.
+	State *home.State
+	// Home is the loaded configuration, which supplies the wait budget the
+	// handoff is given.
+	Home home.Config
+	// Handoff sends a pull request's review feedback to a coding agent. Nil
+	// disables the handoff key; HandoffErr says why.
+	Handoff    dispatcher
+	HandoffErr error
 }
 
 // App is the root Bubble Tea model.
@@ -165,6 +183,29 @@ type App struct {
 	// from a spent run carries an older number and is dropped, so a run that
 	// has ended cannot restart itself.
 	autoSeq int
+
+	// store and state hold which pull requests are armed for watching, and
+	// storeErr explains a store that could not be opened.
+	store    *home.Store
+	state    *home.State
+	storeErr error
+	// homeCfg is the loaded configuration.
+	homeCfg home.Config
+	// hand gives a pull request's review feedback to a coding agent, and
+	// handErr explains its absence.
+	hand    dispatcher
+	handErr error
+	// handing names the pull requests with a handoff in flight, so that
+	// holding the key down cannot send the same work twice.
+	handing map[model.Key]bool
+	// engine schedules the polling of every armed pull request.
+	engine *watch.Engine
+	// watchSeq names the watch schedule currently in flight, the same way
+	// autoSeq names a run of auto-refresh ticks.
+	watchSeq int
+	// feedback is the last known count of review threads still waiting on the
+	// reader, per pull request, which is what a watched row shows.
+	feedback map[model.Key]int
 }
 
 // New builds an App ready to be handed to tea.NewProgram.
@@ -181,20 +222,42 @@ func New(cfg Config) *App {
 	styles := newStyles(true)
 	sp.Style = styles.Accent
 
+	state := cfg.State
+	if state == nil {
+		state = home.NewState()
+	}
+	storeErr := cfg.StoreErr
+	if cfg.Store == nil && storeErr == nil {
+		storeErr = errors.New("prutil has no application directory")
+	}
+	handErr := cfg.HandoffErr
+	if cfg.Handoff == nil && handErr == nil {
+		handErr = errors.New("herdr is not configured")
+	}
+
 	a := &App{
-		client:  cfg.Client,
-		opener:  cfg.Opener,
-		clip:    clip,
-		query:   cfg.Query,
-		limit:   cfg.Limit,
-		closed:  cfg.Closed,
-		now:     now,
-		version: cfg.Version,
-		keys:    defaultKeys(),
-		styles:  styles,
-		help:    help.New(),
-		spin:    sp,
-		checks:  map[model.Key]checkState{},
+		client:   cfg.Client,
+		opener:   cfg.Opener,
+		clip:     clip,
+		query:    cfg.Query,
+		limit:    cfg.Limit,
+		closed:   cfg.Closed,
+		now:      now,
+		version:  cfg.Version,
+		keys:     defaultKeys(),
+		styles:   styles,
+		help:     help.New(),
+		spin:     sp,
+		checks:   map[model.Key]checkState{},
+		store:    cfg.Store,
+		state:    state,
+		storeErr: storeErr,
+		homeCfg:  cfg.Home,
+		hand:     cfg.Handoff,
+		handErr:  handErr,
+		handing:  map[model.Key]bool{},
+		engine:   watch.New(cfg.Home.Watch),
+		feedback: map[model.Key]int{},
 	}
 	a.views[viewOpen].loading = true
 	return a
@@ -247,19 +310,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.applyPRs(msg.view, msg.prs, msg.unavailable)
+		watching := a.watchAfterLoad(msg.view)
 		if msg.partial {
 			// The sweep's first page is on screen and already interactive;
 			// the rest is filled in behind it without blocking the reader.
 			a.views[msg.view].enriching = true
-			return a, a.loadClosedFinish(msg.gen, msg.sweepState)
+			return a, tea.Batch(watching, a.loadClosedFinish(msg.gen, msg.sweepState))
 		}
 		a.views[msg.view].enriching = false
 		if msg.view != a.active {
 			// A background view finished loading; leave the visible one alone
 			// and warm its checks only once the reader switches to it.
-			return a, nil
+			return a, watching
 		}
-		return a, a.withSpinner(tea.Batch(a.prefetch()...))
+		return a, tea.Batch(watching, a.withSpinner(tea.Batch(a.prefetch()...)))
 
 	case errMsg:
 		if msg.gen != a.gen {
@@ -311,6 +375,26 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, tea.Batch(cmds...)
 
+	case watchTickMsg:
+		if msg.seq != a.watchSeq {
+			return a, nil
+		}
+		return a, a.pollWatched()
+
+	case watchSnapshotMsg:
+		return a, a.applyWatch(msg)
+
+	case watchReviewMsg:
+		return a, a.applyReview(msg)
+
+	case watchErrMsg:
+		a.engine.Defer(msg.keys, a.watchRetry(), a.now())
+		return a, tea.Batch(a.scheduleWatch(), status("could not poll the watched pull requests: "+msg.err.Error()))
+
+	case handoffMsg:
+		a.applyHandoff(msg)
+		return a, status(a.handoffNote(msg))
+
 	case statusMsg:
 		a.status = string(msg)
 		return a, tea.Tick(statusLifetime, func(time.Time) tea.Msg { return clearStatusMsg{} })
@@ -339,6 +423,12 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.Auto):
 		return a, a.extendAutoRefresh()
+
+	case key.Matches(msg, a.keys.Watch):
+		return a, a.toggleWatch()
+
+	case key.Matches(msg, a.keys.Handoff):
+		return a, a.handOff()
 
 	case key.Matches(msg, a.keys.NextTab):
 		return a, a.switchView(a.active.next())
@@ -488,7 +578,10 @@ func (a *App) refresh(note string) tea.Cmd {
 		a.views[i].err = nil
 		a.views[i].lastRefresh = time.Time{}
 	}
-	return tea.Batch(a.load(a.active), a.spin.Tick, status(note))
+	// A refresh is the reader saying they want to know now, so anything the
+	// watcher had backed off or given up on is brought forward with it.
+	a.engine.Wake(a.now())
+	return tea.Batch(a.load(a.active), a.scheduleWatch(), a.spin.Tick, status(note))
 }
 
 // extendAutoRefresh grants another burst of automatic refreshes. The first
@@ -590,6 +683,16 @@ func (a *App) prefetch() []tea.Cmd {
 		}
 	}
 	return cmds
+}
+
+// watchAfterLoad reconciles the watcher with a freshly loaded open list. It is
+// the only place the engine learns about node ids, which is what lets one
+// request cover every armed pull request at once.
+func (a *App) watchAfterLoad(v view) tea.Cmd {
+	if v != viewOpen {
+		return nil
+	}
+	return a.syncWatch()
 }
 
 // withSpinner pairs a fetch with a spinner tick, restarting the animation when
@@ -754,7 +857,10 @@ func (a *App) busy() bool {
 			return true
 		}
 	}
-	return false
+	// A handoff can spend minutes waiting for an agent to finish what it is
+	// doing, which is exactly the stretch the reader needs to be told is not a
+	// hang.
+	return len(a.handing) > 0
 }
 
 // narrow reports whether the terminal is too slim for side-by-side panes.

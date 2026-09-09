@@ -1,0 +1,100 @@
+{
+  "data": {
+    "viewer": { "login": "relloyd" },
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "totalCount": 4,
+          "nodes": [
+            {
+              "id": "PRRT_1",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "internal/gh/client.go",
+              "opener": {
+                "nodes": [
+                  {
+                    "author": { "login": "reviewer" },
+                    "createdAt": "2026-09-01T09:00:00Z",
+                    "body": "  This retries forever.  "
+                  }
+                ]
+              },
+              "latest": {
+                "totalCount": 2,
+                "nodes": [
+                  {
+                    "id": "PRRC_9",
+                    "url": "https://github.com/relloyd/prutil/pull/42#discussion_r9",
+                    "author": { "login": "reviewer" },
+                    "createdAt": "2026-09-02T10:00:00Z"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_2",
+              "isResolved": true,
+              "isOutdated": false,
+              "path": "README.md",
+              "opener": {
+                "nodes": [
+                  {
+                    "author": { "login": "reviewer" },
+                    "createdAt": "2026-09-01T09:05:00Z",
+                    "body": "Typo."
+                  }
+                ]
+              },
+              "latest": {
+                "totalCount": 1,
+                "nodes": [
+                  {
+                    "id": "PRRC_2",
+                    "url": "https://github.com/relloyd/prutil/pull/42#discussion_r2",
+                    "author": { "login": "reviewer" },
+                    "createdAt": "2026-09-01T09:05:00Z"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_3",
+              "isResolved": false,
+              "isOutdated": true,
+              "path": "internal/ui/app.go",
+              "opener": {
+                "nodes": [
+                  {
+                    "author": { "login": "reviewer" },
+                    "createdAt": "2026-09-01T09:10:00Z",
+                    "body": "Why here?"
+                  }
+                ]
+              },
+              "latest": {
+                "totalCount": 3,
+                "nodes": [
+                  {
+                    "id": "PRRC_7",
+                    "url": "https://github.com/relloyd/prutil/pull/42#discussion_r7",
+                    "author": { "login": "relloyd" },
+                    "createdAt": "2026-09-02T11:00:00Z"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_4",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "internal/ui/view.go",
+              "opener": { "nodes": [] },
+              "latest": { "totalCount": 0, "nodes": [] }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

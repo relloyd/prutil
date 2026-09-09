@@ -78,6 +78,9 @@ func (a *App) renderHeader() []string {
 	// The mode is the one part of the header the reader looks for at a glance,
 	// so it is styled apart from the grey the rest of the line uses.
 	left += a.styles.Mode.Render(a.modeText())
+	// Watching is a mode that outlives a session, so the header says how much
+	// of it is on rather than leaving the reader to scroll the list for dots.
+	left += a.styles.Watch.Render(a.watchNote())
 	if a.autoLeft > 0 {
 		// Auto-refresh is a mode with a countdown, and the whole point of it is
 		// to be left running while the reader watches; the header is where they

@@ -6,6 +6,7 @@
       "nodes": [
         {
           "__typename": "PullRequest",
+          "id": "PR_search_1",
           "number": 42,
           "title": "  Add retry to the uploader  ",
           "url": "https://github.com/relloyd/prutil/pull/42",
@@ -29,6 +30,7 @@
         },
         {
           "__typename": "PullRequest",
+          "id": "PR_search_2",
           "number": 7,
           "title": "Draft: rework the config loader",
           "url": "https://github.com/relloyd/other/pull/7",
@@ -52,6 +54,7 @@
         },
         {
           "__typename": "PullRequest",
+          "id": "PR_search_3",
           "number": 9,
           "title": "Bump dependencies",
           "url": "https://github.com/relloyd/third/pull/9",

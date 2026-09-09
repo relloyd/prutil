@@ -279,8 +279,8 @@ func TestTheFooterFitsEveryShortcutAt120Columns(t *testing.T) {
 	// is last, so this is the test that notices when a new binding pushes it
 	// off the screen.
 	for _, want := range []string{
-		"→/l checks", "←/h back", "enter browser", "y copy URL",
-		"tab open/closed", "r refresh", "a auto-refresh", "? help", "q quit",
+		"→/l checks", "enter browser", "y copy URL", "tab open/closed",
+		"r refresh", "a auto-refresh", "w watch", "? help", "q quit",
 	} {
 		assert.Contains(t, footer, want)
 	}
@@ -293,7 +293,7 @@ func TestTheFullHelpStillListsTheMovementKeysTheFooterLeavesOut(t *testing.T) {
 
 	send(t, app, press("?"))
 	full := plain(app.render())
-	for _, want := range []string{"↑/k", "↓/j", "g", "G", "y", "a"} {
+	for _, want := range []string{"↑/k", "↓/j", "g", "G", "y", "a", "back", "W hand to agent"} {
 		assert.Contains(t, full, want)
 	}
 }

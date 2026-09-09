@@ -4,6 +4,7 @@
       "nodes": [
         {
           "__typename": "PullRequest",
+          "id": "PR_repo_batch_1",
           "number": 12,
           "title": "Quiet repo work",
           "url": "https://github.com/relloyd/quiet/pull/12",
@@ -32,6 +33,7 @@
       "nodes": [
         {
           "__typename": "PullRequest",
+          "id": "PR_repo_batch_2",
           "number": 300,
           "title": "Platform change",
           "url": "https://github.com/acme/platform/pull/300",

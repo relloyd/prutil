@@ -52,6 +52,7 @@ type repoNamesResponse struct {
 
 type prNode struct {
 	TypeName       string     `json:"__typename"`
+	ID             string     `json:"id"`
 	Number         int        `json:"number"`
 	Title          string     `json:"title"`
 	URL            string     `json:"url"`
@@ -103,6 +104,7 @@ func (n prNode) toPullRequest() (model.PullRequest, bool) {
 		Deletions:      n.Deletions,
 		ChangedFiles:   n.ChangedFiles,
 		Comments:       n.Comments.TotalCount,
+		NodeID:         n.ID,
 		Rollup:         model.StatusUnknown,
 	}
 	if n.CreatedAt != nil {
@@ -206,4 +208,136 @@ func (n contextNode) toCheck() model.Check {
 		check.CompletedAt = *n.CompletedAt
 	}
 	return check
+}
+
+// reviewThreadResponse mirrors the data envelope returned by
+// reviewThreadQuery.
+type reviewThreadResponse struct {
+	Viewer struct {
+		Login string `json:"login"`
+	} `json:"viewer"`
+	Repository struct {
+		PullRequest struct {
+			ReviewThreads struct {
+				TotalCount int                `json:"totalCount"`
+				Nodes      []reviewThreadNode `json:"nodes"`
+			} `json:"reviewThreads"`
+		} `json:"pullRequest"`
+	} `json:"repository"`
+}
+
+// reviewThreadNode is one review conversation as reviewThreadQuery selects it.
+type reviewThreadNode struct {
+	ID         string `json:"id"`
+	IsResolved bool   `json:"isResolved"`
+	IsOutdated bool   `json:"isOutdated"`
+	Path       string `json:"path"`
+	Opener     struct {
+		Nodes []reviewCommentNode `json:"nodes"`
+	} `json:"opener"`
+	Latest struct {
+		TotalCount int                 `json:"totalCount"`
+		Nodes      []reviewCommentNode `json:"nodes"`
+	} `json:"latest"`
+}
+
+// reviewCommentNode is one comment inside a review thread. Only the fields
+// both aliases can supply are declared; the missing ones decode to zero.
+type reviewCommentNode struct {
+	ID        string     `json:"id"`
+	URL       string     `json:"url"`
+	Body      string     `json:"body"`
+	CreatedAt *time.Time `json:"createdAt"`
+	Author    struct {
+		Login string `json:"login"`
+	} `json:"author"`
+}
+
+// toReviewThread converts one node, reporting false for a thread GitHub
+// returned without any comments in it, which nothing can be said about.
+func (n reviewThreadNode) toReviewThread() (model.ReviewThread, bool) {
+	if len(n.Opener.Nodes) == 0 || len(n.Latest.Nodes) == 0 {
+		return model.ReviewThread{}, false
+	}
+	opener, latest := n.Opener.Nodes[0], n.Latest.Nodes[0]
+
+	return model.ReviewThread{
+		ID:       n.ID,
+		Resolved: n.IsResolved,
+		Outdated: n.IsOutdated,
+		Path:     n.Path,
+		URL:      latest.URL,
+		Opener:   opener.Author.Login,
+		OpenedAt: at(opener.CreatedAt),
+		Body:     strings.TrimSpace(opener.Body),
+		LatestBy: latest.Author.Login,
+		LatestID: latest.ID,
+		LatestAt: at(latest.CreatedAt),
+		Comments: n.Latest.TotalCount,
+	}, true
+}
+
+// at dereferences an optional timestamp, since GitHub returns null for a field
+// it has no value for and the zero time reads the same way everywhere else in
+// prutil.
+func at(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// watchResponse mirrors the data envelope returned by watchQuery. The nodes
+// come back in the order the ids went out, but a node the token can no longer
+// see comes back as null, so the reply is matched on the id it carries rather
+// than on its position.
+type watchResponse struct {
+	Nodes []watchNode `json:"nodes"`
+}
+
+// watchNode is one pull request as the tripwire selects it.
+type watchNode struct {
+	TypeName  string     `json:"__typename"`
+	ID        string     `json:"id"`
+	UpdatedAt *time.Time `json:"updatedAt"`
+	Comments  struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"comments"`
+	ReviewThreads struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"reviewThreads"`
+	Commits struct {
+		Nodes []struct {
+			Commit struct {
+				OID               string `json:"oid"`
+				StatusCheckRollup *struct {
+					State string `json:"state"`
+				} `json:"statusCheckRollup"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"commits"`
+}
+
+// toSnapshot converts one node, reporting false for anything that is not a
+// pull request, which is what a null node decodes to.
+func (n watchNode) toSnapshot() (model.Snapshot, bool) {
+	if n.TypeName != "PullRequest" || n.ID == "" {
+		return model.Snapshot{}, false
+	}
+
+	snap := model.Snapshot{
+		NodeID:    n.ID,
+		UpdatedAt: at(n.UpdatedAt),
+		Comments:  n.Comments.TotalCount,
+		Threads:   n.ReviewThreads.TotalCount,
+		Rollup:    model.StatusUnknown,
+	}
+	if len(n.Commits.Nodes) > 0 {
+		commit := n.Commits.Nodes[0].Commit
+		snap.HeadOID = commit.OID
+		if commit.StatusCheckRollup != nil {
+			snap.Rollup = model.ParseRollupState(commit.StatusCheckRollup.State)
+		}
+	}
+	return snap, true
 }

@@ -22,6 +22,7 @@ query($q: String!, $first: Int!, $after: String) {
     nodes {
       __typename
       ... on PullRequest {
+        id
         number
         title
         url
@@ -104,6 +105,7 @@ const DefaultClosedSearchQuery = "is:pr author:@me is:closed archived:false sort
 // still fetches the individual checks when a row is selected.
 const closedPRFields = `
 fragment prFields on PullRequest {
+  id
   number
   title
   url
@@ -194,3 +196,69 @@ func buildRepoBatchQuery(base string, repos []string, perRepo int) (doc string, 
 	}
 	return "query($first: Int!" + decls.String() + ") {" + body.String() + "\n}" + closedPRFields, vars, covered
 }
+
+// reviewThreadQuery fetches the review conversations on one pull request.
+//
+// It reads the first and the last comment of every thread under separate
+// aliases, because the two answer different questions: the first is the
+// feedback itself, and the last is what says whether the thread has been
+// replied to since prutil last looked. A thread's own totalCount cannot tell
+// those apart.
+//
+// The viewer's login rides along in the same document. It costs nothing, and
+// without it prutil cannot tell a reviewer's comment from the pull request
+// author answering their own thread.
+const reviewThreadQuery = `
+query($owner: String!, $name: String!, $number: Int!, $first: Int!) {
+  viewer { login }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: $first) {
+        totalCount
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          opener: comments(first: 1) {
+            nodes { author { login } createdAt body }
+          }
+          latest: comments(last: 1) {
+            totalCount
+            nodes { id url author { login } createdAt }
+          }
+        }
+      }
+    }
+  }
+}`
+
+// watchQuery is the tripwire the watcher polls with: one document covering
+// every armed pull request at once, addressed by node id rather than by
+// repository, so a reader watching ten pull requests across ten organisations
+// still costs one request and one rate limit point.
+//
+// It selects nothing that has to be paged and no review thread bodies. The
+// point is only to notice that something moved; the precise question of what
+// moved is reviewThreadQuery's, and it is asked of the few pull requests this
+// one flagged.
+//
+// updatedAt is the field doing most of the work. A reply inside an existing
+// review thread changes neither comment count, and a resolved thread changes
+// the thread count in the wrong direction, so the counts alone would miss
+// both.
+const watchQuery = `
+query($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    __typename
+    ... on PullRequest {
+      id
+      updatedAt
+      comments { totalCount }
+      reviewThreads { totalCount }
+      commits(last: 1) {
+        nodes { commit { oid statusCheckRollup { state } } }
+      }
+    }
+  }
+}`

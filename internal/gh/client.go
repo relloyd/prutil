@@ -42,6 +42,34 @@ type Client interface {
 	FinishClosedPullRequests(ctx context.Context, opts ClosedOptions, state ClosedSweepState) (ClosedResult, error)
 	// Checks returns the individual checks on a pull request's head commit.
 	Checks(ctx context.Context, key model.Key) ([]model.Check, error)
+	// WatchSnapshot reads the cheap tripwire fields for several pull requests
+	// at once, addressed by their GitHub node ids. It is one request and one
+	// rate limit point however many pull requests are watched, and whatever
+	// repositories they are spread across.
+	WatchSnapshot(ctx context.Context, ids []string) ([]model.Snapshot, error)
+	// ReviewThreads returns the review conversations on a pull request,
+	// together with the login prutil is authenticated as. It is the precise
+	// question behind the watch feature: which feedback is still open, and
+	// whose turn it is.
+	ReviewThreads(ctx context.Context, key model.Key) (Review, error)
+}
+
+// Review is the review conversation on one pull request.
+type Review struct {
+	// Threads is every conversation GitHub returned, resolved ones included,
+	// so that a caller can count what is outstanding against what there is.
+	Threads []model.ReviewThread
+	// Viewer is the login prutil is authenticated as, which is what decides
+	// whether the last word on a thread was the author's own.
+	Viewer string
+	// Truncated reports that the pull request holds more threads than one page
+	// returned, so the counts below are a floor rather than a total.
+	Truncated bool
+}
+
+// Feedback is the threads still waiting on the viewer.
+func (r Review) Feedback() []model.ReviewThread {
+	return model.Feedback(r.Threads, r.Viewer)
 }
 
 // ClosedResult is the outcome of a recently-closed query.
@@ -521,6 +549,73 @@ func (c *CLI) Checks(ctx context.Context, key model.Key) ([]model.Check, error) 
 	return checks, nil
 }
 
+// WatchSnapshot implements Client.
+func (c *CLI) WatchSnapshot(ctx context.Context, ids []string) ([]model.Snapshot, error) {
+	wanted := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if strings.TrimSpace(id) != "" {
+			wanted = append(wanted, id)
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+
+	var resp watchResponse
+	if err := c.graphql(ctx, watchQuery, map[string]any{"ids": wanted}, &resp); err != nil {
+		return nil, err
+	}
+
+	// A pull request the token can no longer see comes back as a null node.
+	// Dropping it is right: there is nothing left to watch, and the caller
+	// leaves its previous reading in place rather than treating the gap as a
+	// change.
+	snaps := make([]model.Snapshot, 0, len(resp.Nodes))
+	for _, node := range resp.Nodes {
+		if snap, ok := node.toSnapshot(); ok {
+			snaps = append(snaps, snap)
+		}
+	}
+	return snaps, nil
+}
+
+// reviewThreadPageSize is how many review conversations one request reads.
+// GitHub caps a connection at a hundred, and a pull request with more open
+// threads than that has a problem prutil is not going to solve by paging.
+const reviewThreadPageSize = 100
+
+// ReviewThreads implements Client.
+func (c *CLI) ReviewThreads(ctx context.Context, key model.Key) (Review, error) {
+	owner, name := key.Owner()
+	if owner == "" || name == "" {
+		return Review{}, fmt.Errorf("malformed repository %q", key.Repo)
+	}
+
+	var resp reviewThreadResponse
+	vars := map[string]any{
+		"owner":  owner,
+		"name":   name,
+		"number": key.Number,
+		"first":  reviewThreadPageSize,
+	}
+	if err := c.graphql(ctx, reviewThreadQuery, vars, &resp); err != nil {
+		return Review{}, err
+	}
+
+	nodes := resp.Repository.PullRequest.ReviewThreads.Nodes
+	threads := make([]model.ReviewThread, 0, len(nodes))
+	for _, node := range nodes {
+		if thread, ok := node.toReviewThread(); ok {
+			threads = append(threads, thread)
+		}
+	}
+	return Review{
+		Threads:   threads,
+		Viewer:    resp.Viewer.Login,
+		Truncated: resp.Repository.PullRequest.ReviewThreads.TotalCount > len(nodes),
+	}, nil
+}
+
 // graphql runs one gh api graphql call and decodes its data envelope into out.
 func (c *CLI) graphql(ctx context.Context, doc string, vars map[string]any, out any) error {
 	return c.graphqlWithin(ctx, 0, doc, vars, out)
@@ -590,6 +685,12 @@ func graphqlArgs(doc string, vars map[string]any) []string {
 		case int:
 			// -F asks gh to send the value as a JSON number.
 			args = append(args, "-F", name+"="+strconv.Itoa(v))
+		case []string:
+			// gh builds a JSON array out of repeated key[] arguments, which is
+			// how a list variable such as [ID!]! is passed.
+			for _, item := range v {
+				args = append(args, "-f", name+"[]="+item)
+			}
 		default:
 			args = append(args, "-f", fmt.Sprintf("%s=%v", name, v))
 		}

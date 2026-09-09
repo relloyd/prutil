@@ -15,6 +15,8 @@ type keyMap struct {
 	Copy    key.Binding
 	Refresh key.Binding
 	Auto    key.Binding
+	Watch   key.Binding
+	Handoff key.Binding
 	NextTab key.Binding
 	Help    key.Binding
 	Quit    key.Binding
@@ -63,6 +65,14 @@ func defaultKeys() keyMap {
 			key.WithKeys("a"),
 			key.WithHelp("a", "auto-refresh"),
 		),
+		Watch: key.NewBinding(
+			key.WithKeys("w"),
+			key.WithHelp("w", "watch"),
+		),
+		Handoff: key.NewBinding(
+			key.WithKeys("W"),
+			key.WithHelp("W", "hand to agent"),
+		),
 		NextTab: key.NewBinding(
 			key.WithKeys("tab"),
 			key.WithHelp("tab", "open/closed"),
@@ -83,8 +93,12 @@ func defaultKeys() keyMap {
 // and to the full list under ?. Whatever is added here, keep q quit inside 120
 // columns: the help component drops the tail that does not fit, and quit is
 // the one binding a reader must never have to hunt for.
+//
+// Back is not in it. It is the obvious mirror of the binding that goes into
+// the checks pane, esc does the same thing, and the room it frees is what lets
+// the watch key be named here instead of only under ?.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Into, k.Back, k.Open, k.Copy, k.NextTab, k.Refresh, k.Auto, k.Help, k.Quit}
+	return []key.Binding{k.Into, k.Open, k.Copy, k.NextTab, k.Refresh, k.Auto, k.Watch, k.Help, k.Quit}
 }
 
 // FullHelp implements help.KeyMap.
@@ -93,6 +107,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 		{k.Up, k.Down, k.Top, k.Bottom},
 		{k.Into, k.Back, k.Open, k.Copy},
 		{k.Refresh, k.Auto, k.NextTab},
+		{k.Watch, k.Handoff},
 		{k.Help, k.Quit},
 	}
 }
