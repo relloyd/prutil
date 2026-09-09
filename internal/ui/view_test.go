@@ -270,3 +270,6 @@ func TestHeaderNamesTheModeWhileTheFirstListIsStillLoading(t *testing.T) {
 
 	assert.Contains(t, plain(app.render()), "loading open PRs")
 }
+
+// headerLine returns the title bar with its styling stripped.
+func headerLine(app *App) string { return plain(app.renderHeader()[0]) }

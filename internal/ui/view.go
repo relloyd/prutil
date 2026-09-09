@@ -78,6 +78,12 @@ func (a *App) renderHeader() []string {
 	// The mode is the one part of the header the reader looks for at a glance,
 	// so it is styled apart from the grey the rest of the line uses.
 	left += a.styles.Mode.Render(a.modeText())
+	if a.autoLeft > 0 {
+		// Auto-refresh is a mode with a countdown, and the whole point of it is
+		// to be left running while the reader watches; the header is where they
+		// find out how long it has left.
+		left += a.styles.Auto.Render(fmt.Sprintf(" · auto-refresh ×%d", a.autoLeft))
+	}
 	if len(meta) > 0 {
 		left += a.styles.Meta.Render(" · " + strings.Join(meta, " · "))
 	}

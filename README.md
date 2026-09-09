@@ -62,12 +62,26 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `h`, `←` or `esc` | go back to the list |
 | `enter` | open the selected pull request, or the selected check, in your browser |
 | `r` | refresh from GitHub |
+| `a` | auto-refresh: reload every 30s, five times over. press again to add five more |
 | `tab` | switch between your open and your recently closed pull requests |
 | `?` | toggle the full key list |
 | `q` or `ctrl+c` | quit |
 
 Below 80 columns the two panes collapse into one: the list fills the terminal,
 `l` swaps to the checks, and `h` swaps back.
+
+## Auto-refresh
+
+`a` reloads the view on screen every 30 seconds, five times, and then stops.
+That is two and a half minutes of watching a pull request's checks turn green
+without touching the keyboard. Press `a` again at any point during the run and
+another five reloads are added, so a long CI run is a matter of topping the
+counter up rather than holding a mode open. The header counts down what is
+left, and once it runs out prutil is back to refreshing only when you press
+`r`.
+
+Each automatic reload is the same work `r` does, so it costs the same one
+request for the list plus the checks it warms.
 
 ## Views
 

@@ -66,6 +66,10 @@ list query that force it to walk `contexts`.
 - All colour lives in `internal/ui/styles.go`. All key bindings live in
   `internal/ui/keys.go` and are surfaced through `keyMap.ShortHelp`, so a new
   binding shows up in the footer automatically.
+- Tests must not run a `tea.Tick` command. `drain` calls the command, so
+  draining one blocks for the whole interval. Send the message the tick would
+  have produced instead, the way the `selectionMsg` and `autoRefreshMsg` tests
+  do.
 - List rows are a fixed `rowHeight` lines. Scrolling arithmetic depends on that,
   so pad rather than shrink a row.
 - Layout code measures plain text with `ansi.StringWidth` and applies styles
@@ -74,6 +78,16 @@ list query that force it to walk `contexts`.
 - Rendering must fit the terminal at any width. `TestRenderFitsEveryTerminalSize`
   asserts it; keep it passing.
 - Below 80 columns (`narrowWidth`) the layout collapses to a single pane.
+
+## Auto-refresh
+
+`a` buys `autoRefreshBurst` reloads spaced `autoRefreshInterval` apart, and
+pressing it again adds another burst to `App.autoLeft` rather than restarting
+the timer. `App.autoSeq` names the run of ticks in flight: `extendAutoRefresh`
+bumps it only when starting from zero, and `Update` drops an `autoRefreshMsg`
+whose `seq` is stale, so a tick from a spent run cannot revive it. Each tick
+goes through the same `refresh` the `r` key uses, which is what makes the
+checks refetch and the dot go green.
 
 ## Views
 

@@ -13,6 +13,7 @@ type keyMap struct {
 	Back    key.Binding
 	Open    key.Binding
 	Refresh key.Binding
+	Auto    key.Binding
 	NextTab key.Binding
 	Help    key.Binding
 	Quit    key.Binding
@@ -53,6 +54,10 @@ func defaultKeys() keyMap {
 			key.WithKeys("r"),
 			key.WithHelp("r", "refresh"),
 		),
+		Auto: key.NewBinding(
+			key.WithKeys("a"),
+			key.WithHelp("a", "auto-refresh"),
+		),
 		NextTab: key.NewBinding(
 			key.WithKeys("tab"),
 			key.WithHelp("tab", "open/closed"),
@@ -70,7 +75,7 @@ func defaultKeys() keyMap {
 
 // ShortHelp implements help.KeyMap.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Into, k.Back, k.Open, k.NextTab, k.Refresh, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Into, k.Back, k.Open, k.NextTab, k.Refresh, k.Auto, k.Help, k.Quit}
 }
 
 // FullHelp implements help.KeyMap.
@@ -78,6 +83,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Top, k.Bottom},
 		{k.Into, k.Back, k.Open},
-		{k.Refresh, k.NextTab, k.Help, k.Quit},
+		{k.Refresh, k.Auto, k.NextTab},
+		{k.Help, k.Quit},
 	}
 }

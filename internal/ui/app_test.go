@@ -520,3 +520,101 @@ func TestRefreshDuringTheBackgroundFillDropsTheStaleReply(t *testing.T) {
 	assert.Len(t, app.cur().prs, 1, "the stale finish reply must not replace the list")
 	assert.True(t, app.cur().loading, "the fresh load is still what is in flight")
 }
+
+func TestAutoRefreshReloadsABurstOfTimesThenFallsBackToManual(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	require.Zero(t, app.autoLeft, "auto-refresh is off until it is asked for")
+
+	cmd := send(t, app, press("a"))
+	require.NotNil(t, cmd, "the first press schedules the run of ticks")
+	assert.Equal(t, autoRefreshBurst, app.autoLeft)
+
+	for left := autoRefreshBurst; left > 0; left-- {
+		gen := app.gen
+		send(t, app, autoRefreshMsg{seq: app.autoSeq})
+		assert.Equal(t, gen+1, app.gen, "each tick reloads the visible view")
+		assert.Equal(t, left-1, app.autoLeft)
+	}
+
+	gen := app.gen
+	send(t, app, autoRefreshMsg{seq: app.autoSeq})
+	assert.Equal(t, gen, app.gen, "the burst is spent, so nothing reloads")
+	assert.NotContains(t, headerLine(app), "auto-refresh", "and the header stops claiming otherwise")
+}
+
+func TestPressingTheAutoRefreshKeyAgainAddsAnotherBurst(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("a"))
+	seq := app.autoSeq
+
+	send(t, app, autoRefreshMsg{seq: seq})
+	require.Equal(t, autoRefreshBurst-1, app.autoLeft)
+
+	cmd := send(t, app, press("a"))
+	assert.Equal(t, 2*autoRefreshBurst-1, app.autoLeft, "the second press tops the counter up")
+	assert.Equal(t, seq, app.autoSeq, "the run already in flight carries on rather than being restarted")
+
+	require.NotNil(t, cmd)
+	assert.IsType(t, statusMsg(""), cmd(),
+		"topping up only says so; it does not queue a second run of ticks")
+}
+
+func TestATickFromASpentAutoRefreshRunIsIgnored(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("a"))
+	spent := app.autoSeq
+	for range autoRefreshBurst {
+		send(t, app, autoRefreshMsg{seq: spent})
+	}
+	require.Zero(t, app.autoLeft)
+
+	send(t, app, press("a"))
+	require.NotEqual(t, spent, app.autoSeq, "a fresh press starts a new run")
+
+	gen := app.gen
+	send(t, app, autoRefreshMsg{seq: spent})
+	assert.Equal(t, gen, app.gen, "a tick from the old run does not reload")
+	assert.Equal(t, autoRefreshBurst, app.autoLeft, "nor does it spend the new run's budget")
+}
+
+func TestAutoRefreshInvalidatesTheCheckCacheSoTheChecksAreRefetched(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	require.NotEmpty(t, app.checks[samplePRs()[0].Key()].checks)
+
+	send(t, app, press("a"))
+	send(t, app, autoRefreshMsg{seq: app.autoSeq})
+
+	assert.Empty(t, app.checks, "watching a pull request go green needs the checks fetched again")
+	assert.True(t, app.cur().loading)
+}
+
+func TestAutoRefreshReloadsWhicheverViewIsOnScreen(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("tab"))
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs()})
+	require.Equal(t, viewClosed, app.active)
+
+	send(t, app, press("a"))
+	send(t, app, autoRefreshMsg{seq: app.autoSeq})
+
+	assert.True(t, app.views[viewClosed].loading, "the view on screen is the one reloaded")
+	assert.False(t, app.views[viewOpen].loaded, "and the other is invalidated, exactly as r does")
+}
+
+func TestAutoRefreshSaysHowMuchIsLeftInTheHeaderAndTheStatusLine(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	assert.NotContains(t, headerLine(app), "auto-refresh")
+
+	send(t, app, press("a"))
+	assert.Equal(t, "auto-refresh every 30s, 5 to go", app.autoNote())
+	assert.Contains(t, headerLine(app), "auto-refresh ×5")
+
+	send(t, app, autoRefreshMsg{seq: app.autoSeq})
+	assert.Equal(t, "auto-refresh every 30s, 4 to go", app.autoNote())
+	assert.Contains(t, headerLine(app), "auto-refresh ×4")
+}
+
+func TestTheHelpListsTheAutoRefreshKey(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	assert.Contains(t, ansi.Strip(app.render()), "a auto-refresh")
+}

@@ -18,6 +18,7 @@ type Styles struct {
 	PaneBorder lipgloss.Style
 	Header     lipgloss.Style
 	Mode       lipgloss.Style
+	Auto       lipgloss.Style
 	Help       lipgloss.Style
 	Error      lipgloss.Style
 	Status     lipgloss.Style
@@ -77,6 +78,7 @@ func newStyles(isDark bool) Styles {
 		PaneBorder: base.Foreground(border),
 		Header:     base.Foreground(accent).Bold(true),
 		Mode:       base.Foreground(text).Bold(true),
+		Auto:       base.Foreground(amber).Bold(true),
 		Help:       base.Foreground(faint),
 		Error:      base.Foreground(red).Bold(true),
 		Status:     base.Foreground(amber),

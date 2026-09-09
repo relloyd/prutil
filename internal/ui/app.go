@@ -5,6 +5,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -32,6 +33,13 @@ const (
 	prefetchLimit = 25
 	// statusLifetime is how long a transient message stays on screen.
 	statusLifetime = 4 * time.Second
+	// autoRefreshInterval is the gap between two automatic refreshes.
+	autoRefreshInterval = 30 * time.Second
+	// autoRefreshBurst is how many automatic refreshes one press of the
+	// auto-refresh key buys. Pressing it again adds another burst, so watching
+	// a pull request's checks finish is a matter of topping the counter up
+	// rather than turning a mode on and remembering to turn it off.
+	autoRefreshBurst = 5
 	// requestTimeout bounds a single gh invocation.
 	requestTimeout = 60 * time.Second
 )
@@ -144,6 +152,14 @@ type App struct {
 	// gen is bumped on every refresh; replies carrying an older generation are
 	// discarded so a slow request cannot overwrite fresher data.
 	gen int
+
+	// autoLeft is how many automatic refreshes are still owed. Zero means
+	// auto-refresh is off and the view only reloads when the reader asks.
+	autoLeft int
+	// autoSeq names the run of ticks currently in flight. A tick left over
+	// from a spent run carries an older number and is dropped, so a run that
+	// has ended cannot restart itself.
+	autoSeq int
 }
 
 // New builds an App ready to be handed to tea.NewProgram.
@@ -274,6 +290,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, a.withSpinner(a.ensureChecks(msg.key))
 
+	case autoRefreshMsg:
+		if msg.seq != a.autoSeq || a.autoLeft <= 0 {
+			return a, nil
+		}
+		a.autoLeft--
+		cmds := []tea.Cmd{a.refresh(a.autoNote())}
+		if a.autoLeft > 0 {
+			cmds = append(cmds, a.scheduleAutoRefresh(msg.seq))
+		}
+		return a, tea.Batch(cmds...)
+
 	case statusMsg:
 		a.status = string(msg)
 		return a, tea.Tick(statusLifetime, func(time.Time) tea.Msg { return clearStatusMsg{} })
@@ -298,7 +325,10 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case key.Matches(msg, a.keys.Refresh):
-		return a, a.refresh()
+		return a, a.refresh("refreshing…")
+
+	case key.Matches(msg, a.keys.Auto):
+		return a, a.extendAutoRefresh()
 
 	case key.Matches(msg, a.keys.NextTab):
 		return a, a.switchView(a.active.next())
@@ -395,11 +425,11 @@ func (a *App) open() tea.Cmd {
 	}
 }
 
-// refresh discards everything and reloads the visible view. The other views
-// are marked unloaded rather than reloaded now, so that a refresh costs one
-// request; they refetch the next time they are shown instead of quietly
-// serving data from before the refresh.
-func (a *App) refresh() tea.Cmd {
+// refresh discards everything and reloads the visible view, announcing itself
+// with note. The other views are marked unloaded rather than reloaded now, so
+// that a refresh costs one request; they refetch the next time they are shown
+// instead of quietly serving data from before the refresh.
+func (a *App) refresh(note string) tea.Cmd {
 	a.gen++
 	a.checks = map[model.Key]checkState{}
 
@@ -415,7 +445,35 @@ func (a *App) refresh() tea.Cmd {
 		a.views[i].err = nil
 		a.views[i].lastRefresh = time.Time{}
 	}
-	return tea.Batch(a.load(a.active), a.spin.Tick, status("refreshing…"))
+	return tea.Batch(a.load(a.active), a.spin.Tick, status(note))
+}
+
+// extendAutoRefresh grants another burst of automatic refreshes. The first
+// press starts the run of ticks; a press while one is already running only
+// adds to the counter, so the reader tops up a countdown rather than
+// restarting the clock they are already waiting on.
+func (a *App) extendAutoRefresh() tea.Cmd {
+	running := a.autoLeft > 0
+	a.autoLeft += autoRefreshBurst
+	if running {
+		return status(a.autoNote())
+	}
+	a.autoSeq++
+	return tea.Batch(a.scheduleAutoRefresh(a.autoSeq), status(a.autoNote()))
+}
+
+// scheduleAutoRefresh waits one interval and then asks for a refresh. seq ties
+// the tick to the run that scheduled it.
+func (a *App) scheduleAutoRefresh(seq int) tea.Cmd {
+	return tea.Tick(autoRefreshInterval, func(time.Time) tea.Msg {
+		return autoRefreshMsg{seq: seq}
+	})
+}
+
+// autoNote describes how much auto-refresh is left, for the status line.
+func (a *App) autoNote() string {
+	return fmt.Sprintf("auto-refresh every %s, %d to go",
+		model.HumanDuration(autoRefreshInterval), a.autoLeft)
 }
 
 // switchView moves the list pane to another view, loading it the first time it
@@ -733,6 +791,12 @@ type (
 	selectionMsg struct {
 		gen int
 		key model.Key
+	}
+	// autoRefreshMsg is one beat of auto-refresh. seq names the run that
+	// scheduled it, so a tick from a run that has already been spent is
+	// discarded rather than reviving it.
+	autoRefreshMsg struct {
+		seq int
 	}
 	statusMsg      string
 	clearStatusMsg struct{}
