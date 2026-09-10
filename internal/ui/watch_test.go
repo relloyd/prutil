@@ -628,6 +628,78 @@ func TestTheDetailExplainsTheCurrentWatchScheduleAndActivity(t *testing.T) {
 	assert.Contains(t, screen, "started watching")
 }
 
+func TestTheWatchSectionCanBeSelectedAndDrilledInto(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+
+	send(t, app, press("w"))
+	send(t, app, press("l"))
+	require.Equal(t, paneDetail, app.focus)
+	require.Equal(t, detailChecks, app.detailSection)
+
+	send(t, app, press("k"))
+	assert.Equal(t, detailWatch, app.detailSection)
+	assert.Contains(t, plain(app.render()), "▌ WATCH")
+
+	send(t, app, press("l"))
+	assert.Equal(t, detailWatchPage, app.detailPage)
+	screen := plain(app.render())
+	assert.Contains(t, screen, "cadence:")
+	assert.Contains(t, screen, "ACTIVITY")
+	assert.Contains(t, screen, "HANDOFFS")
+	assert.Contains(t, screen, "started watching")
+
+	send(t, app, press("h"))
+	assert.Equal(t, detailOverview, app.detailPage)
+	assert.Equal(t, paneDetail, app.focus)
+	send(t, app, press("h"))
+	assert.Equal(t, paneList, app.focus)
+}
+
+func TestExpandedWatchViewShowsPersistedHandoffMetadata(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	require.NoError(t, app.store.AppendHandoff(home.Handoff{
+		At:          testNow.Add(-time.Minute),
+		PR:          "relloyd/prutil#42",
+		Outcome:     home.OutcomeSent,
+		Kind:        "claude",
+		Target:      "w2:p1",
+		Workspace:   "w2",
+		Tab:         "w2:t1",
+		Provisioned: true,
+	}))
+	loadHandoffHistory(t, app, samplePRs()[0].Key())
+
+	send(t, app, press("w"))
+	send(t, app, press("l"))
+	send(t, app, press("k"))
+	send(t, app, press("l"))
+
+	screen := plain(app.render())
+	assert.Contains(t, screen, "workspace: w2")
+	assert.Contains(t, screen, "tab: w2:t1")
+}
+
+func TestExpandedWatchViewScrollsThroughExistingActivity(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 14)
+	key := samplePRs()[0].Key()
+	for range watchActivityLimit {
+		app.recordWatchActivity(key, "additional watcher activity")
+	}
+
+	send(t, app, press("w"))
+	send(t, app, press("l"))
+	send(t, app, press("k"))
+	send(t, app, press("l"))
+	require.Greater(t, app.watchLineCount(), app.watchWindow())
+
+	send(t, app, press("G"))
+	assert.Greater(t, app.watchOffset, 0)
+	assert.Contains(t, plain(app.render()), " of ")
+
+	send(t, app, press("g"))
+	assert.Zero(t, app.watchOffset)
+}
+
 func TestTheDetailNamesAWatcherOperationWhileItsCommandIsInFlight(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 

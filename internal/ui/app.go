@@ -56,6 +56,22 @@ const (
 	paneDetail
 )
 
+// detailSection is the section selected in the normal detail pane.
+type detailSection int
+
+const (
+	detailChecks detailSection = iota
+	detailWatch
+)
+
+// detailPage is the level currently shown inside the detail pane.
+type detailPage int
+
+const (
+	detailOverview detailPage = iota
+	detailWatchPage
+)
+
 // view selects which list of pull requests the list pane shows. A third view
 // for review-requested pull requests would slot in before viewCount.
 type view int
@@ -176,6 +192,9 @@ type App struct {
 
 	detailCursor int
 	detailOffset int
+	detailSection
+	detailPage
+	watchOffset int
 
 	focus    pane
 	width    int
@@ -320,6 +339,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return a.handleKey(msg)
+
+	case tea.MouseClickMsg:
+		return a.handleMouse(msg)
 
 	case spinner.TickMsg:
 		if !a.busy() {
@@ -481,13 +503,25 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Into):
 		if a.focus == paneList && len(a.cur().prs) > 0 {
 			a.focus = paneDetail
-			a.detailCursor, a.detailOffset = 0, 0
+			a.resetDetailNavigation()
 			return a, a.withSpinner(a.ensureChecks(a.selectedKey()))
+		}
+		if a.focus == paneDetail && a.detailPage == detailOverview && a.detailSection == detailWatch {
+			a.detailPage = detailWatchPage
+			a.watchOffset = 0
+			a.clampScroll()
 		}
 		return a, nil
 
 	case key.Matches(msg, a.keys.Back):
+		if a.focus == paneDetail && a.detailPage == detailWatchPage {
+			a.detailPage = detailOverview
+			a.watchOffset = 0
+			a.clampScroll()
+			return a, nil
+		}
 		a.focus = paneList
+		a.resetDetailNavigation()
 		return a, nil
 
 	case key.Matches(msg, a.keys.Open):
@@ -511,6 +545,53 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// handleMouse handles the left click that selects a pull request in the list.
+func (a *App) handleMouse(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	if msg.Button != tea.MouseLeft {
+		return a, nil
+	}
+
+	index, ok := a.listIndexAt(msg.X, msg.Y)
+	if !ok {
+		return a, nil
+	}
+
+	a.focus = paneList
+	a.resetDetailNavigation()
+	return a, a.selectList(index)
+}
+
+// listIndexAt maps a terminal coordinate to a visible pull-request row.
+func (a *App) listIndexAt(x, y int) (int, bool) {
+	if a.narrow() && a.focus != paneList {
+		return 0, false
+	}
+
+	listWidth, _ := a.paneWidths()
+	if x < 0 || x >= listWidth {
+		return 0, false
+	}
+
+	bodyY := y - headerHeight
+	if bodyY < 0 {
+		return 0, false
+	}
+
+	row := bodyY / rowHeight
+	rows := max((a.bodyHeight()-1)/rowHeight, 1)
+	if row >= rows {
+		return 0, false
+	}
+
+	state := a.cur()
+	start := min(state.listOffset, max(len(state.prs)-1, 0))
+	index := start + row
+	if index < 0 || index >= len(state.prs) {
+		return 0, false
+	}
+	return index, true
+}
+
 // move steps the cursor of the focused pane by delta.
 func (a *App) move(delta int) tea.Cmd {
 	return a.jump(a.cursorIndex() + delta)
@@ -526,16 +607,27 @@ func (a *App) jump(index int) tea.Cmd {
 	index = min(max(index, 0), count-1)
 
 	if a.focus == paneDetail {
-		a.detailCursor = index
+		if a.detailPage == detailWatchPage {
+			a.watchOffset = index
+			a.clampScroll()
+			return nil
+		}
+		a.setDetailIndex(index)
 		a.clampScroll()
 		return nil
 	}
 
+	return a.selectList(index)
+}
+
+// selectList moves the list cursor and schedules the existing debounced check
+// fetch for the newly selected pull request.
+func (a *App) selectList(index int) tea.Cmd {
 	if index == a.cur().cursor {
 		return nil
 	}
 	a.cur().cursor = index
-	a.detailCursor, a.detailOffset = 0, 0
+	a.resetDetailNavigation()
 	a.clampScroll()
 
 	// Wait before fetching so that a burst of movement costs one request.
@@ -591,7 +683,7 @@ func (a *App) selectedTarget() (target, label string, ok bool) {
 	}
 
 	target, label = pr.URL, pr.Key().String()
-	if a.focus == paneDetail {
+	if a.focus == paneDetail && a.detailPage == detailOverview && a.detailSection == detailChecks {
 		checks := a.checks[pr.Key()].checks
 		if a.detailCursor < len(checks) {
 			check := checks[a.detailCursor]
@@ -666,7 +758,7 @@ func (a *App) switchView(v view) tea.Cmd {
 	}
 	a.active = v
 	a.focus = paneList
-	a.detailCursor, a.detailOffset = 0, 0
+	a.resetDetailNavigation()
 	a.clampScroll()
 
 	// A view that has never been fetched loads now. One that failed keeps its
@@ -877,7 +969,10 @@ func (a *App) selectedChecks() checkState {
 // cursorIndex is the cursor of the focused pane.
 func (a *App) cursorIndex() int {
 	if a.focus == paneDetail {
-		return a.detailCursor
+		if a.detailPage == detailWatchPage {
+			return a.watchOffset
+		}
+		return a.detailIndex()
 	}
 	return a.cur().cursor
 }
@@ -885,7 +980,10 @@ func (a *App) cursorIndex() int {
 // itemCount is the number of rows in the focused pane.
 func (a *App) itemCount() int {
 	if a.focus == paneDetail {
-		return len(a.selectedChecks().checks)
+		if a.detailPage == detailWatchPage {
+			return a.watchLineCount()
+		}
+		return a.detailItemCount()
 	}
 	return len(a.cur().prs)
 }
@@ -921,9 +1019,80 @@ func (a *App) clampScroll() {
 	rows := max(a.bodyHeight()/rowHeight, 1)
 	state.listOffset = clampOffset(state.listOffset, state.cursor, rows, len(state.prs))
 
+	if a.focus == paneDetail && a.detailPage == detailWatchPage {
+		a.watchOffset = clampOffset(a.watchOffset, a.watchOffset, a.watchWindow(), a.watchLineCount())
+		return
+	}
+
 	checks := a.selectedChecks().checks
 	a.detailCursor = min(max(a.detailCursor, 0), max(len(checks)-1, 0))
 	a.detailOffset = clampOffset(a.detailOffset, a.detailCursor, a.checksHeight(), len(checks))
+}
+
+// resetDetailNavigation returns the detail pane to its normal CHECKS view.
+func (a *App) resetDetailNavigation() {
+	a.detailCursor = 0
+	a.detailOffset = 0
+	a.detailSection = detailChecks
+	a.detailPage = detailOverview
+	a.watchOffset = 0
+}
+
+// detailItemCount counts the selectable WATCH section and check rows.
+func (a *App) detailItemCount() int {
+	count := len(a.selectedChecks().checks)
+	if pr, ok := a.selectedPR(); ok && a.hasWatchSection(pr) {
+		count++
+	}
+	return count
+}
+
+// detailIndex returns the normal-detail selection as one contiguous index.
+func (a *App) detailIndex() int {
+	pr, hasPR := a.selectedPR()
+	if hasPR && a.detailSection == detailWatch && a.hasWatchSection(pr) {
+		return 0
+	}
+	if hasPR && a.hasWatchSection(pr) {
+		return a.detailCursor + 1
+	}
+	return a.detailCursor
+}
+
+// setDetailIndex selects WATCH or one of the check rows from a contiguous
+// normal-detail index.
+func (a *App) setDetailIndex(index int) {
+	pr, hasPR := a.selectedPR()
+	hasWatch := hasPR && a.hasWatchSection(pr)
+	if hasWatch && index == 0 {
+		a.detailSection = detailWatch
+		a.detailCursor = 0
+		a.detailOffset = 0
+		return
+	}
+
+	a.detailSection = detailChecks
+	if hasWatch {
+		index--
+	}
+	a.detailCursor = max(index, 0)
+}
+
+// watchWindow is the number of expanded WATCH lines that fit while retaining
+// one line for a position indicator.
+func (a *App) watchWindow() int {
+	return max(a.bodyHeight()-1, 1)
+}
+
+// watchLineCount returns the number of expanded WATCH lines for the selected
+// pull request at the current detail width.
+func (a *App) watchLineCount() int {
+	pr, ok := a.selectedPR()
+	if !ok {
+		return 0
+	}
+	_, width := a.paneWidths()
+	return len(a.watchPageLines(pr, width))
 }
 
 // clampOffset returns the smallest scroll adjustment that keeps cursor visible

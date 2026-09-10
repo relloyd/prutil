@@ -44,7 +44,7 @@ func defaultKeys() keyMap {
 		),
 		Into: key.NewBinding(
 			key.WithKeys("right", "l"),
-			key.WithHelp("→/l", "checks"),
+			key.WithHelp("→/l", "detail"),
 		),
 		Back: key.NewBinding(
 			key.WithKeys("left", "h", "esc"),
@@ -100,7 +100,7 @@ func defaultKeys() keyMap {
 // the one binding a reader must never have to hunt for.
 //
 // Back is not in it. It is the obvious mirror of the binding that goes into
-// the checks pane, esc does the same thing, and the room it frees is what lets
+// the detail pane, esc does the same thing, and the room it frees is what lets
 // the watch key be named here instead of only under ?.
 func (k keyMap) ShortHelp() []key.Binding {
 	return []key.Binding{k.Into, k.Open, k.Copy, k.NextTab, k.Refresh, k.Auto, k.Watch, k.Help, k.Quit}

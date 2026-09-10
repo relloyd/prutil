@@ -5,8 +5,8 @@ repository your account can see.
 
 The list on the left shows each pull request with a coloured dot for its CI
 state, its age, repository, branches, number, review state and diff size. The
-pane on the right shows the individual GitHub Actions checks for whichever pull
-request is selected.
+pane on the right shows the selected pull request's WATCH summary and
+individual GitHub Actions checks.
 
 ## Requirements
 
@@ -57,10 +57,11 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 
 | Key | Action |
 | --- | --- |
-| `j` / `k` or `↓` / `↑` | move within the focused pane |
+| left click | select a pull request in the list |
+| `j` / `k` or `↓` / `↑` | move within the focused pane; in detail, select WATCH or CHECKS |
 | `g` / `G` | jump to the first or last item |
-| `l` or `→` | focus the checks pane |
-| `h`, `←` or `esc` | go back to the list |
+| `l` or `→` | focus detail from the list, or drill into the selected detail section |
+| `h`, `←` or `esc` | go back one level |
 | `enter` | open the selected pull request, or the selected check, in your browser |
 | `y` or `c` | copy the selected pull request's URL, or the selected check's, to the clipboard |
 | `r` | refresh from GitHub |
@@ -73,7 +74,9 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `q` or `ctrl+c` | quit |
 
 Below 80 columns the two panes collapse into one: the list fills the terminal,
-`l` swaps to the checks, and `h` swaps back.
+clicking a row selects it, `l` swaps to detail, and `h` swaps back. When WATCH
+is available, select it above CHECKS and press `l` again to see its full
+schedule, activity and handoff details.
 
 The footer has one line, so it lists the actions and leaves moving about to the
 arrow keys. `?` shows every binding, including `h`, `←` and `esc` for going back
