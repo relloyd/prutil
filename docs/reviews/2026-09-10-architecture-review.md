@@ -233,3 +233,197 @@ outstanding, or show a static line with the elapsed time.
   well judged and the defaults are appropriately slack.
 - The comment density. It is high, but it is nearly all *why*, and several
   comments record measurements that would otherwise have to be rediscovered.
+
+---
+
+# Addendum: `06bf62a`, mouse selection and the expanded WATCH page
+
+512 added lines, all in `internal/ui`. Tests are green. The feature works, and
+the section-navigation model (WATCH and CHECKS as two selectable sections, one
+of which drills into a page) is a reasonable answer to a detail pane that had
+outgrown a single scrolling list. Three defects and one design cost.
+
+## Defects
+
+### 3. The WATCH section appears and then vanishes on every selection
+
+`hasWatchSection` counts `history.loading` as content. Selecting a pull request
+starts a durable-history read, so the section renders immediately with
+"not watching · manual handoff activity" and "loading handoff history…". When
+the read returns nothing, which is the normal case for a pull request nothing
+has been handed off for, the section disappears and the CHECKS list below it
+jumps up two lines.
+
+Reproduced: `hasWatchSection` is true straight after the list load and false
+after an empty `handoffHistoryMsg`, with "WATCH" present in the rendered frame
+before and absent after.
+
+A section that has nothing to say should not claim to be loading. Drop
+`history.loading` from `hasWatchSection`, or hold the section open once it has
+been shown for the current selection.
+
+### 4. The WATCH section can be selected, then drilled into when it is empty
+
+The same transition leaves the navigation in a state nothing can render.
+`detailSection` stays `detailWatch` after `hasWatchSection` goes false, so
+`detailIndex` reports 0 while `setDetailIndex` would map 0 to a check. Nothing
+is highlighted in either section. `Into` does not check `hasWatchSection`
+either, so `l` from there opens the expanded page and gets
+"nothing to show for WATCH" with no lines to scroll.
+
+Reproduced end to end: after an empty history read with WATCH selected,
+`hasWatchSection` is false, `detailIndex` is 0, `itemCount` is 3, and `l` still
+enters the page with `watchLineCount` of zero.
+
+`setDetailIndex` already knows how to fall back to checks. Call the same path
+when the section goes away, and gate `Into` on `hasWatchSection`.
+
+### 5. The list cursor scrolls out of sight at some terminal heights
+
+Pre-existing, but this commit makes it concrete. Three places compute how many
+list rows exist and two of them disagree:
+
+| Caller | Rows |
+| --- | --- |
+| `renderList` | `(height-1)/rowHeight` |
+| `listIndexAt` (new) | `(bodyHeight-1)/rowHeight` |
+| `clampScroll` | `bodyHeight/rowHeight` |
+
+`renderList` holds a line back for the position indicator. `clampScroll` does
+not, so whenever `bodyHeight` is an exact multiple of `rowHeight` it believes
+one more row fits than is drawn, and never scrolls to bring the cursor back.
+
+Reproduced at 100x28 with ten pull requests: `bodyHeight` is 24, `renderList`
+draws 3 rows, `clampScroll` assumes 4, and from the fourth row down the
+selected row is off screen and stays off screen for every subsequent `j`.
+
+The new mouse code got the arithmetic right, which is what makes the
+disagreement visible: click and keyboard now hold different beliefs about which
+rows exist. Extract one `listRows()` method and have all three call it.
+
+## Design cost: mouse mode is on with no way off and no wheel
+
+`View` sets `MouseModeCellMotion` unconditionally. Two consequences, neither
+mentioned in the commit message or the README:
+
+- **Terminal text selection is taken over.** Once an application requests mouse
+  reporting, dragging to select stops working normally; most terminals require
+  a modifier to override. For a dashboard whose screen is full of URLs, error
+  text and check names, that is a real loss, and `y` only copies the one URL
+  under the cursor.
+- **The wheel does nothing.** `MouseModeCellMotion` delivers wheel events, and
+  `Update` handles only `MouseClickMsg`. So the mode captures the wheel and then
+  ignores it. A reader who scrolls gets nothing, where before they at least got
+  their terminal's own behaviour.
+
+`MouseMode` is set per-`View`, so making it a field on `App` driven by a flag
+or a toggle key is a few lines. Handling `MouseWheelMsg` by moving the list
+cursor is a few more. Do both, or neither; the current halfway point is the
+worst of the three.
+
+## Smaller notes on this commit
+
+- **`detailSection` and `detailPage` are embedded, not named.** They read like
+  fields with an inferred type, but they are anonymous embedded fields of two
+  `int` types. It works only because neither type has methods; the day
+  `detailPage` gets a `String()`, `App` silently starts implementing
+  `fmt.Stringer` and something prints a page number where a screen was wanted.
+  Name them: `section detailSection` and `page detailPage`.
+
+- **`watchDetail` and `watchPageLines` are the same content twice.** Both read
+  status, armed, events and history, and format them in two different
+  vocabularies: "checks running · next in 5m · every 2m" against "state: …",
+  "cadence: …", "next check: …". Roughly 120 near-duplicate lines that will
+  drift the first time one is edited. Produce one ordered slice of labelled
+  rows and let the compact renderer take a prefix of it.
+
+- **Counting is done by rendering.** `watchLineCount` builds the whole expanded
+  page, styled and truncated, to return its length; `itemCount` and
+  `clampScroll` call it on every key press while the page is open, and
+  `checksHeight` renders `watchDetail` a second time purely to measure it. Have
+  the shared row model return a count without producing strings.
+
+- **`renderWatchPage` wastes a line when it is not scrolled.** The window is
+  `height-1` to reserve room for the position indicator, but the indicator is
+  only emitted when there is something above or below.
+
+- **The added tests cover the happy paths only.** Click selection, narrow mode,
+  drill-in, scrolling and terminal fitting are all covered. None of the three
+  defects above is, and each is a short test: an empty `handoffHistoryMsg` for
+  the first two, and a height that makes `bodyHeight` a multiple of `rowHeight`
+  for the third.
+
+---
+
+# Fix plan
+
+Five defects and a pile of structural work. Suggested order, with the
+justification for the ordering rather than just the list.
+
+## Tranche 1: correctness, before the watcher is left running (half a day)
+
+These are the two that misbehave against something outside the process.
+
+1. **Null node spins the poller.** In `applyWatch`, defer every key in
+   `msg.keys` that produced no snapshot, using `watchRetry()`. Test: an
+   `Observe` with a missing key leaves `NextDue` in the future.
+2. **Nil store panics on `W`.** Give `git.Resolver` a no-op `CacheStore` when
+   there is no application directory, and delete the three interior nil checks.
+   Test: `Resolve` against a resolver built with no store returns
+   `ErrCheckoutNotFound` rather than panicking.
+3. **Chunk `WatchSnapshot` at 100 ids.** One loop in `CLI.WatchSnapshot`, and a
+   test that 150 ids produce two calls.
+
+## Tranche 2: the three UI defects (half a day)
+
+Cheap, visible, and they undermine confidence in the newest feature.
+
+4. **One `listRows()` helper** shared by `renderList`, `clampScroll` and
+   `listIndexAt`.
+5. **Stop `hasWatchSection` counting a loading history as content**, and snap
+   `detailSection` back to checks when the section goes away.
+6. **Gate `Into` on `hasWatchSection`** so the expanded page cannot be opened
+   empty.
+
+Do 5 and 6 together; they are the same transition seen from two angles.
+
+## Tranche 3: the duplication the last two commits introduced (one day)
+
+Worth doing before more is built on top, because both are already being copied.
+
+7. **One row model behind `watchDetail` and `watchPageLines`**, returning
+   labelled rows plus a count, so counting stops meaning rendering.
+8. **`handoff.fail` helper** for the six-times-repeated failure shape in
+   `provision`.
+9. **Delete `ListClosedPullRequests` and `NewClosedSweepState`**, or delete the
+   two-stage split. Keeping both means every test double implements a method
+   with no caller.
+
+## Tranche 4: the structural change (one to two days)
+
+10. **Collapse the seven per-key maps in `App` into one
+    `map[model.Key]*prRuntime`.** Do it after tranche 2, not before: two of the
+    defects above are exactly the class of bug this removes, and fixing them
+    first gives the refactor a regression test to land against.
+11. **Rename the embedded `detailSection`/`detailPage` to named fields.** Fold
+    into 10; it touches the same struct.
+
+## Tranche 5: cost and hygiene, in any order
+
+12. Read `.git/config` in checkout discovery instead of forking git three times
+    per candidate, and bound the walk depth.
+13. Evict stale entries from the `git.Client` identify cache.
+14. Rotate `handoffs.jsonl` and skip malformed lines rather than failing the
+    whole read.
+15. Decide the mouse question: handle `MouseWheelMsg` and add an off switch, or
+    revert to `MouseModeNone`.
+16. Move `model.SelfTestMarker` behind a config key.
+17. Delete `docs/tmp/watch-and-notify-handoff.md`.
+18. Correct the rate-limit sentence in `AGENTS.md` to name the 100-node limit.
+19. Slow the spinner while only a handoff is outstanding.
+
+## What this does not include
+
+No change to the watch tier ladder, the closed-view sweep sizing, the
+`run.Runner` seam or the shell-out design. Those are working and the reasoning
+behind them is recorded.
