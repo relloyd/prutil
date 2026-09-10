@@ -292,6 +292,41 @@ func TestTheViewerLoginIsMatchedWithoutRegardToCase(t *testing.T) {
 	assert.False(t, model.ReviewThread{LatestBy: "RelLoyd"}.NeedsAttention("relloyd"))
 }
 
+func TestSelfAuthoredTestMarkerMakesAnUnresolvedThreadEligible(t *testing.T) {
+	cases := []struct {
+		name   string
+		thread model.ReviewThread
+		want   bool
+	}{
+		{
+			name:   "a marked thread opened by the viewer remains eligible",
+			thread: model.ReviewThread{Opener: "ReLloYd", LatestBy: "relloyd", Body: "Please test this.\n" + model.SelfTestMarker},
+			want:   true,
+		},
+		{
+			name:   "a self-authored thread without the exact marker remains excluded",
+			thread: model.ReviewThread{Opener: "relloyd", LatestBy: "relloyd", Body: "<!-- PRUTIL:TEST -->"},
+			want:   false,
+		},
+		{
+			name:   "a resolved marked thread remains excluded",
+			thread: model.ReviewThread{Opener: "relloyd", LatestBy: "relloyd", Body: model.SelfTestMarker, Resolved: true},
+			want:   false,
+		},
+		{
+			name:   "another reviewer's marker does not override the viewer's reply",
+			thread: model.ReviewThread{Opener: "reviewer", LatestBy: "relloyd", Body: model.SelfTestMarker},
+			want:   false,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.thread.NeedsAttention("relloyd"))
+		})
+	}
+}
+
 func TestFeedbackKeepsOnlyWhatIsStillWaitingAndInOrder(t *testing.T) {
 	got := model.Feedback(threads(), "relloyd")
 	require.Len(t, got, 2)

@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+// SelfTestMarker opts an unresolved code-review thread opened by the
+// authenticated viewer into watcher feedback. It is an HTML comment so the
+// marker does not add visible noise to a pull request's rendered discussion.
+const SelfTestMarker = "<!-- prutil:test -->"
+
 // ReviewThread is one conversation attached to a pull request, as GitHub's
 // review UI groups them: a first comment on a line of the diff and every reply
 // under it, resolved or not.
@@ -46,12 +51,24 @@ type ReviewThread struct {
 
 // NeedsAttention reports whether a thread is feedback still waiting on viewer.
 // A resolved thread is finished, and a thread whose last word is the viewer's
-// own has already been answered by them.
+// own has already been answered by them unless its self-authored opening
+// comment explicitly carries SelfTestMarker.
 func (t ReviewThread) NeedsAttention(viewer string) bool {
 	if t.Resolved {
 		return false
 	}
-	return viewer == "" || !strings.EqualFold(t.LatestBy, viewer)
+	return viewer == "" ||
+		!strings.EqualFold(t.LatestBy, viewer) ||
+		t.selfTestComment(viewer)
+}
+
+// selfTestComment recognises an explicit watcher test only when the current
+// viewer wrote the opening comment. A marker from another reviewer must not
+// change the ordinary last-author rule.
+func (t ReviewThread) selfTestComment(viewer string) bool {
+	return viewer != "" &&
+		strings.EqualFold(t.Opener, viewer) &&
+		strings.Contains(t.Body, SelfTestMarker)
 }
 
 // Feedback selects the threads still waiting on viewer, keeping the order they

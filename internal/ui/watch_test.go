@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/relloyd/prutil/internal/gh"
 	"github.com/relloyd/prutil/internal/handoff"
 	"github.com/relloyd/prutil/internal/home"
 	"github.com/relloyd/prutil/internal/model"
@@ -104,6 +105,38 @@ func TestManualDiscoveryUsesTheAutomaticNonProvisioningHandoff(t *testing.T) {
 		app.state.Get("relloyd/prutil#42").NotifiedThreads)
 	assert.Equal(t, home.OutcomeSent, lastHandoff(t, app).Outcome)
 	assert.Contains(t, plain(app.render()), "manual discovery")
+}
+
+func TestWatcherHandsOffAMarkedSelfAuthoredReviewThread(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = selfTestReview()
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	reqs := dispatcher.requests()
+	require.Len(t, reqs, 1)
+	assert.Equal(t, 1, reqs[0].UnresolvedCount)
+	assert.Equal(t, map[string]string{"self-test": "self-test-comment"}, reqs[0].Threads)
+	assert.False(t, reqs[0].AllowProvision, "the automatic watcher must not provision for a test marker")
+	assert.Equal(t, map[string]string{"self-test": "self-test-comment"},
+		app.state.Get("relloyd/prutil#42").NotifiedThreads)
+}
+
+func TestManualDiscoveryHandsOffAMarkedSelfAuthoredReviewThread(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = selfTestReview()
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	notifyNewFeedback(t, app)
+
+	reqs := dispatcher.requests()
+	require.Len(t, reqs, 1)
+	assert.Equal(t, 1, reqs[0].NewCount)
+	assert.False(t, reqs[0].AllowProvision, "N must use automatic handoff semantics for a test marker")
 }
 
 func TestManualDiscoverySkipsPreviouslyHandedFeedback(t *testing.T) {
@@ -302,6 +335,21 @@ func TestFeedbackIsWhateverIsUnresolvedAndNotTheViewersOwnLastWord(t *testing.T)
 	require.Len(t, got, 2)
 	assert.Equal(t, "T1", got[0].ID)
 	assert.Equal(t, "T2", got[1].ID)
+}
+
+// selfTestReview is a code-line thread a viewer deliberately created to
+// exercise watcher delivery without requiring another reviewer.
+func selfTestReview() gh.Review {
+	return gh.Review{
+		Viewer: "relloyd",
+		Threads: []model.ReviewThread{{
+			ID:       "self-test",
+			Opener:   "relloyd",
+			Body:     "Exercise watcher delivery.\n" + model.SelfTestMarker,
+			LatestBy: "relloyd",
+			LatestID: "self-test-comment",
+		}},
+	}
 }
 
 // handOver presses the handoff key and settles the reply the way the runtime
