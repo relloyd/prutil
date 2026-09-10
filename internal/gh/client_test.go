@@ -615,9 +615,31 @@ func TestReviewThreadsDecodesTheConversationsAndTheViewer(t *testing.T) {
 	assert.Equal(t, "reviewer", first.Opener)
 	assert.Equal(t, "This retries forever.", first.Body, "the body is trimmed")
 	assert.Equal(t, "PRRC_9", first.LatestID, "the newest comment is what says whether a thread moved")
+	assert.Equal(t, "Please retry this.", first.LatestBody, "the newest body is decoded for marker checks")
 	assert.Equal(t, "https://github.com/relloyd/prutil/pull/42#discussion_r9", first.URL)
 	assert.Equal(t, 2, first.Comments)
 	assert.Equal(t, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), first.LatestAt)
+}
+
+func TestReviewThreadsAdmitsAMarkerInTheViewersLatestReply(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "review_threads_latest_marker.json")}}
+	client := gh.New(runner, 1)
+
+	review, err := client.ReviewThreads(context.Background(), model.Key{
+		Repo: "dojo-engineering/payments-infrastructure", Number: 6907,
+	})
+	require.NoError(t, err)
+	require.Len(t, review.Threads, 1)
+
+	thread := review.Threads[0]
+	assert.Equal(t, "copilot-pull-request-reviewer", thread.Opener)
+	assert.Equal(t, "relloyd", thread.LatestBy)
+	assert.Equal(t, "PRRC_MARKED_REPLY", thread.LatestID)
+	assert.Contains(t, thread.LatestBody, model.SelfTestMarker)
+	require.Len(t, review.Feedback(), 1,
+		"an unresolved thread with a marked latest reply is test feedback")
+	assert.Contains(t, runner.argsOf(0), "createdAt body",
+		"the precise query requests the latest comment body")
 }
 
 func TestReviewThreadsSelectsOnlyWhatIsStillWaitingOnTheViewer(t *testing.T) {

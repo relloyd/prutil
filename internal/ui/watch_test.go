@@ -139,6 +139,27 @@ func TestManualDiscoveryHandsOffAMarkedSelfAuthoredReviewThread(t *testing.T) {
 	assert.False(t, reqs[0].AllowProvision, "N must use automatic handoff semantics for a test marker")
 }
 
+func TestManualDiscoveryHandsOffAMarkedLatestReplyFromTheViewer(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = latestReplySelfTestReview()
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	notifyNewFeedback(t, app)
+
+	reqs := dispatcher.requests()
+	require.Len(t, reqs, 1)
+	assert.Equal(t, 1, reqs[0].UnresolvedCount)
+	assert.Equal(t, 1, reqs[0].NewCount)
+	assert.Equal(t, map[string]string{"copilot-thread": "viewer-test-reply"}, reqs[0].Threads)
+	assert.False(t, reqs[0].AllowProvision, "N must retain automatic no-provisioning semantics")
+	assert.Equal(t, map[string]string{"copilot-thread": "viewer-test-reply"},
+		app.state.Get("relloyd/prutil#42").NotifiedThreads)
+
+	notifyNewFeedback(t, app)
+	assert.Len(t, dispatcher.requests(), 1, "an unchanged marked reply is not handed over twice")
+}
+
 func TestManualDiscoverySkipsPreviouslyHandedFeedback(t *testing.T) {
 	app, client, _ := newTestApp(t, 120, 40)
 	dispatcher := dispatcherOf(t, app)
@@ -348,6 +369,20 @@ func selfTestReview() gh.Review {
 			Body:     "Exercise watcher delivery.\n" + model.SelfTestMarker,
 			LatestBy: "relloyd",
 			LatestID: "self-test-comment",
+		}},
+	}
+}
+
+func latestReplySelfTestReview() gh.Review {
+	return gh.Review{
+		Viewer: "relloyd",
+		Threads: []model.ReviewThread{{
+			ID:         "copilot-thread",
+			Opener:     "copilot-pull-request-reviewer",
+			Body:       "Please handle this permission.",
+			LatestBy:   "relloyd",
+			LatestID:   "viewer-test-reply",
+			LatestBody: "Acknowledged for watcher testing.\n\n" + model.SelfTestMarker,
 		}},
 	}
 }

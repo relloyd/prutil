@@ -269,18 +269,19 @@ func (n reviewThreadNode) toReviewThread() (model.ReviewThread, bool) {
 	opener, latest := n.Opener.Nodes[0], n.Latest.Nodes[0]
 
 	return model.ReviewThread{
-		ID:       n.ID,
-		Resolved: n.IsResolved,
-		Outdated: n.IsOutdated,
-		Path:     n.Path,
-		URL:      latest.URL,
-		Opener:   opener.Author.Login,
-		OpenedAt: at(opener.CreatedAt),
-		Body:     strings.TrimSpace(opener.Body),
-		LatestBy: latest.Author.Login,
-		LatestID: latest.ID,
-		LatestAt: at(latest.CreatedAt),
-		Comments: n.Latest.TotalCount,
+		ID:         n.ID,
+		Resolved:   n.IsResolved,
+		Outdated:   n.IsOutdated,
+		Path:       n.Path,
+		URL:        latest.URL,
+		Opener:     opener.Author.Login,
+		OpenedAt:   at(opener.CreatedAt),
+		Body:       strings.TrimSpace(opener.Body),
+		LatestBy:   latest.Author.Login,
+		LatestID:   latest.ID,
+		LatestAt:   at(latest.CreatedAt),
+		LatestBody: strings.TrimSpace(latest.Body),
+		Comments:   n.Latest.TotalCount,
 	}, true
 }
 

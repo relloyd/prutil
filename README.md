@@ -111,7 +111,7 @@ word in is left alone. `W` does the same thing on demand, for a pull request
 you have not armed or one you want looked at again now.
 
 To test watcher delivery with a code-line comment of your own, put this exact
-marker in the opening comment's Markdown source:
+marker in either the opening comment or your latest reply's Markdown source:
 
 ```html
 <!-- prutil:test -->
@@ -119,10 +119,12 @@ marker in the opening comment's Markdown source:
 
 GitHub hides the marker when it renders the comment. While that thread remains
 unresolved, prutil treats it as feedback even though you wrote the latest
-comment. The marker only works on a code-review thread that you opened; it
-does not opt in an ordinary pull-request conversation comment or a marker
-written by another reviewer. Normal duplicate suppression still applies, so
-the thread is handed over again only when it gains a new latest comment.
+comment. The marker only works when it is in a comment written by the
+authenticated viewer: either the thread's opening comment or the viewer's
+latest reply. It does not opt in an ordinary pull-request conversation comment,
+a marker written by another reviewer, or an older reply that is no longer the
+latest. Normal duplicate suppression still applies, so the thread is handed
+over again only when it gains a new latest comment.
 
 `N` is a diagnostic trigger for the automatic path. It asks GitHub for the
 selected open pull request's review threads and sends only feedback prutil has
@@ -181,10 +183,11 @@ second part matters: a reply inside an existing review thread moves neither
 count, so a counter on its own would miss it.
 
 That precise read covers the first 100 code-review threads. For each one it
-reads the opening comment's author and body plus the newest comment's author
-and id. This is why the self-test marker belongs in the opening comment. The
-top-level pull-request conversation-comment count is only a change signal; it
-is not a code-review thread and is never handed to an agent.
+reads the opening comment's author and body plus the newest comment's author,
+id and body. The newest body is fetched only so the self-test marker can be
+used in the viewer's latest reply; arbitrary historical replies are not
+scanned. The top-level pull-request conversation-comment count is only a
+change signal; it is not a code-review thread and is never handed to an agent.
 
 How often the first question is asked depends on what the pull request is
 doing:

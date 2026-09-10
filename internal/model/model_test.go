@@ -304,14 +304,37 @@ func TestSelfAuthoredTestMarkerMakesAnUnresolvedThreadEligible(t *testing.T) {
 			want:   true,
 		},
 		{
+			name: "a marked latest reply by the viewer remains eligible",
+			thread: model.ReviewThread{
+				Opener:     "reviewer",
+				LatestBy:   "ReLloYd",
+				LatestBody: "I am testing this.\n" + model.SelfTestMarker,
+			},
+			want: true,
+		},
+		{
 			name:   "a self-authored thread without the exact marker remains excluded",
 			thread: model.ReviewThread{Opener: "relloyd", LatestBy: "relloyd", Body: "<!-- PRUTIL:TEST -->"},
 			want:   false,
 		},
 		{
+			name: "a self-authored latest reply without the exact marker remains excluded",
+			thread: model.ReviewThread{
+				Opener: "reviewer", LatestBy: "relloyd", LatestBody: "<!-- PRUTIL:TEST -->",
+			},
+			want: false,
+		},
+		{
 			name:   "a resolved marked thread remains excluded",
 			thread: model.ReviewThread{Opener: "relloyd", LatestBy: "relloyd", Body: model.SelfTestMarker, Resolved: true},
 			want:   false,
+		},
+		{
+			name: "a resolved marked latest reply remains excluded",
+			thread: model.ReviewThread{
+				Opener: "reviewer", LatestBy: "relloyd", LatestBody: model.SelfTestMarker, Resolved: true,
+			},
+			want: false,
 		},
 		{
 			name:   "another reviewer's marker does not override the viewer's reply",

@@ -1,0 +1,41 @@
+{
+  "data": {
+    "viewer": { "login": "relloyd" },
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "id": "PRRT_MARKED_REPLY",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "internal/payments.go",
+              "opener": {
+                "nodes": [
+                  {
+                    "author": { "login": "copilot-pull-request-reviewer" },
+                    "createdAt": "2026-09-01T09:00:00Z",
+                    "body": "Please handle this permission."
+                  }
+                ]
+              },
+              "latest": {
+                "totalCount": 2,
+                "nodes": [
+                  {
+                    "id": "PRRC_MARKED_REPLY",
+                    "url": "https://github.com/dojo-engineering/payments-infrastructure/pull/6907#discussion_r6907",
+                    "author": { "login": "relloyd" },
+                    "createdAt": "2026-09-02T10:00:00Z",
+                    "body": "Acknowledged for watcher testing.\n\n<!-- prutil:test -->"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

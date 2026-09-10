@@ -226,7 +226,7 @@ query($owner: String!, $name: String!, $number: Int!, $first: Int!) {
           }
           latest: comments(last: 1) {
             totalCount
-            nodes { id url author { login } createdAt }
+            nodes { id url author { login } createdAt body }
           }
         }
       }
