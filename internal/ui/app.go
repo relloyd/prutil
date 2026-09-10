@@ -209,6 +209,9 @@ type App struct {
 	// handing names the pull requests with a handoff in flight, so that
 	// holding the key down cannot send the same work twice.
 	handing map[model.Key]bool
+	// reviewing names pull requests whose precise review-thread query is in
+	// flight, which keeps manual discovery from racing itself or the watcher.
+	reviewing map[model.Key]bool
 	// engine schedules the polling of every armed pull request.
 	engine *watch.Engine
 	// watchSeq names the watch schedule currently in flight, the same way
@@ -273,6 +276,7 @@ func New(cfg Config) *App {
 		hand:           cfg.Handoff,
 		handErr:        handErr,
 		handing:        map[model.Key]bool{},
+		reviewing:      map[model.Key]bool{},
 		engine:         watch.New(cfg.Home.Watch),
 		feedback:       map[model.Key]int{},
 		activity:       map[model.Key][]watchActivity{},
@@ -467,6 +471,9 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.Handoff):
 		return a, a.handOff()
+
+	case key.Matches(msg, a.keys.Notify):
+		return a, a.notifyNewFeedback()
 
 	case key.Matches(msg, a.keys.NextTab):
 		return a, a.switchView(a.active.next())
@@ -898,7 +905,7 @@ func (a *App) busy() bool {
 	// A handoff can spend minutes waiting for an agent to finish what it is
 	// doing, which is exactly the stretch the reader needs to be told is not a
 	// hang.
-	return len(a.handing) > 0
+	return len(a.reviewing) > 0 || len(a.handing) > 0
 }
 
 // narrow reports whether the terminal is too slim for side-by-side panes.

@@ -86,6 +86,79 @@ func TestHandingOverSendsOnlyTheThreadsStillWaitingOnTheViewer(t *testing.T) {
 	assert.True(t, reqs[0].AllowProvision, "W is the reader's consent to provision when no agent exists")
 }
 
+func TestManualDiscoveryUsesTheAutomaticNonProvisioningHandoff(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	notifyNewFeedback(t, app)
+
+	assert.Equal(t, 1, client.reviewCalls)
+	reqs := dispatcher.requests()
+	require.Len(t, reqs, 1)
+	assert.Equal(t, 2, reqs[0].UnresolvedCount)
+	assert.Equal(t, 2, reqs[0].NewCount)
+	assert.False(t, reqs[0].AllowProvision, "N must retain automatic handoff safety")
+	assert.False(t, app.state.Armed("relloyd/prutil#42"), "N works without arming the pull request")
+	assert.Equal(t, map[string]string{"T1": "C1", "T2": "C2"},
+		app.state.Get("relloyd/prutil#42").NotifiedThreads)
+	assert.Equal(t, home.OutcomeSent, lastHandoff(t, app).Outcome)
+	assert.Contains(t, plain(app.render()), "manual discovery")
+}
+
+func TestManualDiscoverySkipsPreviouslyHandedFeedback(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	notifyNewFeedback(t, app)
+	notifyNewFeedback(t, app)
+
+	assert.Equal(t, 2, client.reviewCalls, "each manual discovery reads the real current feedback")
+	assert.Len(t, dispatcher.requests(), 1, "the second read finds no feedback that is new to prutil")
+	assert.Equal(t, "no new review feedback on relloyd/prutil#42", app.status)
+}
+
+func TestManualDiscoveryRejectsTheClosedView(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	app.active = viewClosed
+	app.views[viewClosed].prs = sampleClosedPRs()
+
+	cmd := send(t, app, press("N"))
+	require.NotNil(t, cmd)
+	assert.Equal(t, statusMsg("new-feedback notification is available only for open pull requests"), cmd())
+	assert.Zero(t, client.reviewCalls)
+}
+
+func TestManualDiscoveryDoesNotStartAnOverlappingReviewRead(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+
+	first := send(t, app, press("N"))
+	require.NotNil(t, first)
+	assert.True(t, app.busy(), "a precise review read must keep the progress indicator active")
+	drain(first)
+	assert.Equal(t, 1, client.reviewCalls, "the first command reaches GitHub")
+
+	second := send(t, app, press("N"))
+	require.NotNil(t, second)
+
+	assert.Equal(t, statusMsg("already reading review feedback on relloyd/prutil#42"), second())
+	assert.Equal(t, 1, client.reviewCalls, "the second press does not start another query")
+}
+
+func TestManualHandoffDoesNotRaceManualDiscovery(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+
+	first := send(t, app, press("N"))
+	require.NotNil(t, first)
+	cmd := send(t, app, press("W"))
+	require.NotNil(t, cmd)
+
+	assert.Equal(t, statusMsg("already reading review feedback on relloyd/prutil#42"), cmd())
+	assert.Empty(t, dispatcherOf(t, app).requests())
+	assert.Zero(t, client.reviewCalls, "the blocked handoff cannot start a second review read")
+}
+
 func TestThreadsAlreadyHandedOverAreNotCountedAsNewAgain(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	dispatcher := dispatcherOf(t, app)
@@ -247,6 +320,13 @@ func handOver(t *testing.T, app *App) {
 			send(t, app, reply)
 		}
 	}
+}
+
+// notifyNewFeedback presses N and settles the same review and handoff messages
+// the runtime would receive after the watcher's change-detection step.
+func notifyNewFeedback(t *testing.T, app *App) {
+	t.Helper()
+	pump(t, app, send(t, app, press("N")))
 }
 
 // lastHandoff reads the final line of the app's handoff log.

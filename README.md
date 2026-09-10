@@ -67,6 +67,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `a` | auto-refresh: reload every 30s, five times over. press again to add five more |
 | `w` | watch the selected pull request, or stop watching it |
 | `W` | hand the selected pull request's open review feedback to a coding agent now, creating one when needed |
+| `N` | check the selected open pull request for new review feedback and notify an existing agent |
 | `tab` | switch between your open and your recently closed pull requests |
 | `?` | toggle the full key list |
 | `q` or `ctrl+c` | quit |
@@ -76,7 +77,8 @@ Below 80 columns the two panes collapse into one: the list fills the terminal,
 
 The footer has one line, so it lists the actions and leaves moving about to the
 arrow keys. `?` shows every binding, including `h`, `←` and `esc` for going back
-and `W` for handing a pull request over.
+and `W` for handing a pull request over and `N` for testing automatic
+new-feedback notification.
 
 Copying uses whichever clipboard program your platform provides: `pbcopy` on
 macOS, `clip` on Windows, and `wl-copy`, `xclip` or `xsel` on Linux, whichever
@@ -107,6 +109,12 @@ some appears it gives it to a coding agent through
 resolved nor already answered by you, so a conversation you have had the last
 word in is left alone. `W` does the same thing on demand, for a pull request
 you have not armed or one you want looked at again now.
+
+`N` is a diagnostic trigger for the automatic path. It asks GitHub for the
+selected open pull request's review threads and sends only feedback prutil has
+not handed over before. It never provisions a checkout, worktree, workspace,
+or agent, so it is useful for confirming the normal no-agent and herdr
+notification behavior without waiting for the watcher to spot a change.
 
 prutil picks the agent rather than asking you to. It lists the agents herdr
 knows about, reads the repository and branch out of each one's working

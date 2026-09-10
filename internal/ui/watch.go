@@ -172,13 +172,17 @@ func (a *App) applyWatch(msg watchSnapshotMsg) tea.Cmd {
 
 	cmds := []tea.Cmd{a.scheduleWatch()}
 	for _, key := range precise {
-		cmds = append(cmds, a.loadReview(key))
+		cmds = append(cmds, a.loadReview(key, false))
 	}
 	return tea.Batch(cmds...)
 }
 
-// loadReview reads the review conversations on one watched pull request.
-func (a *App) loadReview(key model.Key) tea.Cmd {
+// loadReview reads the review conversations for a watcher or manual discovery.
+func (a *App) loadReview(key model.Key, manual bool) tea.Cmd {
+	if a.reviewing[key] {
+		return nil
+	}
+	a.reviewing[key] = true
 	client := a.client
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
@@ -186,9 +190,9 @@ func (a *App) loadReview(key model.Key) tea.Cmd {
 
 		review, err := client.ReviewThreads(ctx, key)
 		if err != nil {
-			return watchReviewMsg{key: key, err: err}
+			return watchReviewMsg{key: key, manual: manual, err: err}
 		}
-		return watchReviewMsg{key: key, review: review}
+		return watchReviewMsg{key: key, manual: manual, review: review}
 	}
 }
 
@@ -196,6 +200,7 @@ func (a *App) loadReview(key model.Key) tea.Cmd {
 // at all, or work for an agent.
 func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	now := a.now()
+	delete(a.reviewing, msg.key)
 	a.setWatchOperation(msg.key, "")
 	if msg.err != nil {
 		a.engine.Defer([]model.Key{msg.key}, a.watchRetry(), now)
@@ -206,11 +211,18 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	feedback := msg.review.Feedback()
 	a.feedback[msg.key] = len(feedback)
 	a.engine.Precise(msg.key, len(feedback), false, now)
-	a.recordWatchActivity(msg.key, fmt.Sprintf("review feedback: %d %s awaiting",
-		len(feedback), plural(len(feedback), "thread")))
+	activity := fmt.Sprintf("review feedback: %d %s awaiting",
+		len(feedback), plural(len(feedback), "thread"))
+	if msg.manual {
+		activity = "manual discovery: " + activity
+	}
+	a.recordWatchActivity(msg.key, activity)
 
 	fresh := model.Unhandled(feedback, a.state.Get(msg.key.String()).NotifiedThreads)
 	if len(fresh) == 0 || a.handing[msg.key] {
+		if msg.manual && len(fresh) == 0 {
+			return status("no new review feedback on " + msg.key.String())
+		}
 		return nil
 	}
 
@@ -225,7 +237,11 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 
 	a.handing[msg.key] = true
 	a.setWatchOperation(msg.key, "handing feedback to an agent")
-	a.recordWatchActivity(msg.key, "started an automatic handoff")
+	activity = "started an automatic handoff"
+	if msg.manual {
+		activity += " after manual discovery"
+	}
+	a.recordWatchActivity(msg.key, activity)
 	return tea.Batch(
 		a.handoffOf(handoffMsg{
 			pr:      pr,
@@ -235,6 +251,33 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 		}),
 		status(fmt.Sprintf("%s has %d new review %s · handing it to an agent…",
 			msg.key, len(fresh), plural(len(fresh), "comment"))),
+		a.spin.Tick,
+	)
+}
+
+// notifyNewFeedback manually enters the watcher path after its change-detection
+// step. It still uses the automatic handoff semantics: only fresh feedback is
+// sent, and it cannot provision a workspace or agent.
+func (a *App) notifyNewFeedback() tea.Cmd {
+	if a.active != viewOpen {
+		return status("new-feedback notification is available only for open pull requests")
+	}
+	pr, ok := a.selectedPR()
+	if !ok {
+		return nil
+	}
+	key := pr.Key()
+	if a.handing[key] {
+		return status("already handing " + key.String() + " over")
+	}
+	if a.reviewing[key] {
+		return status("already reading review feedback on " + key.String())
+	}
+
+	a.setWatchOperation(key, "reading review feedback for manual discovery")
+	a.recordWatchActivity(key, "manually triggered review discovery")
+	return tea.Batch(
+		a.loadReview(key, true),
 		a.spin.Tick,
 	)
 }
@@ -263,6 +306,9 @@ func (a *App) handOff() tea.Cmd {
 	}
 	if a.handing[pr.Key()] {
 		return status("already handing " + pr.Key().String() + " over")
+	}
+	if a.reviewing[pr.Key()] {
+		return status("already reading review feedback on " + pr.Key().String())
 	}
 
 	a.handing[pr.Key()] = true
@@ -524,10 +570,11 @@ type watchSnapshotMsg struct {
 	snaps []model.Snapshot
 }
 
-// watchReviewMsg carries the review conversations on one pull request the
-// tripwire flagged.
+// watchReviewMsg carries review conversations requested by the watcher or the
+// manual discovery binding.
 type watchReviewMsg struct {
 	key    model.Key
+	manual bool
 	review gh.Review
 	err    error
 }

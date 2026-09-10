@@ -305,6 +305,7 @@ func TestTheFooterFitsEveryShortcutAt120Columns(t *testing.T) {
 		assert.Contains(t, footer, want)
 	}
 	assert.NotContains(t, footer, "…", "nothing is dropped from the footer at 120 columns")
+	assert.NotContains(t, footer, "N notify new feedback", "N belongs only in full help")
 }
 
 func TestTheFullHelpStillListsTheMovementKeysTheFooterLeavesOut(t *testing.T) {
@@ -313,7 +314,7 @@ func TestTheFullHelpStillListsTheMovementKeysTheFooterLeavesOut(t *testing.T) {
 
 	send(t, app, press("?"))
 	full := plain(app.render())
-	for _, want := range []string{"↑/k", "↓/j", "g", "G", "y", "a", "back", "W hand to agent"} {
+	for _, want := range []string{"↑/k", "↓/j", "g", "G", "y", "a", "back", "W hand to agent", "N notify new feedback"} {
 		assert.Contains(t, full, want)
 	}
 }
