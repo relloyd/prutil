@@ -360,7 +360,7 @@ worst of the three.
 Five defects and a pile of structural work. Suggested order, with the
 justification for the ordering rather than just the list.
 
-**Status: tranches 1 and 2 are done.** Every defect below is closed, each with
+**Status: tranches 1, 2 and 2b are done.** Every defect below is closed, each with
 a regression test confirmed to fail against the code as it stood. Tranches 3 to
 5 are untouched.
 
@@ -411,6 +411,35 @@ watcher did is still worth reading. The guard is still right, because the
 section is built from state that can empty and nothing stops a future caller
 emptying it, but it is tested against the state directly rather than through a
 key sequence that no longer exists.
+
+## Tranche 2b: a store that degrades rather than disappearing (done)
+
+Added after checking why an application directory would be missing in the
+first place. It is not: `LoadOrCreateConfig` runs at startup and creates the
+directory at `0700` with a commented `config.yaml` at `0600`, using a temp file
+and a hard link so two prutils starting at once cannot clobber each other.
+
+The nil store had nothing to do with a missing directory. `openHome` was a
+three-step chain returning nil on any failure, and the two realistic failures
+were both data errors: a typo in `config.yaml` and a half-written `watch.json`.
+Either one disabled watching, handoffs and the handoff log for the session, and
+before tranche 1 armed the panic.
+
+`Store.Load` now degrades per file and cannot fail. A configuration that will
+not parse leaves the defaults standing and is never moved or rewritten, because
+the reader wrote it on purpose. A watch state that cannot be understood is
+moved to `watch.json.corrupt` before the empty state that replaces it gets a
+chance to overwrite it; one that could not be opened at all is left alone,
+since prutil most likely cannot move it either. Only failing to resolve the
+directory leaves no store, which is the one case with nowhere to write.
+
+The notes reach the reader on the footer's notice line, where they stay for the
+session rather than passing by as a status message. A transient status takes
+the line while it lasts and hands it back.
+
+The package doc claimed nothing is written until a pull request is armed, which
+the configuration template has contradicted since it was added. Corrected to
+describe what the code does.
 
 ## Tranche 3: the duplication the last two commits introduced (one day)
 

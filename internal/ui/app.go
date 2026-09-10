@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -161,6 +162,11 @@ type Config struct {
 	// Home is the loaded configuration, which supplies the wait budget the
 	// handoff is given.
 	Home home.Config
+	// HomeNotes are the recoverable failures reading the application
+	// directory: a configuration that would not parse, a watch state that was
+	// half written. prutil carried on without each of them, which is exactly
+	// why the reader has to be told.
+	HomeNotes []error
 	// Handoff sends a pull request's review feedback to a coding agent. Nil
 	// disables the handoff key; HandoffErr says why.
 	Handoff    dispatcher
@@ -219,8 +225,12 @@ type App struct {
 	store    *home.Store
 	state    *home.State
 	storeErr error
-	// homeCfg is the loaded configuration.
-	homeCfg home.Config
+	// homeCfg is the loaded configuration, and homeNote what could not be read
+	// to build it. The note sits in the footer for the whole session rather
+	// than passing by as a status line: a setting the reader wrote and prutil
+	// ignored is not something to mention once.
+	homeCfg  home.Config
+	homeNote string
 	// hand gives a pull request's review feedback to a coding agent, and
 	// handErr explains its absence.
 	hand    dispatcher
@@ -292,6 +302,7 @@ func New(cfg Config) *App {
 		state:          state,
 		storeErr:       storeErr,
 		homeCfg:        cfg.Home,
+		homeNote:       joinNotes(cfg.HomeNotes),
 		hand:           cfg.Handoff,
 		handErr:        handErr,
 		handing:        map[model.Key]bool{},
@@ -304,6 +315,18 @@ func New(cfg Config) *App {
 	}
 	a.views[viewOpen].loading = true
 	return a
+}
+
+// joinNotes reduces the application directory's complaints to the one line the
+// footer has room for.
+func joinNotes(notes []error) string {
+	out := make([]string, 0, len(notes))
+	for _, note := range notes {
+		if note != nil {
+			out = append(out, note.Error())
+		}
+	}
+	return strings.Join(out, " · ")
 }
 
 // Init implements tea.Model.

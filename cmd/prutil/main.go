@@ -82,7 +82,7 @@ func run() error {
 		}
 	}
 
-	store, state, cfg, storeErr := openHome(*dryRun)
+	store, loaded, storeErr := openHome(*dryRun)
 
 	uiCfg := ui.Config{
 		Client:    client,
@@ -98,17 +98,18 @@ func run() error {
 			SweepLimit: *limit,
 			RepoLimit:  *repoLimit,
 		},
-		Version:  version,
-		Store:    store,
-		StoreErr: storeErr,
-		State:    state,
-		Home:     cfg,
+		Version:   version,
+		Store:     store,
+		StoreErr:  storeErr,
+		State:     loaded.State,
+		Home:      loaded.Config,
+		HomeNotes: loaded.Notes,
 	}
 
 	// Assigned inside the branch rather than from a two-value call, because a
 	// nil *Dispatcher stored in an interface field is not a nil interface, and
 	// the app decides whether the feature exists by comparing that field.
-	if dispatcher, err := newDispatcher(cfg, store); err != nil {
+	if dispatcher, err := newDispatcher(loaded.Config, store); err != nil {
 		uiCfg.HandoffErr = err
 	} else {
 		uiCfg.Handoff = dispatcher
@@ -120,30 +121,27 @@ func run() error {
 	return nil
 }
 
-// openHome loads the application directory: the configuration, and which pull
-// requests were left armed for watching. None of it is required, so a failure
-// disables the watch keys and is reported through them rather than stopping a
-// dashboard that is perfectly useful without it.
-func openHome(dryRun bool) (*home.Store, *home.State, home.Config, error) {
-	cfg := home.DefaultConfig()
-	cfg.Herdr.DryRun = cfg.Herdr.DryRun || dryRun
+// openHome opens the application directory, which prutil creates on first run
+// along with a configuration template.
+//
+// The only failure that leaves no store is being unable to work out where the
+// directory should be at all, which means there is nowhere to write and the
+// watch keys have nothing to remember with. Everything short of that, a
+// configuration with a typo in it or a watch state that was half written, is a
+// note carried through to the reader by home.Load, with the defaults standing
+// in. A stray character in one file is not a reason to take the feature away
+// for the rest of the session.
+func openHome(dryRun bool) (*home.Store, home.Startup, error) {
+	withDryRun := func(loaded home.Startup) home.Startup {
+		loaded.Config.Herdr.DryRun = loaded.Config.Herdr.DryRun || dryRun
+		return loaded
+	}
 
 	store, err := home.Open()
 	if err != nil {
-		return nil, nil, cfg, err
+		return nil, withDryRun(home.Startup{Config: home.DefaultConfig(), State: home.NewState()}), err
 	}
-
-	loaded, err := store.LoadOrCreateConfig()
-	if err != nil {
-		return nil, nil, cfg, err
-	}
-	loaded.Herdr.DryRun = loaded.Herdr.DryRun || dryRun
-
-	state, err := store.LoadState()
-	if err != nil {
-		return nil, nil, loaded, err
-	}
-	return store, state, loaded, nil
+	return store, withDryRun(store.Load()), nil
 }
 
 // newDispatcher wires the handoff to a running herdr server. herdr not being

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/relloyd/prutil/internal/home"
 	"github.com/relloyd/prutil/internal/model"
 )
 
@@ -411,4 +413,54 @@ func manyPRs(n int) []model.PullRequest {
 		})
 	}
 	return out
+}
+
+func TestWhatCouldNotBeReadAtStartupStaysInTheFooter(t *testing.T) {
+	// A setting the reader wrote and prutil ignored is not something to
+	// mention once and let scroll away.
+	app := New(Config{
+		Client:    newFakeClient(samplePRs(), sampleChecks()),
+		Opener:    &fakeOpener{},
+		Clipboard: &fakeClipboard{},
+		Now:       func() time.Time { return testNow },
+		Store:     home.OpenIn(t.TempDir()),
+		State:     home.NewState(),
+		Home:      fastWatch(),
+		HomeNotes: []error{errors.New("base_interval is not a duration; the built-in defaults are in use")},
+	})
+	send(t, app, tea.WindowSizeMsg{Width: 140, Height: 40})
+	send(t, app, prsMsg{gen: app.gen, prs: samplePRs()})
+
+	assert.Contains(t, plain(app.render()), "config: base_interval is not a duration")
+
+	// A transient message takes the line while it lasts, and hands it back.
+	send(t, app, statusMsg("refreshing…"))
+	assert.Contains(t, plain(app.render()), "refreshing…")
+	assert.NotContains(t, plain(app.render()), "config: base_interval")
+
+	send(t, app, clearStatusMsg{})
+	assert.Contains(t, plain(app.render()), "config: base_interval is not a duration")
+}
+
+func TestAStartupNoticeNeverPushesTheFooterOffTheScreen(t *testing.T) {
+	long := strings.Repeat("a configuration that will not parse, ", 20)
+	for _, width := range []int{40, 60, 80, 120, 200} {
+		app := New(Config{
+			Client:    newFakeClient(samplePRs(), sampleChecks()),
+			Opener:    &fakeOpener{},
+			Clipboard: &fakeClipboard{},
+			Now:       func() time.Time { return testNow },
+			Store:     home.OpenIn(t.TempDir()),
+			State:     home.NewState(),
+			Home:      fastWatch(),
+			HomeNotes: []error{errors.New(long)},
+		})
+		send(t, app, tea.WindowSizeMsg{Width: width, Height: 30})
+		send(t, app, prsMsg{gen: app.gen, prs: samplePRs()})
+
+		for i, line := range lines(app) {
+			require.LessOrEqualf(t, ansi.StringWidth(line), width,
+				"width %d: line %d overflows", width, i)
+		}
+	}
 }

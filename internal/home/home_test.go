@@ -2,6 +2,7 @@ package home_test
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -232,4 +233,100 @@ func TestRecentHandoffsReportsMalformedHistoryRatherThanIgnoringIt(t *testing.T)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "line 1")
+}
+
+func TestLoadCreatesTheDirectoryAndAConfigurationOnFirstRun(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "prutil")
+	require.NoDirExists(t, dir)
+
+	loaded := home.OpenIn(dir).Load()
+
+	assert.Empty(t, loaded.Notes, "a first run is not a failure")
+	assert.FileExists(t, filepath.Join(dir, home.ConfigFile), "a template to edit beats a page of documentation")
+	assert.Equal(t, home.DefaultConfig().Watch.BaseInterval, loaded.Config.Watch.BaseInterval)
+	assert.NotNil(t, loaded.State)
+	assert.Zero(t, loaded.State.ArmedCount())
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o700), info.Mode().Perm(), "the directory names local paths, so it stays private")
+}
+
+func TestLoadKeepsWorkingWhenTheConfigurationWillNotParse(t *testing.T) {
+	// A typo in a duration is a character somebody mistyped, not a reason to
+	// take watching away for the rest of the session.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, home.ConfigFile),
+		[]byte("watch:\n  base_interval: [not, a, duration]\n"), 0o600))
+	store := home.OpenIn(dir)
+
+	loaded := store.Load()
+
+	require.Len(t, loaded.Notes, 1)
+	assert.Contains(t, loaded.Notes[0].Error(), "is not a duration")
+	assert.Contains(t, loaded.Notes[0].Error(), "the built-in defaults are in use")
+	assert.Equal(t, home.DefaultConfig().Watch.BaseInterval, loaded.Config.Watch.BaseInterval)
+
+	unchanged, err := os.ReadFile(filepath.Join(dir, home.ConfigFile))
+	require.NoError(t, err)
+	assert.Contains(t, string(unchanged), "not, a, duration",
+		"the reader wrote this file on purpose, so prutil neither moves nor rewrites it")
+	assert.NoFileExists(t, filepath.Join(dir, home.ConfigFile+home.CorruptSuffix))
+}
+
+func TestLoadMovesAnUnreadableWatchStateAsideBeforeStartingEmpty(t *testing.T) {
+	// Starting empty means the next arming overwrites the file, so a half
+	// written one is moved out from under that rather than left beneath it.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, home.StateFile),
+		[]byte(`{"prs":{"acme/widgets#1":{"arme`), 0o600))
+	store := home.OpenIn(dir)
+
+	loaded := store.Load()
+
+	require.Len(t, loaded.Notes, 1)
+	assert.Contains(t, loaded.Notes[0].Error(), "watching starts from nothing")
+	assert.Zero(t, loaded.State.ArmedCount())
+
+	kept, err := os.ReadFile(filepath.Join(dir, home.StateFile+home.CorruptSuffix))
+	require.NoError(t, err)
+	assert.Contains(t, string(kept), "acme/widgets#1", "what was readable is still there to read")
+	assert.NoFileExists(t, filepath.Join(dir, home.StateFile), "the unreadable file is out of the way")
+
+	// The store is fully usable, which is the whole point.
+	loaded.State.SetArmed("acme/widgets#2", true)
+	require.NoError(t, store.SaveState(loaded.State))
+	reread, err := store.LoadState()
+	require.NoError(t, err)
+	assert.True(t, reread.Armed("acme/widgets#2"))
+}
+
+func TestLoadReportsBothFilesWhenBothAreUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, home.ConfigFile), []byte("watch: [nope]\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, home.StateFile), []byte("{{{"), 0o600))
+
+	loaded := home.OpenIn(dir).Load()
+
+	assert.Len(t, loaded.Notes, 2, "each file gets its own explanation")
+	assert.NotNil(t, loaded.State)
+	assert.Equal(t, home.DefaultPrompt, loaded.Config.Herdr.Prompt)
+}
+
+func TestAWatchStateThatCannotBeOpenedIsNotMovedAside(t *testing.T) {
+	// Moving a file aside is for one prutil could read but not understand. One
+	// it could not open at all it has no business touching, and most likely no
+	// permission to touch either.
+	dir := t.TempDir()
+	path := filepath.Join(dir, home.StateFile)
+	require.NoError(t, os.MkdirAll(path, 0o700))
+
+	loaded := home.OpenIn(dir).Load()
+
+	require.Len(t, loaded.Notes, 1)
+	assert.NotErrorIs(t, loaded.Notes[0], home.ErrUnreadable)
+	assert.DirExists(t, path, "prutil left it exactly where it found it")
+	assert.NoFileExists(t, path+home.CorruptSuffix)
+	assert.NoDirExists(t, path+home.CorruptSuffix)
+	assert.Zero(t, loaded.State.ArmedCount(), "and still started, with nothing armed")
 }

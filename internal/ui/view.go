@@ -148,6 +148,11 @@ func (a *App) footerLines() []string {
 		notice = a.styles.Error.Render("error: " + ansi.Truncate(err.Error(), max(a.width-7, 10), ellipsis))
 	case a.status != "":
 		notice = a.styles.Status.Render(ansi.Truncate(a.status, max(a.width, 10), ellipsis))
+	case a.homeNote != "":
+		// Nothing else wants the line, so it goes to what prutil could not read
+		// at startup. It stays there, because a configuration the reader wrote
+		// and prutil ignored is worth more than one glance.
+		notice = a.styles.Error.Render("config: " + ansi.Truncate(a.homeNote, max(a.width-8, 10), ellipsis))
 	}
 
 	lines := []string{notice}

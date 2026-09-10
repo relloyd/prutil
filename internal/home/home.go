@@ -2,9 +2,16 @@
 // lives, where the set of watched pull requests is remembered between runs,
 // and where every handoff to a coding agent is recorded.
 //
-// Nothing in prutil requires the directory to exist. A reader who never arms a
-// pull request never causes a file to be written, and a missing configuration
-// file is not an error, only a request for the defaults.
+// The directory is created on first run, along with a commented configuration
+// template, so that somebody wanting to change a setting has a file to edit
+// rather than a page of documentation to copy from. Nothing else is written
+// until there is something to remember: a reader who never arms a pull request
+// leaves no watch state and no handoff log behind.
+//
+// Reading it degrades rather than refuses. A file prutil cannot parse is a typo
+// somebody made, or a write that was interrupted, and neither is a reason to
+// take the watch feature away for the rest of the session. Load says what went
+// wrong and carries on with the defaults.
 package home
 
 import (
@@ -135,6 +142,78 @@ func (s *Store) LoadOrCreateConfig() (Config, error) {
 	return ParseConfig(template)
 }
 
+// CorruptSuffix is appended to a file prutil could not parse when it moves it
+// out of the way.
+const CorruptSuffix = ".corrupt"
+
+// ErrUnreadable marks a file that is there but could not be understood, as
+// against one that could not be opened at all. Only the first is worth moving
+// aside: the second prutil could not move either.
+var ErrUnreadable = errors.New("could not be understood")
+
+// Startup is what one run needs from the application directory.
+type Startup struct {
+	Config Config
+	State  *State
+	// Notes are the recoverable failures. Each one is something prutil carried
+	// on without, and each one is worth putting in front of the reader, since
+	// the alternative is a setting they wrote being silently ignored.
+	Notes []error
+}
+
+// Load reads the configuration and the watch state, creating the directory and
+// a default configuration template on first run.
+//
+// It cannot fail. Every file it reads is optional and every one of them has a
+// default, so a failure costs a note rather than the feature: a configuration
+// that will not parse leaves the defaults standing, and an unreadable watch
+// state starts empty. Only resolving the directory in the first place can fail,
+// which is Open's business, not this method's.
+func (s *Store) Load() Startup {
+	out := Startup{Config: DefaultConfig(), State: NewState()}
+
+	// A configuration is something the reader wrote on purpose, so it is never
+	// moved or rewritten. Standing the defaults in its place and saying so is
+	// the most prutil should do with it.
+	if cfg, err := s.LoadOrCreateConfig(); err != nil {
+		out.Notes = append(out.Notes, fmt.Errorf("%w; the built-in defaults are in use", err))
+	} else {
+		out.Config = cfg
+	}
+
+	state, err := s.LoadState()
+	if err == nil {
+		out.State = state
+		return out
+	}
+	// The watch state is prutil's own bookkeeping, and starting empty means the
+	// next arming overwrites it. Moving it aside first is what keeps a
+	// half-written file somebody might still want to read out of the way of
+	// that, rather than under it.
+	note := fmt.Errorf("%w; watching starts from nothing", err)
+	if errors.Is(err, ErrUnreadable) {
+		if moved, mvErr := s.setAside(StateFile); mvErr != nil {
+			note = errors.Join(note, mvErr)
+		} else {
+			note = fmt.Errorf("%w, and the old one is at %s", note, moved)
+		}
+	}
+	out.Notes = append(out.Notes, note)
+	return out
+}
+
+// setAside renames one file out of the way and reports where it went. A file
+// already set aside is replaced: two unreadable versions of the same file are
+// two attempts at the same thing, and the newer one is the one that explains
+// what just happened.
+func (s *Store) setAside(name string) (string, error) {
+	target := s.Path(name + CorruptSuffix)
+	if err := os.Rename(s.Path(name), target); err != nil {
+		return "", fmt.Errorf("could not move %s aside: %w", s.Path(name), err)
+	}
+	return target, nil
+}
+
 // LoadState reads the watch state. A missing file is an empty state.
 func (s *Store) LoadState() (*State, error) {
 	data, err := os.ReadFile(s.Path(StateFile))
@@ -147,7 +226,9 @@ func (s *Store) LoadState() (*State, error) {
 
 	state := NewState()
 	if err := json.Unmarshal(data, state); err != nil {
-		return NewState(), fmt.Errorf("could not read %s: %w", s.Path(StateFile), err)
+		// Wrapped as unreadable rather than unopenable, which is what tells
+		// Load it is worth moving aside.
+		return NewState(), fmt.Errorf("%s %w: %w", s.Path(StateFile), ErrUnreadable, err)
 	}
 	if state.PRs == nil {
 		state.PRs = map[string]*PRState{}
