@@ -745,3 +745,130 @@ func loadHandoffHistory(t *testing.T, app *App, key model.Key) {
 		send(t, app, msg)
 	}
 }
+
+func TestAPollThatGoesUnansweredIsPushedOutRatherThanRepeatedAtOnce(t *testing.T) {
+	// A pull request GitHub answers with a null node produces no reading, so
+	// the engine has nothing to reschedule it from. Left where it was, its next
+	// poll stays due in the past, the schedule computes a zero delay, and the
+	// request repeats as fast as the round trip allows.
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("w"))
+
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	key := pr.Key()
+	require.Equal(t, 1, app.engine.Watching())
+
+	send(t, app, watchSnapshotMsg{keys: []model.Key{key}, snaps: nil})
+
+	status, armed := app.engine.Status(key)
+	require.True(t, armed)
+	assert.True(t, status.NextDue.After(app.now()),
+		"the next poll is in the future, not due again immediately")
+	assert.Empty(t, app.engine.Due(app.now()), "nothing is due the moment the reply lands")
+	assert.Contains(t, activityText(app, key), "GitHub said nothing about it")
+}
+
+func TestAPollIsStillAppliedToThePullRequestsThatWereAnswered(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("w"))
+
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	key := pr.Key()
+
+	send(t, app, watchSnapshotMsg{
+		keys:  []model.Key{key},
+		snaps: []model.Snapshot{{Key: key, NodeID: pr.NodeID, HeadOID: "abc", UpdatedAt: testNow}},
+	})
+
+	assert.Contains(t, activityText(app, key), "changes found",
+		"a first reading is a change, so the precise query follows")
+	assert.NotContains(t, activityText(app, key), "GitHub said nothing about it")
+}
+
+// activityText joins everything the watcher has recorded for one pull request.
+func activityText(app *App, key model.Key) string {
+	var out []string
+	for _, event := range app.activity[key] {
+		out = append(out, event.text)
+	}
+	return strings.Join(out, " | ")
+}
+
+func TestTheWatchSectionStaysAwayWhileItsHistoryIsStillLoading(t *testing.T) {
+	// Selecting a pull request starts a durable-history read. Counting that
+	// read as content opened the section on every selection and shut it again
+	// a moment later for the ordinary pull request nothing has been handed off
+	// for, moving the checks beneath it twice for nothing.
+	app, _, _ := newTestApp(t, 120, 40)
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+
+	require.True(t, app.handoffHistory[pr.Key()].loading, "the history read is in flight")
+	assert.False(t, app.hasWatchSection(pr), "a read in flight is not something to show")
+	assert.NotContains(t, plain(app.render()), "WATCH")
+
+	send(t, app, handoffHistoryMsg{key: pr.Key(), generation: app.handoffHistory[pr.Key()].generation})
+
+	assert.False(t, app.hasWatchSection(pr), "an empty history leaves nothing to show either")
+	assert.NotContains(t, plain(app.render()), "WATCH", "the section never appeared, so it cannot vanish")
+}
+
+func TestTheWatchSectionStaysOnceItHasSomethingToSay(t *testing.T) {
+	// Disarming is not the same as having nothing to show: what the watcher
+	// did this session is still worth reading, so the section stays and the
+	// selection on it stays valid.
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("w"))
+
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	send(t, app, press("l"))
+	send(t, app, press("k"))
+	require.Equal(t, detailWatch, app.detailSection)
+
+	send(t, app, press("w"))
+
+	assert.True(t, app.hasWatchSection(pr), "the activity from this session is still worth showing")
+	assert.Equal(t, detailWatch, app.detailSection, "the selection is still on something real")
+	assert.Contains(t, plain(app.render()), "WATCH")
+}
+
+func TestASelectionLeftOnAWatchSectionThatIsGoneFallsBackToTheChecks(t *testing.T) {
+	// The section is built from state that can empty, so the guard is written
+	// against the state rather than against any one key sequence: a selection
+	// pointing at a heading that is not drawn highlights nothing, and drilling
+	// into it opens a page with no lines.
+	app, _, _ := newTestApp(t, 120, 40)
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	require.False(t, app.hasWatchSection(pr), "nothing armed and nothing recorded")
+
+	app.focus = paneDetail
+	app.detailSection = detailWatch
+
+	app.clampScroll()
+	assert.Equal(t, detailChecks, app.detailSection, "the stale selection falls back")
+
+	app.detailSection = detailWatch
+	send(t, app, press("l"))
+	assert.Equal(t, detailOverview, app.detailPage, "there is no page to drill into")
+	assert.NotContains(t, plain(app.render()), "nothing to show for WATCH")
+}
+
+func TestAWatchPageLeftOpenOnAnEmptySectionCloses(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	require.False(t, app.hasWatchSection(pr))
+
+	app.focus = paneDetail
+	app.detailSection, app.detailPage = detailWatch, detailWatchPage
+
+	app.clampScroll()
+
+	assert.Equal(t, detailOverview, app.detailPage)
+	assert.Equal(t, detailChecks, app.detailSection)
+	assert.Zero(t, app.watchOffset)
+}

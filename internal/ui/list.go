@@ -18,8 +18,7 @@ func (a *App) renderList(width, height int) []string {
 		return a.centeredNotice("no "+a.active.String()+" pull requests. press r to refresh.", width, a.styles.Meta)
 	}
 
-	// One line is held back for the position indicator, so it is never clipped.
-	rows := max((height-1)/rowHeight, 1)
+	rows := listRows(height)
 	start := min(state.listOffset, max(len(state.prs)-1, 0))
 	end := min(start+rows, len(state.prs))
 

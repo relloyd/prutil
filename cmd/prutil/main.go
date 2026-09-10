@@ -166,6 +166,9 @@ func newDispatcher(cfg home.Config, store *home.Store) (*handoff.Dispatcher, err
 		return nil, err
 	}
 
+	// store is nil whenever the application directory could not be opened.
+	// NewResolver absorbs that: discovery still runs, its result is simply not
+	// remembered.
 	return handoff.New(handoff.Options{
 		Herdr:  control,
 		Git:    checkouts,

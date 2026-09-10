@@ -707,6 +707,31 @@ func TestWatchSnapshotPassesTheIdsAsAJsonArray(t *testing.T) {
 	assert.Contains(t, runner.argsOf(0), "ids[]=PR_7")
 }
 
+func TestWatchSnapshotSplitsMoreThanAHundredPullRequestsAcrossRequests(t *testing.T) {
+	// GitHub caps nodes(ids:) at a hundred and rejects the whole document past
+	// it, so a reader watching more than that must get a second request rather
+	// than a refusal that empties every reading at once.
+	ids := make([]string, 0, 150)
+	for i := range 150 {
+		ids = append(ids, fmt.Sprintf("PR_%d", i))
+	}
+	runner := &fakeRunner{responses: [][]byte{
+		fixture(t, "watch_nodes.json"),
+		fixture(t, "watch_nodes.json"),
+	}}
+	client := gh.New(runner, 1)
+
+	snaps, err := client.WatchSnapshot(context.Background(), ids)
+	require.NoError(t, err)
+	require.Equal(t, 2, runner.callCount(), "a hundred and fifty ids need two documents")
+
+	assert.Equal(t, 100, strings.Count(runner.argsOf(0), "ids[]="), "the first document is full")
+	assert.Equal(t, 50, strings.Count(runner.argsOf(1), "ids[]="), "the second carries the remainder")
+	assert.Contains(t, runner.argsOf(0), "ids[]=PR_0")
+	assert.Contains(t, runner.argsOf(1), "ids[]=PR_149")
+	assert.Len(t, snaps, 4, "both replies are decoded and concatenated")
+}
+
 func TestWatchSnapshotAsksNothingWhenThereIsNothingToAskAbout(t *testing.T) {
 	runner := &fakeRunner{}
 	client := gh.New(runner, 1)

@@ -147,3 +147,33 @@ func TestResolverSkipsDiscoveryWhenNoRootsAreConfigured(t *testing.T) {
 	assert.True(t, errors.Is(err, git.ErrCheckoutNotFound))
 	assert.Empty(t, id.calls)
 }
+
+func TestResolverWorksWithoutAnApplicationDirectory(t *testing.T) {
+	// cmd/prutil hands the resolver a nil store whenever the application
+	// directory could not be opened. A nil *home.Store inside a non-nil
+	// CacheStore interface would walk past any nil check and dereference a nil
+	// receiver, so the constructor substitutes a cache that keeps nothing.
+	base := t.TempDir()
+	discovered := filepath.Join(base, "widgets")
+	require.NoError(t, os.MkdirAll(filepath.Join(discovered, ".git"), 0o755))
+
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{
+		discovered: {Root: discovered, Repo: "acme/widgets", Branch: "main"},
+	}}
+	cfg := home.DefaultConfig()
+	cfg.Discovery.Roots = []string{base}
+
+	var store *home.Store
+	got, err := git.NewResolver(id, cfg, store).Resolve(context.Background(), "acme/widgets")
+	require.NoError(t, err)
+	assert.Equal(t, discovered, got.Root, "discovery still runs, the result is simply not remembered")
+}
+
+func TestResolverReportsAMissingCheckoutWithoutAnApplicationDirectory(t *testing.T) {
+	cfg := home.DefaultConfig()
+	cfg.Discovery.Roots = []string{t.TempDir()}
+
+	var store *home.Store
+	_, err := git.NewResolver(&fakeIdentifier{}, cfg, store).Resolve(context.Background(), "acme/widgets")
+	assert.ErrorIs(t, err, git.ErrCheckoutNotFound)
+}

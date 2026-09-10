@@ -549,6 +549,12 @@ func (c *CLI) Checks(ctx context.Context, key model.Key) ([]model.Check, error) 
 	return checks, nil
 }
 
+// watchNodeLimit is how many node ids one nodes(ids:) query may name. GitHub
+// caps that argument at a hundred and rejects the whole document past it, so a
+// reader who arms more pull requests than that would otherwise see every
+// reading fail at once rather than get a second request.
+const watchNodeLimit = 100
+
 // WatchSnapshot implements Client.
 func (c *CLI) WatchSnapshot(ctx context.Context, ids []string) ([]model.Snapshot, error) {
 	wanted := make([]string, 0, len(ids))
@@ -561,19 +567,23 @@ func (c *CLI) WatchSnapshot(ctx context.Context, ids []string) ([]model.Snapshot
 		return nil, nil
 	}
 
-	var resp watchResponse
-	if err := c.graphql(ctx, watchQuery, map[string]any{"ids": wanted}, &resp); err != nil {
-		return nil, err
-	}
+	snaps := make([]model.Snapshot, 0, len(wanted))
+	for start := 0; start < len(wanted); start += watchNodeLimit {
+		batch := wanted[start:min(start+watchNodeLimit, len(wanted))]
 
-	// A pull request the token can no longer see comes back as a null node.
-	// Dropping it is right: there is nothing left to watch, and the caller
-	// leaves its previous reading in place rather than treating the gap as a
-	// change.
-	snaps := make([]model.Snapshot, 0, len(resp.Nodes))
-	for _, node := range resp.Nodes {
-		if snap, ok := node.toSnapshot(); ok {
-			snaps = append(snaps, snap)
+		var resp watchResponse
+		if err := c.graphql(ctx, watchQuery, map[string]any{"ids": batch}, &resp); err != nil {
+			return nil, err
+		}
+
+		// A pull request the token can no longer see comes back as a null
+		// node. Dropping it is right: there is nothing left to watch, and the
+		// caller pushes its next poll out rather than treating the gap as a
+		// change.
+		for _, node := range resp.Nodes {
+			if snap, ok := node.toSnapshot(); ok {
+				snaps = append(snaps, snap)
+			}
 		}
 	}
 	return snaps, nil

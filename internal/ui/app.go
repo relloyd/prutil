@@ -457,6 +457,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		state.handoffs, state.err = msg.handoffs, msg.err
 		state.loading, state.loaded = false, true
 		a.handoffHistory[msg.key] = state
+		// The reply is what decides whether the WATCH section has anything to
+		// show, so the detail selection is reconciled against the answer.
+		a.clampScroll()
 		return a, nil
 
 	case statusMsg:
@@ -507,9 +510,13 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return a, a.withSpinner(a.ensureChecks(a.selectedKey()))
 		}
 		if a.focus == paneDetail && a.detailPage == detailOverview && a.detailSection == detailWatch {
-			a.detailPage = detailWatchPage
-			a.watchOffset = 0
-			a.clampScroll()
+			// Gated on the section still being there. clampScroll normalises a
+			// stale selection, but this key can arrive before it has run.
+			if pr, ok := a.selectedPR(); ok && a.hasWatchSection(pr) {
+				a.detailPage = detailWatchPage
+				a.watchOffset = 0
+				a.clampScroll()
+			}
 		}
 		return a, nil
 
@@ -578,8 +585,7 @@ func (a *App) listIndexAt(x, y int) (int, bool) {
 	}
 
 	row := bodyY / rowHeight
-	rows := max((a.bodyHeight()-1)/rowHeight, 1)
-	if row >= rows {
+	if row >= listRows(a.bodyHeight()) {
 		return 0, false
 	}
 
@@ -1014,10 +1020,11 @@ func (a *App) narrow() bool {
 // clampScroll keeps both scroll offsets consistent with their cursors and the
 // current window size.
 func (a *App) clampScroll() {
+	a.normalizeDetailSelection()
+
 	state := a.cur()
 	state.cursor = min(max(state.cursor, 0), max(len(state.prs)-1, 0))
-	rows := max(a.bodyHeight()/rowHeight, 1)
-	state.listOffset = clampOffset(state.listOffset, state.cursor, rows, len(state.prs))
+	state.listOffset = clampOffset(state.listOffset, state.cursor, listRows(a.bodyHeight()), len(state.prs))
 
 	if a.focus == paneDetail && a.detailPage == detailWatchPage {
 		a.watchOffset = clampOffset(a.watchOffset, a.watchOffset, a.watchWindow(), a.watchLineCount())
@@ -1027,6 +1034,25 @@ func (a *App) clampScroll() {
 	checks := a.selectedChecks().checks
 	a.detailCursor = min(max(a.detailCursor, 0), max(len(checks)-1, 0))
 	a.detailOffset = clampOffset(a.detailOffset, a.detailCursor, a.checksHeight(), len(checks))
+}
+
+// normalizeDetailSelection keeps the detail pane pointing at a section that is
+// actually drawn. WATCH comes and goes with the state behind it, and a
+// selection left on it once it has gone highlights nothing, because the
+// heading it would mark is not rendered, and drills into a page with no lines
+// in it.
+func (a *App) normalizeDetailSelection() {
+	if pr, ok := a.selectedPR(); ok && a.hasWatchSection(pr) {
+		return
+	}
+	if a.detailSection == detailWatch {
+		a.detailSection = detailChecks
+		a.detailCursor, a.detailOffset = 0, 0
+	}
+	if a.detailPage == detailWatchPage {
+		a.detailPage = detailOverview
+		a.watchOffset = 0
+	}
 }
 
 // resetDetailNavigation returns the detail pane to its normal CHECKS view.
@@ -1093,6 +1119,18 @@ func (a *App) watchLineCount() int {
 	}
 	_, width := a.paneWidths()
 	return len(a.watchPageLines(pr, width))
+}
+
+// listRows is how many pull request rows fit in a body of the given height.
+// One line is held back for the position indicator renderList draws beneath
+// them, so it is never the row that gets clipped.
+//
+// Every caller that reasons about which rows exist must use this: renderList to
+// decide what to draw, clampScroll to keep the cursor among them, and
+// listIndexAt to map a click back. They disagreed before, and a cursor the
+// scroll arithmetic believed was on screen was not.
+func listRows(height int) int {
+	return max((height-1)/rowHeight, 1)
 }
 
 // clampOffset returns the smallest scroll adjustment that keeps cursor visible

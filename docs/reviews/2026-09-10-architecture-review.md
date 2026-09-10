@@ -360,7 +360,11 @@ worst of the three.
 Five defects and a pile of structural work. Suggested order, with the
 justification for the ordering rather than just the list.
 
-## Tranche 1: correctness, before the watcher is left running (half a day)
+**Status: tranches 1 and 2 are done.** Every defect below is closed, each with
+a regression test confirmed to fail against the code as it stood. Tranches 3 to
+5 are untouched.
+
+## Tranche 1: correctness, before the watcher is left running (done)
 
 These are the two that misbehave against something outside the process.
 
@@ -374,7 +378,7 @@ These are the two that misbehave against something outside the process.
 3. **Chunk `WatchSnapshot` at 100 ids.** One loop in `CLI.WatchSnapshot`, and a
    test that 150 ids produce two calls.
 
-## Tranche 2: the three UI defects (half a day)
+## Tranche 2: the three UI defects (done)
 
 Cheap, visible, and they undermine confidence in the newest feature.
 
@@ -386,6 +390,27 @@ Cheap, visible, and they undermine confidence in the newest feature.
    empty.
 
 Do 5 and 6 together; they are the same transition seen from two angles.
+
+### What the fixes turned out to be
+
+Two of the six were not quite what the review predicted.
+
+**The nil store needed catching in the constructor, not the caller.** The plan
+said to hand `NewResolver` a no-op cache when there is no application
+directory. Written that way the guard does not fire: `main` passes a nil
+`*home.Store`, which is not a nil interface, so `store == nil` is false and the
+nil receiver is dereferenced exactly as before. The first draft of the test
+reproduced the panic against the supposed fix. `NewResolver` now tests for both
+shapes, and `main` passes the store unconditionally, so one place knows.
+
+**The empty WATCH section stopped being reachable by keystrokes.** Once a
+loading history no longer opens the section, the only things that fill it are
+arming and recorded activity, and neither is ever cleared within a session, so
+no key sequence can empty it under the cursor. Disarming does not: what the
+watcher did is still worth reading. The guard is still right, because the
+section is built from state that can empty and nothing stops a future caller
+emptying it, but it is tested against the state directly rather than through a
+key sequence that no longer exists.
 
 ## Tranche 3: the duplication the last two commits introduced (one day)
 

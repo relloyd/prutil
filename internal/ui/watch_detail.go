@@ -81,12 +81,17 @@ func (a *App) watchDetail(pr model.PullRequest, width, budget int, selected bool
 
 // hasWatchSection reports whether the compact WATCH section has anything to
 // say for the selected pull request.
+//
+// A history read still in flight deliberately does not count. Selecting a pull
+// request starts one, so counting it would open the section on every selection
+// and shut it again a moment later for the ordinary case of a pull request
+// nothing has ever been handed off for, moving the checks beneath it twice for
+// nothing. A section only appears once it has something to show.
 func (a *App) hasWatchSection(pr model.PullRequest) bool {
 	_, armed := a.engine.Status(pr.Key())
 	history := a.handoffHistory[pr.Key()]
 	return armed ||
 		len(a.activity[pr.Key()]) > 0 ||
-		history.loading ||
 		history.err != nil ||
 		len(history.handoffs) > 0
 }

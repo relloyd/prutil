@@ -373,3 +373,42 @@ func TestTheFullHelpStillListsTheMovementKeysTheFooterLeavesOut(t *testing.T) {
 
 // headerLine returns the title bar with its styling stripped.
 func headerLine(app *App) string { return plain(app.renderHeader()[0]) }
+
+func TestTheSelectedRowStaysOnScreenAtEveryTerminalHeight(t *testing.T) {
+	// renderList holds one line back for the position indicator. Scroll
+	// arithmetic that does not believes one more row fits than is drawn, and at
+	// any height where the body divides exactly by rowHeight the cursor walks
+	// off the bottom and never comes back.
+	for height := 20; height <= 60; height++ {
+		app, _, _ := newTestApp(t, 100, height)
+		send(t, app, prsMsg{gen: app.gen, prs: manyPRs(12)})
+
+		rows := listRows(app.bodyHeight())
+		for i := 1; i < 12; i++ {
+			send(t, app, press("j"))
+			state := app.cur()
+			require.GreaterOrEqualf(t, state.cursor, state.listOffset,
+				"height %d: cursor %d scrolled above the window at offset %d",
+				height, state.cursor, state.listOffset)
+			require.Lessf(t, state.cursor, state.listOffset+rows,
+				"height %d: cursor %d is below the %d rows drawn from offset %d",
+				height, state.cursor, rows, state.listOffset)
+		}
+	}
+}
+
+// manyPRs builds a list long enough to scroll at any terminal height.
+func manyPRs(n int) []model.PullRequest {
+	out := make([]model.PullRequest, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, model.PullRequest{
+			Repo:      "acme/widgets",
+			Number:    i,
+			NodeID:    fmt.Sprintf("PR_%d", i),
+			Title:     fmt.Sprintf("pull request %d", i),
+			URL:       fmt.Sprintf("https://github.com/acme/widgets/pull/%d", i),
+			CreatedAt: testNow,
+		})
+	}
+	return out
+}

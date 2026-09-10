@@ -36,10 +36,45 @@ type Resolver struct {
 }
 
 // NewResolver builds a repository resolver over a git identifier, runtime
-// config and cache store.
+// config and cache store. A nil store means prutil has no application
+// directory to remember discovered checkouts in, which is not a reason to
+// refuse to look for one: discovery still runs, it is simply repeated next
+// time.
 func NewResolver(id Identifier, cfg home.Config, store CacheStore) *Resolver {
+	if noStore(store) {
+		store = noopCache{}
+	}
 	return &Resolver{id: id, cfg: cfg, store: store}
 }
+
+// noStore reports a cache there is no point calling, in either of the two
+// shapes a caller can produce one. A plain nil interface is the obvious one.
+// The other is a nil *home.Store put into the interface, which is not a nil
+// interface, passes any ordinary nil check, and then dereferences a nil
+// receiver on the first method call. Absorbing it here is what keeps the check
+// in one place rather than at every use of the field.
+func noStore(store CacheStore) bool {
+	if store == nil {
+		return true
+	}
+	s, ok := store.(*home.Store)
+	return ok && s == nil
+}
+
+// noopCache stands in for the on-disk cache when there is nowhere to write it.
+// It exists so that Resolve does not have to ask, on every path, whether it
+// has a store; a nil check inside the method is also the check a nil pointer
+// stored in a non-nil interface walks straight past.
+type noopCache struct{}
+
+// LoadRepoCache implements CacheStore.
+func (noopCache) LoadRepoCache() (home.RepoCache, error) { return home.NewRepoCache(), nil }
+
+// SaveRepoCache implements CacheStore.
+func (noopCache) SaveRepoCache(home.RepoCache) error { return nil }
+
+// MergeRepoCache implements CacheStore.
+func (noopCache) MergeRepoCache(home.RepoCache) error { return nil }
 
 // Resolve returns a validated checkout for repo in owner/name form, consulting
 // explicit config mappings first, then cache, then discovery roots.
@@ -57,13 +92,9 @@ func (r *Resolver) Resolve(ctx context.Context, repo string) (Checkout, error) {
 		return r.resolveConfigured(ctx, want, configuredPath)
 	}
 
-	cache := home.NewRepoCache()
-	if r.store != nil {
-		loaded, err := r.store.LoadRepoCache()
-		if err != nil {
-			return Checkout{}, err
-		}
-		cache = loaded
+	cache, err := r.store.LoadRepoCache()
+	if err != nil {
+		return Checkout{}, err
 	}
 	if entry, ok := cache.Lookup(want); ok {
 		if checkout, ok := r.matchCheckout(ctx, want, entry.Path); ok {
@@ -178,9 +209,6 @@ func (r *Resolver) matchCheckout(ctx context.Context, want, path string) (Checko
 }
 
 func (r *Resolver) saveCache(cache home.RepoCache) error {
-	if r.store == nil {
-		return nil
-	}
 	return r.store.MergeRepoCache(cache)
 }
 

@@ -159,15 +159,38 @@ func (a *App) pollWatched() tea.Cmd {
 // applyWatch takes a batch of readings and asks the expensive question of
 // whichever pull requests moved.
 func (a *App) applyWatch(msg watchSnapshotMsg) tea.Cmd {
-	precise := a.engine.Observe(msg.snaps, a.now())
+	now := a.now()
+	precise := a.engine.Observe(msg.snaps, now)
+
+	// A pull request GitHub answers with a null node, or one the reply simply
+	// did not cover, produces no reading. Observe only reschedules what it has
+	// a reading for, so such a pull request stays due at a time already past,
+	// the next schedule computes a zero delay, and the poll repeats as fast as
+	// the round trip allows. Pushing it out is what a refused poll already
+	// does, and it is the right answer here too.
+	answered := make(map[model.Key]bool, len(msg.snaps))
+	for _, snap := range msg.snaps {
+		answered[snap.Key] = true
+	}
+	unanswered := make([]model.Key, 0, len(msg.keys))
+	for _, key := range msg.keys {
+		if !answered[key] {
+			unanswered = append(unanswered, key)
+		}
+	}
+	a.engine.Defer(unanswered, a.watchRetry(), now)
+
 	for _, key := range msg.keys {
 		a.setWatchOperation(key, "")
-		if slices.Contains(precise, key) {
+		switch {
+		case !answered[key]:
+			a.recordWatchActivity(key, "GitHub said nothing about it; asking again later")
+		case slices.Contains(precise, key):
 			a.setWatchOperation(key, "reading review feedback")
 			a.recordWatchActivity(key, "changes found; reading review feedback")
-			continue
+		default:
+			a.recordWatchActivity(key, "checked for changes")
 		}
-		a.recordWatchActivity(key, "checked for changes")
 	}
 
 	cmds := []tea.Cmd{a.scheduleWatch()}
