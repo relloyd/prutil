@@ -22,13 +22,6 @@ type Client interface {
 	// ListPullRequests returns the headline information for every pull request
 	// matching the search query, newest first.
 	ListPullRequests(ctx context.Context, query string, limit int) ([]model.PullRequest, error)
-	// ListClosedPullRequests returns the user's most recently closed pull
-	// requests, contributing at most PerRepo from any one repository. It
-	// blocks until the whole fetch (sweep, discovery and per-repo fill) has
-	// finished; SweepClosedPullRequests/FinishClosedPullRequests split the
-	// same work into a fast first page and a background continuation, which
-	// is what the UI uses so that the view paints before the fill completes.
-	ListClosedPullRequests(ctx context.Context, opts ClosedOptions) (ClosedResult, error)
 	// SweepClosedPullRequests fetches exactly one page of the recently-closed
 	// sweep and returns it immediately, along with the state
 	// FinishClosedPullRequests needs to continue the same search. Because it
@@ -37,8 +30,8 @@ type Client interface {
 	// FinishClosedPullRequests resumes a sweep from the state
 	// SweepClosedPullRequests returned: it reads any remaining sweep pages up
 	// to SweepLimit, then, if the search still was not exhausted, discovers
-	// and fills the repositories that came up short, exactly as
-	// ListClosedPullRequests does in one call.
+	// and fills the repositories that came up short. Passing the zero state
+	// does the whole fetch in one blocking call.
 	FinishClosedPullRequests(ctx context.Context, opts ClosedOptions, state ClosedSweepState) (ClosedResult, error)
 	// Checks returns the individual checks on a pull request's head commit.
 	Checks(ctx context.Context, key model.Key) ([]model.Check, error)
@@ -230,55 +223,22 @@ func (c *CLI) ListPullRequests(ctx context.Context, query string, limit int) ([]
 	return prs, nil
 }
 
-// ListClosedPullRequests implements Client. It works in two stages. First one
-// global sweep, ordered by recency across every repository at once, which is
-// enough on its own whenever it reaches the end of the search. When it does
-// not, a couple of busy repositories may have crowded the rest out of the
-// window, so the repositories that came up short are then asked directly, in
-// batched documents.
-func (c *CLI) ListClosedPullRequests(ctx context.Context, opts ClosedOptions) (ClosedResult, error) {
-	opts = opts.withDefaults()
-
-	swept, err := c.sweepClosed(ctx, opts.Query, opts.SweepLimit)
-	if err != nil {
-		// The sweep is the only stage that can leave nothing to show, so it is
-		// the only one whose failure is fatal.
-		return ClosedResult{}, err
-	}
-	// The sweep read the search to its end, so it already holds every closed
-	// pull request there is and grouping it is exact. This is the common case,
-	// and it makes the whole view cost a single request.
-	if swept.exhausted {
-		return ClosedResult{PRs: groupClosed(swept.prs, opts.PerRepo)}, nil
-	}
-	return c.fillPerRepo(ctx, opts, swept)
-}
-
 // ClosedSweepState is the outcome of one or more pages of the global,
 // closed-pull-request sweep. SweepClosedPullRequests returns it after one
 // page so a caller can render that page immediately; FinishClosedPullRequests
 // takes it back to continue the same search in the background.
 type ClosedSweepState struct {
-	prs []model.PullRequest
-	// exhausted reports that the search ran out before the window filled, so
-	// the grouping is already exact and the fill can be skipped.
-	exhausted bool
-	// cursor is where the search left off, so repository discovery (or a
-	// further page) can read on from the same ordering rather than starting
-	// again.
+	// Exhausted reports that the search ran out before the window filled, so
+	// every closed pull request there is has been seen, the grouping is
+	// already exact, and FinishClosedPullRequests has nothing left to do. It
+	// is exported because it is the one part of this state a caller acts on:
+	// the UI reads it to decide whether to paint a partial list and continue
+	// in the background. Where the search left off, and what it has collected
+	// so far, are the sweep's own business.
+	Exhausted bool
+
+	prs    []model.PullRequest
 	cursor string
-}
-
-// Exhausted reports whether the search behind this state has already run out,
-// meaning every closed pull request there is has been seen and
-// FinishClosedPullRequests has no further work to do.
-func (s ClosedSweepState) Exhausted() bool { return s.exhausted }
-
-// NewClosedSweepState builds a ClosedSweepState directly. It exists for test
-// doubles of Client: a fake can't otherwise produce a state with a chosen
-// Exhausted() value, since sweepPage's real fields stay unexported.
-func NewClosedSweepState(exhausted bool) ClosedSweepState {
-	return ClosedSweepState{exhausted: exhausted}
 }
 
 // sweepPage runs one page of the closed search and reports the raw pagination
@@ -307,7 +267,7 @@ func (c *CLI) sweepPage(ctx context.Context, query, cursor string, want int) (pr
 // exhausted, which is what tells a caller that the per-repo fill can be
 // skipped.
 func (c *CLI) sweepClosedPages(ctx context.Context, query string, limit, maxPages int, start ClosedSweepState) (ClosedSweepState, error) {
-	if start.exhausted {
+	if start.Exhausted {
 		return start, nil
 	}
 	out := start
@@ -319,19 +279,12 @@ func (c *CLI) sweepClosedPages(ctx context.Context, query string, limit, maxPage
 		}
 		out.prs = append(out.prs, prs...)
 		if !hasNext || cursor == "" {
-			out.exhausted = true
+			out.Exhausted = true
 			return out, nil
 		}
 		out.cursor = cursor
 	}
 	return out, nil
-}
-
-// sweepClosed runs the global search, following pages until it has limit
-// results or the search runs out. It reports whether the search was exhausted,
-// which is what tells the caller that the per-repo fill can be skipped.
-func (c *CLI) sweepClosed(ctx context.Context, query string, limit int) (ClosedSweepState, error) {
-	return c.sweepClosedPages(ctx, query, limit, math.MaxInt, ClosedSweepState{})
 }
 
 // SweepClosedPullRequests implements Client. It fetches exactly one page of
@@ -352,22 +305,26 @@ func (c *CLI) SweepClosedPullRequests(ctx context.Context, opts ClosedOptions) (
 	}
 	state := ClosedSweepState{prs: prs, cursor: cursor}
 	if !hasNext || cursor == "" {
-		state.exhausted = true
+		state.Exhausted = true
 	}
 	return ClosedResult{PRs: groupClosed(append([]model.PullRequest(nil), prs...), opts.PerRepo)}, state, nil
 }
 
 // FinishClosedPullRequests implements Client. It resumes the sweep from state,
 // reading any remaining pages up to SweepLimit; if the search still was not
-// exhausted, it then discovers and fills the repositories that came up short,
-// exactly as ListClosedPullRequests would have from the start.
+// exhausted, it then discovers and fills the repositories that came up short.
+//
+// The zero state means "start from the beginning", which makes this the whole
+// fetch in one blocking call: sweep, discovery and per-repo fill, with the
+// sweep reading full closedPageSize pages throughout rather than the small
+// first page SweepClosedPullRequests uses to paint quickly.
 func (c *CLI) FinishClosedPullRequests(ctx context.Context, opts ClosedOptions, state ClosedSweepState) (ClosedResult, error) {
 	opts = opts.withDefaults()
 	swept, err := c.sweepClosedPages(ctx, opts.Query, opts.SweepLimit, math.MaxInt, state)
 	if err != nil {
 		return ClosedResult{}, err
 	}
-	if swept.exhausted {
+	if swept.Exhausted {
 		return ClosedResult{PRs: groupClosed(swept.prs, opts.PerRepo)}, nil
 	}
 	return c.fillPerRepo(ctx, opts, swept)

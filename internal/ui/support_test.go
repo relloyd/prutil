@@ -73,16 +73,6 @@ func (f *fakeClient) ListPullRequests(_ context.Context, _ string, _ int) ([]mod
 	return f.prs, nil
 }
 
-func (f *fakeClient) ListClosedPullRequests(_ context.Context, _ gh.ClosedOptions) (gh.ClosedResult, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.closedCalls++
-	if f.closedErr != nil {
-		return gh.ClosedResult{}, f.closedErr
-	}
-	return gh.ClosedResult{PRs: f.closed, Unavailable: f.closedShort}, nil
-}
-
 func (f *fakeClient) SweepClosedPullRequests(_ context.Context, _ gh.ClosedOptions) (gh.ClosedResult, gh.ClosedSweepState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -92,9 +82,9 @@ func (f *fakeClient) SweepClosedPullRequests(_ context.Context, _ gh.ClosedOptio
 	}
 	if f.closedPartial {
 		partial := f.closed[:min(1, len(f.closed))]
-		return gh.ClosedResult{PRs: partial}, gh.NewClosedSweepState(false), nil
+		return gh.ClosedResult{PRs: partial}, gh.ClosedSweepState{}, nil
 	}
-	return gh.ClosedResult{PRs: f.closed, Unavailable: f.closedShort}, gh.NewClosedSweepState(true), nil
+	return gh.ClosedResult{PRs: f.closed, Unavailable: f.closedShort}, gh.ClosedSweepState{Exhausted: true}, nil
 }
 
 func (f *fakeClient) FinishClosedPullRequests(_ context.Context, _ gh.ClosedOptions, _ gh.ClosedSweepState) (gh.ClosedResult, error) {

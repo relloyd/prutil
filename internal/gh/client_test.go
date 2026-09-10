@@ -238,7 +238,7 @@ func TestClosedSweepThatReachesTheEndCostsOneRequest(t *testing.T) {
 	runner := &fakeRunner{responses: [][]byte{fixture(t, "closed_search.json")}}
 	client := gh.New(runner, 4)
 
-	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3})
+	res, err := client.FinishClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3}, gh.ClosedSweepState{})
 	require.NoError(t, err)
 
 	// This is the property the whole design rests on: when the sweep reaches
@@ -264,7 +264,7 @@ func TestClosedSweepSendsExpectedArguments(t *testing.T) {
 	runner := &fakeRunner{responses: [][]byte{fixture(t, "closed_search.json")}}
 	client := gh.New(runner, 1)
 
-	_, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{})
+	_, err := client.FinishClosedPullRequests(context.Background(), gh.ClosedOptions{}, gh.ClosedSweepState{})
 	require.NoError(t, err)
 	require.Equal(t, 1, runner.callCount())
 
@@ -290,7 +290,7 @@ func TestClosedFillQueriesOnlyTheRepositoriesThatCameUpShort(t *testing.T) {
 
 	// SweepLimit stops the sweep after one page, which is the case the
 	// per-repo fill exists for: the window ran out before the search did.
-	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
+	res, err := client.FinishClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5}, gh.ClosedSweepState{})
 	require.NoError(t, err)
 	require.Equal(t, 3, runner.callCount(), "sweep, then discovery, then one batch")
 	assert.Zero(t, res.Unavailable)
@@ -335,7 +335,7 @@ func TestClosedResultsAreDedupedAndCapped(t *testing.T) {
 	}}
 	client := gh.New(runner, 4)
 
-	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 2, SweepLimit: 5})
+	res, err := client.FinishClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 2, SweepLimit: 5}, gh.ClosedSweepState{})
 	require.NoError(t, err)
 
 	prs := res.PRs
@@ -357,7 +357,7 @@ func TestClosedSweepStopsAtTheLimit(t *testing.T) {
 	runner := &fakeRunner{responses: [][]byte{fixture(t, "closed_search.json")}}
 	client := gh.New(runner, 1)
 
-	_, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{SweepLimit: 5, PerRepo: 3})
+	_, err := client.FinishClosedPullRequests(context.Background(), gh.ClosedOptions{SweepLimit: 5, PerRepo: 3}, gh.ClosedSweepState{})
 	require.NoError(t, err)
 	assert.Contains(t, runner.argsOf(0), "first=5", "the page size is capped by the sweep limit")
 }
@@ -372,7 +372,7 @@ func TestClosedFillDegradesWhenABatchFails(t *testing.T) {
 	}}
 	client := gh.New(runner, 4)
 
-	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
+	res, err := client.FinishClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5}, gh.ClosedSweepState{})
 	require.NoError(t, err, "a failed batch costs its repositories, not the whole view")
 
 	assert.Equal(t, 2, res.Unavailable,
@@ -390,7 +390,7 @@ func TestClosedFillFailsWhenDiscoveryDoes(t *testing.T) {
 	}}
 	client := gh.New(runner, 4)
 
-	_, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
+	_, err := client.FinishClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5}, gh.ClosedSweepState{})
 	require.Error(t, err, "discovery is one small request, so its failure is a real problem")
 	assert.Contains(t, err.Error(), "Bad credentials")
 }
@@ -413,7 +413,7 @@ func TestClosedFillChunksRepositoriesIntoSmallDocuments(t *testing.T) {
 	}}
 	client := gh.New(runner, 4)
 
-	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
+	res, err := client.FinishClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5}, gh.ClosedSweepState{})
 	require.NoError(t, err)
 	assert.Zero(t, res.Unavailable)
 
@@ -453,7 +453,7 @@ func TestClosedDiscoveryPagesOnFromTheSweepAndStops(t *testing.T) {
 	}}
 	client := gh.New(runner, 4)
 
-	res, err := client.ListClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5})
+	res, err := client.FinishClosedPullRequests(context.Background(), gh.ClosedOptions{PerRepo: 3, SweepLimit: 5}, gh.ClosedSweepState{})
 	require.NoError(t, err)
 	assert.Zero(t, res.Unavailable)
 
@@ -486,8 +486,8 @@ func TestClosedDiscoveryRespectsTheRepoLimit(t *testing.T) {
 	}}
 	client := gh.New(runner, 4)
 
-	_, err := client.ListClosedPullRequests(context.Background(),
-		gh.ClosedOptions{PerRepo: 3, SweepLimit: 5, RepoLimit: 5})
+	_, err := client.FinishClosedPullRequests(context.Background(),
+		gh.ClosedOptions{PerRepo: 3, SweepLimit: 5, RepoLimit: 5}, gh.ClosedSweepState{})
 	require.NoError(t, err)
 
 	// Five repositories, three to a document, is two documents.
@@ -510,8 +510,8 @@ func TestClosedDiscoveryStopsEarlyOnceEnoughRepositoriesAreFound(t *testing.T) {
 	}}
 	client := gh.New(runner, 4)
 
-	res, err := client.ListClosedPullRequests(context.Background(),
-		gh.ClosedOptions{PerRepo: 3, SweepLimit: 5, RepoLimit: 2})
+	res, err := client.FinishClosedPullRequests(context.Background(),
+		gh.ClosedOptions{PerRepo: 3, SweepLimit: 5, RepoLimit: 2}, gh.ClosedSweepState{})
 	require.NoError(t, err)
 	assert.Zero(t, res.Unavailable)
 
@@ -530,7 +530,7 @@ func TestSweepClosedPullRequestsFetchesExactlyOnePage(t *testing.T) {
 
 	assert.Equal(t, 1, runner.callCount(), "the fast path costs exactly one gh round trip")
 	assert.Contains(t, runner.argsOf(0), "first=10", "one page is sized to closedFirstPageSize, smaller than the background page size")
-	assert.False(t, state.Exhausted(), "the fixture's page offers a next page")
+	assert.False(t, state.Exhausted, "the fixture's page offers a next page")
 
 	// The partial page is already grouped so the UI can render it immediately.
 	require.Len(t, res.PRs, 4)
@@ -545,7 +545,7 @@ func TestSweepClosedPullRequestsWhenTheSearchIsAlreadyExhausted(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, runner.callCount())
-	assert.True(t, state.Exhausted(), "a page that runs out needs no further work")
+	assert.True(t, state.Exhausted, "a page that runs out needs no further work")
 	require.Len(t, res.PRs, 4, "the one page already holds everything")
 }
 
@@ -560,14 +560,14 @@ func TestFinishClosedPullRequestsContinuesFromTheSweepState(t *testing.T) {
 
 	_, state, err := client.SweepClosedPullRequests(context.Background(), opts)
 	require.NoError(t, err)
-	require.False(t, state.Exhausted())
+	require.False(t, state.Exhausted)
 	require.Equal(t, 1, runner.callCount())
 
 	res, err := client.FinishClosedPullRequests(context.Background(), opts, state)
 	require.NoError(t, err)
 
 	// One sweep call already spent, then discovery, then one batch: the same
-	// total cost as the one-shot ListClosedPullRequests for this fixture set.
+	// total cost as a single blocking fetch for this fixture set.
 	require.Equal(t, 3, runner.callCount())
 	assert.Zero(t, res.Unavailable)
 
@@ -587,7 +587,7 @@ func TestFinishClosedPullRequestsSkipsWorkWhenTheSweepIsAlreadyExhausted(t *test
 
 	partial, state, err := client.SweepClosedPullRequests(context.Background(), opts)
 	require.NoError(t, err)
-	require.True(t, state.Exhausted())
+	require.True(t, state.Exhausted)
 	require.Equal(t, 1, runner.callCount())
 
 	res, err := client.FinishClosedPullRequests(context.Background(), opts, state)

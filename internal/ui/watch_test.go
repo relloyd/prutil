@@ -872,3 +872,91 @@ func TestAWatchPageLeftOpenOnAnEmptySectionCloses(t *testing.T) {
 	assert.Equal(t, detailChecks, app.detailSection)
 	assert.Zero(t, app.watchOffset)
 }
+
+func TestTheCompactWatchSectionSpendsItsWidthOnFactsAndThePageOnLabels(t *testing.T) {
+	// Both renderers read one set of facts and phrase them for the room they
+	// have. Beside the checks the colour says which fact it is; on a page of
+	// its own there is room to name it.
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("w"))
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	app.feedback[pr.Key()] = 3
+
+	compact := plain(app.render())
+	assert.Contains(t, compact, "3 open threads")
+	assert.NotContains(t, compact, "feedback: 3 open threads")
+
+	send(t, app, press("l"))
+	send(t, app, press("k"))
+	send(t, app, press("l"))
+	require.Equal(t, detailWatchPage, app.detailPage)
+
+	page := plain(app.render())
+	assert.Contains(t, page, "feedback: 3 open threads")
+	assert.Contains(t, page, "cadence: every")
+	assert.Contains(t, page, "next check: ")
+}
+
+func TestTheCompactWatchSectionNamesTheWorkInFlightWithoutLabellingIt(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("w"))
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	app.setWatchOperation(pr.Key(), "handing feedback to an agent")
+
+	compact := plain(app.render())
+	assert.Contains(t, compact, "handing feedback to an agent")
+	assert.NotContains(t, compact, "operation: handing feedback")
+
+	send(t, app, press("l"))
+	send(t, app, press("k"))
+	send(t, app, press("l"))
+	assert.Contains(t, plain(app.render()), "operation: handing feedback to an agent")
+}
+
+func TestTheExpandedWatchPageIsMeasuredByCountingRatherThanRendering(t *testing.T) {
+	// The scroll arithmetic asks how long the page is on every key press, so
+	// the answer must not cost a screenful of styled and truncated text.
+	app, _, _ := newTestApp(t, 120, 60)
+	send(t, app, press("w"))
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	app.recordWatchActivity(pr.Key(), "started a change check")
+	app.recordWatchActivity(pr.Key(), "changes found")
+
+	send(t, app, press("l"))
+	send(t, app, press("k"))
+	send(t, app, press("l"))
+	require.Equal(t, detailWatchPage, app.detailPage)
+
+	_, width := app.paneWidths()
+	rendered := app.renderWatchPage(pr, width, app.bodyHeight())
+	require.Less(t, len(rendered), app.bodyHeight(), "the whole page fits, so nothing is scrolled away")
+	assert.Equal(t, app.watchLineCount(), len(rendered),
+		"counted rows and drawn lines are the same page")
+}
+
+func TestEverySectionHeadingLinesUpWithTheOthers(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 60)
+	send(t, app, press("w"))
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	app.recordWatchActivity(pr.Key(), "started a change check")
+
+	send(t, app, press("l"))
+	send(t, app, press("k"))
+	send(t, app, press("l"))
+
+	_, width := app.paneWidths()
+	for _, heading := range []string{"WATCH", "ACTIVITY", "HANDOFFS"} {
+		found := false
+		for _, line := range app.renderWatchPage(pr, width, app.bodyHeight()) {
+			if strings.TrimSpace(plain(line)) == heading {
+				assert.Equal(t, "  "+heading, plain(line), "%s carries the same indent as the rest", heading)
+				found = true
+			}
+		}
+		assert.Truef(t, found, "%s is on the page", heading)
+	}
+}

@@ -928,7 +928,7 @@ func (a *App) loadClosed(gen int) tea.Cmd {
 			view:        viewClosed,
 			prs:         res.PRs,
 			unavailable: res.Unavailable,
-			partial:     !state.Exhausted(),
+			partial:     !state.Exhausted,
 			sweepState:  state,
 		}
 	}
@@ -936,7 +936,7 @@ func (a *App) loadClosed(gen int) tea.Cmd {
 
 // loadClosedFinish resumes the sweep from state in the background: any
 // remaining sweep pages, then repository discovery and the per-repo fill,
-// exactly as ListClosedPullRequests would have done from the start. Its reply
+// exactly as a blocking fetch from the zero state would have. Its reply
 // replaces the partial list loadClosed already applied.
 func (a *App) loadClosedFinish(gen int, state gh.ClosedSweepState) tea.Cmd {
 	client, opts := a.client, a.closed
@@ -1133,15 +1133,15 @@ func (a *App) watchWindow() int {
 	return max(a.bodyHeight()-1, 1)
 }
 
-// watchLineCount returns the number of expanded WATCH lines for the selected
-// pull request at the current detail width.
+// watchLineCount is how many lines the expanded WATCH page holds for the
+// selected pull request. It counts rows rather than rendering them, which
+// matters because the scroll arithmetic asks on every key press.
 func (a *App) watchLineCount() int {
 	pr, ok := a.selectedPR()
 	if !ok {
 		return 0
 	}
-	_, width := a.paneWidths()
-	return len(a.watchPageLines(pr, width))
+	return len(a.watchPageRows(pr))
 }
 
 // listRows is how many pull request rows fit in a body of the given height.

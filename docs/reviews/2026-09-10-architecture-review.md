@@ -360,7 +360,7 @@ worst of the three.
 Five defects and a pile of structural work. Suggested order, with the
 justification for the ordering rather than just the list.
 
-**Status: tranches 1, 2 and 2b are done.** Every defect below is closed, each with
+**Status: tranches 1, 2, 2b and 3 are done.** Every defect below is closed, each with
 a regression test confirmed to fail against the code as it stood. Tranches 3 to
 5 are untouched.
 
@@ -441,7 +441,7 @@ The package doc claimed nothing is written until a pull request is armed, which
 the configuration template has contradicted since it was added. Corrected to
 describe what the code does.
 
-## Tranche 3: the duplication the last two commits introduced (one day)
+## Tranche 3: the duplication the last two commits introduced (done)
 
 Worth doing before more is built on top, because both are already being copied.
 
@@ -452,6 +452,36 @@ Worth doing before more is built on top, because both are already being copied.
 9. **Delete `ListClosedPullRequests` and `NewClosedSweepState`**, or delete the
    two-stage split. Keeping both means every test double implements a method
    with no caller.
+
+### What the fixes turned out to be
+
+**The dead closed-view method came out cleanly.** `FinishClosedPullRequests`
+from the zero state is byte for byte what `ListClosedPullRequests` did: the
+same helpers, the same page sizes, the same request counts. Eleven tests
+translated with no change to a single assertion, which is what proves it. The
+sweep state now carries an exported `Exhausted` field instead of a method and a
+test-only constructor, since that is the one part of it a caller acts on.
+
+**The two watch renderers now read one set of facts and phrase them
+separately.** A shared prefix, as the plan suggested, was the wrong shape: the
+compact section packs state, cadence and next check onto one line and the page
+gives each a line of its own, so no prefix of one is the other. What was
+genuinely duplicated was reading the state and deciding what there is to show,
+and that is now `watchFacts`. Rendering goes through `watchRow`, plain text and
+a style, so counting the page is counting a slice rather than styling and
+truncating a screenful to throw away.
+
+Two things were checked rather than assumed. The rendering was diffed against
+the code it replaced across six scenarios, including narrow and short
+terminals: identical except that `ACTIVITY` and `HANDOFFS` now carry the same
+two-space indent as `WATCH` and `CHECKS`, which the original gave only to
+`WATCH`. And the first draft quietly gave the compact section the page's
+labels, which is a regression at that width; the compact wording is preserved
+and now pinned by a test.
+
+Also fixed in passing: the page heading was being truncated after its escape
+codes had gone in, which `AGENTS.md` warns against. Headings are now a row kind
+that renders through `sectionHeading` rather than being styled and then cut.
 
 ## Tranche 4: the structural change (one to two days)
 

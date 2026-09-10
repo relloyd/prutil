@@ -191,6 +191,9 @@ func (d *Dispatcher) send(ctx context.Context, req Request, agent herdr.Agent, n
 
 	text, err := d.cfg.RenderPrompt(promptData(req, note))
 	if err != nil {
+		// No toast, for the same reason as the dry run below: a prompt that
+		// will not render is a configuration mistake that would otherwise
+		// notify on every handoff until it was fixed.
 		res.Outcome, res.Detail = home.OutcomeFailed, err.Error()
 		return res, err
 	}
@@ -219,6 +222,16 @@ func (d *Dispatcher) send(ctx context.Context, req Request, agent herdr.Agent, n
 	return res, nil
 }
 
+// fail records a handoff that did not happen, keeping whatever the caller had
+// already learned about where it was going, and tells the reader. Every failure
+// past the first herdr call goes through it, so that the paths which
+// deliberately stay quiet are the ones that look unusual.
+func (d *Dispatcher) fail(ctx context.Context, req Request, res Result, err error) (Result, error) {
+	res.Outcome, res.Detail = home.OutcomeFailed, err.Error()
+	d.toast(ctx, req, res.Detail)
+	return res, err
+}
+
 // startAgentTimeout allows herdr enough time to recognise a new agent without
 // holding the handoff open for its full work duration.
 const startAgentTimeout = time.Minute
@@ -227,35 +240,23 @@ const startAgentTimeout = time.Minute
 // handoff that had no existing agent candidate.
 func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Request) (Result, error) {
 	if strings.TrimSpace(d.cfg.AgentKind) == "" {
-		res := Result{Outcome: home.OutcomeFailed, Detail: ErrAgentKindRequired.Error()}
-		d.toast(ctx, req, res.Detail)
-		return res, ErrAgentKindRequired
+		return d.fail(ctx, req, Result{}, ErrAgentKindRequired)
 	}
 	if d.repos == nil || d.fetch == nil {
-		err := errors.New("manual workspace provisioning is not configured")
-		res := Result{Outcome: home.OutcomeFailed, Detail: err.Error()}
-		d.toast(ctx, req, res.Detail)
-		return res, err
+		return d.fail(ctx, req, Result{}, errors.New("manual workspace provisioning is not configured"))
 	}
 
 	checkout, err := d.repos.Resolve(ctx, req.PR.Repo)
 	if err != nil {
-		res := Result{Outcome: home.OutcomeFailed, Detail: err.Error()}
-		d.toast(ctx, req, res.Detail)
-		return res, err
+		return d.fail(ctx, req, Result{}, err)
 	}
 	if checkout.Root == "" {
-		err := errors.New("the local checkout has no repository root")
-		res := Result{Outcome: home.OutcomeFailed, Detail: err.Error()}
-		d.toast(ctx, req, res.Detail)
-		return res, err
+		return d.fail(ctx, req, Result{}, errors.New("the local checkout has no repository root"))
 	}
 
 	name, err := agentName(req.PR, agents)
 	if err != nil {
-		res := Result{Outcome: home.OutcomeFailed, Detail: err.Error()}
-		d.toast(ctx, req, res.Detail)
-		return res, err
+		return d.fail(ctx, req, Result{}, err)
 	}
 	label := req.PR.Key().String()
 	res := Result{
@@ -266,6 +267,10 @@ func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Re
 	if d.cfg.DryRun {
 		text, err := d.cfg.RenderPrompt(promptData(req, ""))
 		if err != nil {
+			// No toast. A prompt that will not render is a mistake in the
+			// configuration file, which the reader fixes by looking at the
+			// screen they are already looking at, and which would otherwise
+			// produce a notification on every handoff until they did.
 			res.Outcome, res.Detail = home.OutcomeFailed, err.Error()
 			return res, err
 		}
@@ -277,24 +282,17 @@ func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Re
 
 	session, err := d.openWorktree(ctx, checkout.Root, workspaceBranch(req.PR), label, req.PR.Number)
 	if err != nil {
-		res.Outcome, res.Detail = home.OutcomeFailed, err.Error()
-		d.toast(ctx, req, res.Detail)
-		return res, err
+		return d.fail(ctx, req, res, err)
 	}
 	res.Workspace, res.Tab = session.WorkspaceID, session.TabID
 	res.Provisioned = true
 
 	agent, err := d.herdr.StartAgent(ctx, name, d.cfg.AgentKind, session.RootPaneID, startAgentTimeout)
 	if err != nil {
-		res.Outcome, res.Detail = home.OutcomeFailed, err.Error()
-		d.toast(ctx, req, res.Detail)
-		return res, err
+		return d.fail(ctx, req, res, err)
 	}
 	if agent.Target() == "" {
-		err := errors.New("herdr started an agent without a target")
-		res.Outcome, res.Detail = home.OutcomeFailed, err.Error()
-		d.toast(ctx, req, res.Detail)
-		return res, err
+		return d.fail(ctx, req, res, errors.New("herdr started an agent without a target"))
 	}
 
 	return d.send(ctx, req, agent, "", res)
