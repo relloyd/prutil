@@ -352,7 +352,7 @@ func TestTheSpinnerRunsWhileAHandoffWaitsForAnAgent(t *testing.T) {
 func TestFeedbackIsWhateverIsUnresolvedAndNotTheViewersOwnLastWord(t *testing.T) {
 	threads := sampleThreads().Threads
 
-	got := model.Feedback(threads, "relloyd")
+	got := model.Feedback(threads, "relloyd", model.DefaultSelfTestMarker)
 	require.Len(t, got, 2)
 	assert.Equal(t, "T1", got[0].ID)
 	assert.Equal(t, "T2", got[1].ID)
@@ -366,7 +366,7 @@ func selfTestReview() gh.Review {
 		Threads: []model.ReviewThread{{
 			ID:       "self-test",
 			Opener:   "relloyd",
-			Body:     "Exercise watcher delivery.\n" + model.SelfTestMarker,
+			Body:     "Exercise watcher delivery.\n" + model.DefaultSelfTestMarker,
 			LatestBy: "relloyd",
 			LatestID: "self-test-comment",
 		}},
@@ -382,7 +382,7 @@ func latestReplySelfTestReview() gh.Review {
 			Body:       "Please handle this permission.",
 			LatestBy:   "relloyd",
 			LatestID:   "viewer-test-reply",
-			LatestBody: "Acknowledged for watcher testing.\n\n" + model.SelfTestMarker,
+			LatestBody: "Acknowledged for watcher testing.\n\n" + model.DefaultSelfTestMarker,
 		}},
 	}
 }
@@ -730,12 +730,35 @@ func TestTheDetailShowsRecentPersistedHandoffsWithoutReadingDuringRender(t *test
 }
 
 func TestTheDetailExplainsUnreadableHandoffHistory(t *testing.T) {
+	// A log that cannot be read at all is worth saying so about. A single line
+	// that will not parse is not: the log is appended a line at a time, so the
+	// damage is a write cut short, and the handoffs either side of it are
+	// still worth showing.
 	app, _, _ := newTestApp(t, 120, 40)
-	require.NoError(t, os.WriteFile(app.store.Path(home.HandoffFile), []byte("{not json}\n"), 0o600))
+	require.NoError(t, os.MkdirAll(app.store.Path(home.HandoffFile), 0o700))
 
 	loadHandoffHistory(t, app, samplePRs()[0].Key())
 
 	assert.Contains(t, plain(app.render()), "handoff history unavailable")
+}
+
+func TestTheDetailStillShowsHandoffsEitherSideOfADamagedLine(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := samplePRs()[0].Key()
+	require.NoError(t, app.store.AppendHandoff(home.Handoff{
+		At: testNow.Add(-time.Hour), PR: key.String(), Outcome: home.OutcomeSent, Kind: "claude",
+	}))
+	file, err := os.OpenFile(app.store.Path(home.HandoffFile), os.O_APPEND|os.O_WRONLY, 0o600)
+	require.NoError(t, err)
+	_, err = file.WriteString(`{"pr":"` + key.String() + `","outc`)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	loadHandoffHistory(t, app, key)
+
+	screen := plain(app.render())
+	assert.NotContains(t, screen, "handoff history unavailable")
+	assert.Contains(t, screen, "sent · claude")
 }
 
 func loadHandoffHistory(t *testing.T, app *App, key model.Key) {
@@ -972,7 +995,7 @@ func TestOnePullRequestsWatcherStateLivesInOneEntry(t *testing.T) {
 
 	// Everything on this pull request has already been handed over, so the
 	// read finishes without starting anything else.
-	app.state.RecordHandoff(key.String(), model.Digest(sampleThreads().Feedback()), testNow)
+	app.state.RecordHandoff(key.String(), model.Digest(sampleThreads().Feedback(model.DefaultSelfTestMarker)), testNow)
 
 	send(t, app, watchSnapshotMsg{
 		keys:  []model.Key{key},

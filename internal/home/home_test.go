@@ -224,15 +224,67 @@ func TestRecentHandoffsReturnsOnlyTheSelectedPullRequestNewestFirst(t *testing.T
 	assert.Equal(t, home.OutcomeFailed, history[0].Outcome)
 }
 
-func TestRecentHandoffsReportsMalformedHistoryRatherThanIgnoringIt(t *testing.T) {
+func TestRecentHandoffsReadsPastALineItCannotParse(t *testing.T) {
+	// The log is appended to a line at a time by one writer, so the only line
+	// that can be damaged is the last, and the damage is a write cut short.
+	// Failing the whole read over it would lose every handoff before it too,
+	// for good, on every pull request at once.
 	dir := t.TempDir()
 	store := home.OpenIn(dir)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, home.HandoffFile), []byte("{not json}\n"), 0o600))
+	good := home.Handoff{At: time.Now(), PR: "a/b#1", Outcome: home.OutcomeSent}
+	encoded, err := json.Marshal(good)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, home.HandoffFile),
+		append(append(encoded, '\n'), []byte(`{"pr":"a/b#1","outc`)...), 0o600))
 
-	_, err := store.RecentHandoffs("a/b#1", 3)
+	history, err := store.RecentHandoffs("a/b#1", 3)
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "line 1")
+	require.NoError(t, err)
+	require.Len(t, history, 1, "the readable handoff is still readable")
+	assert.Equal(t, home.OutcomeSent, history[0].Outcome)
+}
+
+func TestTheHandoffLogIsRolledOnceItGrowsPastItsLimit(t *testing.T) {
+	dir := t.TempDir()
+	store := home.OpenIn(dir)
+
+	// Fill the log past its limit with entries for one pull request.
+	for i := 0; i < 3000; i++ {
+		require.NoError(t, store.AppendHandoff(home.Handoff{
+			At:      time.Now().Add(time.Duration(i) * time.Second),
+			PR:      "a/b#1",
+			Outcome: home.OutcomeSent,
+			Prompt:  strings.Repeat("x", 512),
+		}))
+	}
+	require.FileExists(t, filepath.Join(dir, home.PreviousHandoffFile), "the log was rolled")
+
+	info, err := os.Stat(filepath.Join(dir, home.HandoffFile))
+	require.NoError(t, err)
+	assert.Less(t, info.Size(), int64(1<<20), "and the live log started again")
+
+	// A roll must not blank the pane: reading sees through it.
+	history, err := store.RecentHandoffs("a/b#1", 3)
+	require.NoError(t, err)
+	assert.Len(t, history, 3, "the newest handoffs are still readable across the roll")
+}
+
+func TestReadingSeesHandoffsLeftInTheRolledLog(t *testing.T) {
+	dir := t.TempDir()
+	store := home.OpenIn(dir)
+	older := home.Handoff{At: time.Now().Add(-time.Hour), PR: "a/b#1", Outcome: home.OutcomeNoAgent}
+	encoded, err := json.Marshal(older)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, home.PreviousHandoffFile), append(encoded, '\n'), 0o600))
+	require.NoError(t, store.AppendHandoff(home.Handoff{At: time.Now(), PR: "a/b#1", Outcome: home.OutcomeSent}))
+
+	history, err := store.RecentHandoffs("a/b#1", 5)
+
+	require.NoError(t, err)
+	require.Len(t, history, 2)
+	assert.Equal(t, home.OutcomeSent, history[0].Outcome, "newest first")
+	assert.Equal(t, home.OutcomeNoAgent, history[1].Outcome, "then what the roll left behind")
 }
 
 func TestLoadCreatesTheDirectoryAndAConfigurationOnFirstRun(t *testing.T) {

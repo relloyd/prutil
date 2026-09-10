@@ -171,6 +171,10 @@ type Config struct {
 	// disables the handoff key; HandoffErr says why.
 	Handoff    dispatcher
 	HandoffErr error
+	// NoMouse leaves mouse reporting off. Asking for it takes the wheel and
+	// drag-to-select away from the terminal, which is a trade somebody reading
+	// URLs and error text off the screen may not want to make.
+	NoMouse bool
 }
 
 // App is the root Bubble Tea model.
@@ -206,7 +210,9 @@ type App struct {
 	// watchOffset is the first line shown of the expanded WATCH page.
 	watchOffset int
 
-	focus    pane
+	focus pane
+	// mouse is whether prutil asks the terminal for mouse reporting.
+	mouse    bool
 	width    int
 	height   int
 	status   string
@@ -360,6 +366,7 @@ func New(cfg Config) *App {
 		handErr:  handErr,
 		engine:   watch.New(cfg.Home.Watch),
 		runtime:  map[model.Key]*prRuntime{},
+		mouse:    !cfg.NoMouse,
 	}
 	a.views[viewOpen].loading = true
 	return a
@@ -414,8 +421,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseClickMsg:
 		return a.handleMouse(msg)
 
+	case tea.MouseWheelMsg:
+		// Asking for mouse reporting takes the wheel off the terminal, so
+		// prutil owes the reader something for it.
+		return a.handleWheel(msg)
+
 	case spinner.TickMsg:
 		if !a.busy() {
+			return a, nil
+		}
+		if a.onlyHandoffOutstanding() {
+			// A handoff waits on an agent, for up to the configured budget,
+			// which defaults to fifteen minutes. Saying "not hung" is right;
+			// saying it ten times a second for a quarter of an hour, redrawing
+			// the whole screen each time, is not. The elapsed time in the
+			// detail pane carries it from here.
 			return a, nil
 		}
 		var cmd tea.Cmd
@@ -624,6 +644,31 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, a.jump(a.itemCount() - 1)
 	}
 	return a, nil
+}
+
+// wheelStep is how far one notch of the wheel moves the focused pane.
+const wheelStep = 1
+
+// handleWheel scrolls whichever pane the pointer is over.
+func (a *App) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	delta := 0
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		delta = -wheelStep
+	case tea.MouseWheelDown:
+		delta = wheelStep
+	default:
+		return a, nil
+	}
+
+	// The pointer decides, so that scrolling over the checks does not move the
+	// list out from under them. Over the list it also takes the focus, the way
+	// a click does, since scrolling a pane nothing selects is not much use.
+	if _, over := a.listIndexAt(msg.X, msg.Y); over && a.focus != paneList {
+		a.focus = paneList
+		a.resetDetailNavigation()
+	}
+	return a, a.move(delta)
 }
 
 // handleMouse handles the left click that selects a pull request in the list.
@@ -1084,6 +1129,29 @@ func (a *App) busy() bool {
 	// doing, which is exactly the stretch the reader needs to be told is not a
 	// hang.
 	return a.anyInFlight()
+}
+
+// onlyHandoffOutstanding reports that the sole work in flight is a handoff
+// waiting on an agent, which is the one kind of wait measured in minutes.
+func (a *App) onlyHandoffOutstanding() bool {
+	for i := range a.views {
+		if a.views[i].loading || a.views[i].enriching {
+			return false
+		}
+	}
+	for _, state := range a.checks {
+		if state.loading {
+			return false
+		}
+	}
+	handing := false
+	for _, got := range a.runtime {
+		if got.reviewing {
+			return false
+		}
+		handing = handing || got.handing
+	}
+	return handing
 }
 
 // narrow reports whether the terminal is too slim for side-by-side panes.

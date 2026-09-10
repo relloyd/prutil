@@ -38,6 +38,11 @@ func DefaultConfigTemplate() []byte {
 	_, _ = fmt.Fprintf(&out, "  max_notified_interval: %s\n", cfg.Watch.MaxNotifiedInterval)
 	_, _ = fmt.Fprintf(&out, "  idle_interval: %s\n", cfg.Watch.IdleInterval)
 	_, _ = fmt.Fprintf(&out, "  dormant_after: %d\n", cfg.Watch.DormantAfter)
+	out.WriteString("  # Write this string in one of your own review comments to have the watcher\n")
+	out.WriteString("  # treat it as feedback, which is how to try the feature without waiting for\n")
+	out.WriteString("  # a reviewer. It answers only for comments you wrote. Set it to \"\" to turn\n")
+	out.WriteString("  # it off.\n")
+	_, _ = fmt.Fprintf(&out, "  self_test_marker: %q\n", cfg.Watch.Marker())
 	_, _ = fmt.Fprintf(&out, "  force_precise_every: %d\n\n", cfg.Watch.ForcePreciseEvery)
 
 	out.WriteString("# Optional explicit checkout locations by owner/name.\n")

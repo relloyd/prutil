@@ -145,11 +145,17 @@ func (r *Resolver) resolveConfigured(ctx context.Context, repo, configuredPath s
 	return checkout, nil
 }
 
+// discoverDepth is how far below a configured root a checkout is looked for.
+// Code lives a directory or three down from the root somebody points at, and
+// the cost of guessing high is every node_modules and vendor tree underneath.
+const discoverDepth = 4
+
 func (r *Resolver) discover(ctx context.Context, want, configuredRoot string) (Checkout, bool) {
 	root, err := resolvePath(configuredRoot)
 	if err != nil {
 		return Checkout{}, false
 	}
+	rootDepth := len(strings.Split(filepath.Clean(root), string(filepath.Separator)))
 
 	var found Checkout
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
@@ -162,11 +168,26 @@ func (r *Resolver) discover(ctx context.Context, want, configuredRoot string) (C
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if d.IsDir() && d.Name() != ".git" &&
+			len(strings.Split(path, string(filepath.Separator)))-rootDepth >= discoverDepth {
+			return fs.SkipDir
+		}
 		if d.Name() != ".git" {
 			return nil
 		}
 
 		candidate := filepath.Dir(path)
+		// The origin remote is read out of the checkout's own config before
+		// git is asked anything. A directory of two hundred checkouts is two
+		// hundred small file reads rather than six hundred forked processes,
+		// and only the one that matches costs a process at all.
+		if !originMatches(path, want) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+
 		checkout, ok := r.matchCheckout(ctx, want, candidate)
 		if d.IsDir() {
 			if ok {
@@ -195,6 +216,46 @@ func (r *Resolver) discover(ctx context.Context, want, configuredRoot string) (C
 }
 
 var errStopWalk = errors.New("checkout found")
+
+// originMatches reports whether the checkout at gitPath names want as its
+// origin, read from the repository's own config file.
+//
+// It is a filter, not an answer: a checkout it accepts is still confirmed by
+// asking git, which is the only thing that knows about includes, conditional
+// config and worktrees. A checkout it cannot read is passed through for git to
+// judge, so a shape this does not parse costs a process rather than a miss.
+func originMatches(gitPath, want string) bool {
+	config := filepath.Join(gitPath, "config")
+	if info, err := os.Stat(gitPath); err == nil && !info.IsDir() {
+		// A linked worktree's .git is a file pointing at the real directory.
+		// Following it is more trouble than the process it would save.
+		return true
+	}
+	data, err := os.ReadFile(config)
+	if err != nil {
+		return true
+	}
+
+	inOrigin := false
+	for line := range strings.Lines(string(data)) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			inOrigin = strings.HasPrefix(line, `[remote "origin"]`)
+			continue
+		}
+		if !inOrigin {
+			continue
+		}
+		name, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(name) != "url" {
+			continue
+		}
+		got, ok := normalizeRepoLoose(ParseRemote(strings.TrimSpace(value)))
+		return !ok || got == want
+	}
+	// No origin url found where one was expected: let git have the last word.
+	return true
+}
 
 func (r *Resolver) matchCheckout(ctx context.Context, want, path string) (Checkout, bool) {
 	checkout := r.id.Identify(ctx, path)

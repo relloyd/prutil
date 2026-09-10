@@ -635,8 +635,8 @@ func TestReviewThreadsAdmitsAMarkerInTheViewersLatestReply(t *testing.T) {
 	assert.Equal(t, "copilot-pull-request-reviewer", thread.Opener)
 	assert.Equal(t, "relloyd", thread.LatestBy)
 	assert.Equal(t, "PRRC_MARKED_REPLY", thread.LatestID)
-	assert.Contains(t, thread.LatestBody, model.SelfTestMarker)
-	require.Len(t, review.Feedback(), 1,
+	assert.Contains(t, thread.LatestBody, model.DefaultSelfTestMarker)
+	require.Len(t, review.Feedback(model.DefaultSelfTestMarker), 1,
 		"an unresolved thread with a marked latest reply is test feedback")
 	assert.Contains(t, runner.argsOf(0), "createdAt body",
 		"the precise query requests the latest comment body")
@@ -649,7 +649,7 @@ func TestReviewThreadsSelectsOnlyWhatIsStillWaitingOnTheViewer(t *testing.T) {
 	review, err := client.ReviewThreads(context.Background(), model.Key{Repo: "relloyd/prutil", Number: 42})
 	require.NoError(t, err)
 
-	feedback := review.Feedback()
+	feedback := review.Feedback(model.DefaultSelfTestMarker)
 	require.Len(t, feedback, 1)
 	assert.Equal(t, "PRRT_1", feedback[0].ID,
 		"the resolved thread and the one the viewer answered themselves are both finished with")

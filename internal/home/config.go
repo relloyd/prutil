@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/relloyd/prutil/internal/model"
 )
 
 // DefaultPrompt is what prutil says to an agent when the configuration does
@@ -92,6 +94,33 @@ type WatchConfig struct {
 	// nth poll regardless of the tripwire, because a reply inside an existing
 	// thread moves no counter.
 	ForcePreciseEvery int `yaml:"force_precise_every"`
+	// SelfTestMarker lets you count one of your own review comments as
+	// feedback by writing this string in it, which is how the watcher is tried
+	// against a real pull request without waiting for a reviewer. It answers
+	// only for comments you wrote yourself. Set it to "" to turn it off.
+	SelfTestMarker *string `yaml:"self_test_marker"`
+}
+
+// defaultMarker returns a fresh pointer to the built-in self-test marker.
+//
+// Fresh every call, and never the address of a package-level variable: the
+// YAML decoder writes through a non-nil pointer it finds in the target, so a
+// shared one would let one configuration file rewrite the built-in marker for
+// the whole process, and two files parsed at once would race over it.
+func defaultMarker() *string {
+	marker := model.DefaultSelfTestMarker
+	return &marker
+}
+
+// Marker is the self-test marker in force, which is the built-in one unless
+// the configuration names another or turns it off. It is a pointer in the
+// struct so that an explicit empty string, meaning off, can be told apart from
+// a key nobody wrote; a zero WatchConfig therefore still gets the built-in.
+func (w WatchConfig) Marker() string {
+	if w.SelfTestMarker == nil {
+		return model.DefaultSelfTestMarker
+	}
+	return *w.SelfTestMarker
 }
 
 // DefaultConfig is the configuration prutil uses when nothing overrides it.
@@ -111,6 +140,7 @@ func DefaultConfig() Config {
 			IdleInterval:        Duration(10 * time.Second),
 			DormantAfter:        3,
 			ForcePreciseEvery:   5,
+			SelfTestMarker:      defaultMarker(),
 		},
 		Repos: map[string]string{},
 		Discovery: DiscoveryConfig{

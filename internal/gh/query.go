@@ -235,9 +235,14 @@ query($owner: String!, $name: String!, $number: Int!, $first: Int!) {
 }`
 
 // watchQuery is the tripwire the watcher polls with: one document covering
-// every armed pull request at once, addressed by node id rather than by
-// repository, so a reader watching ten pull requests across ten organisations
-// still costs one request and one rate limit point.
+// armed pull requests by node id rather than by repository, so a reader
+// watching ten pull requests across ten organisations still costs one request
+// and one rate limit point.
+//
+// GitHub caps nodes(ids:) at a hundred and refuses the whole document past it,
+// so WatchSnapshot sends a document per hundred. Anything added to the
+// selection here is resolved once per pull request in the document, which is
+// what the point cost is derived from: keep it to fields that cost nothing.
 //
 // It selects nothing that has to be paged and no review thread bodies. The
 // point is only to notice that something moved; the precise question of what

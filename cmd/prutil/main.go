@@ -57,6 +57,7 @@ func run() error {
 		showVer     = flag.Bool("version", false, "print the version and exit")
 		skipVerify  = flag.Bool("skip-auth-check", false, "do not verify gh authentication before starting")
 		dryRun      = flag.Bool("dry-run", false, "record what would be sent to a coding agent without sending it")
+		mouse       = flag.Bool("mouse", true, "select and scroll with the mouse; off leaves the terminal its wheel and text selection")
 	)
 	flag.Parse()
 
@@ -99,6 +100,7 @@ func run() error {
 			RepoLimit:  *repoLimit,
 		},
 		Version:   version,
+		NoMouse:   !*mouse,
 		Store:     store,
 		StoreErr:  storeErr,
 		State:     loaded.State,

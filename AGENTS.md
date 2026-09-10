@@ -42,6 +42,12 @@ checks.
 | `internal/gh` | the `Client` interface and its gh-CLI implementation, the GraphQL documents, and wire decoding |
 | `internal/browser` | the `Opener` interface and the platform handler |
 | `internal/clipboard` | the `Writer` interface and the platform clipboard program |
+| `internal/git` | reading the repository and branch behind a directory, and finding a repository's local checkout |
+| `internal/herdr` | the `Controller` interface and the herdr CLI behind it |
+| `internal/handoff` | choosing the agent a pull request's feedback goes to, and sending it |
+| `internal/home` | the application directory: configuration, watch state, handoff log, repository cache |
+| `internal/watch` | the polling schedule, as a state machine over readings somebody else took |
+| `internal/run` | starting a helper process and reporting one that failed |
 | `internal/ui` | the Bubble Tea model, both panes, key bindings and the palette |
 
 ## How the data flows
@@ -172,6 +178,46 @@ something else is wrong.
 Repository names reach `buildRepoBatchQuery` from the API, so its search strings
 travel as GraphQL variables and any name failing `repoNamePattern` is dropped.
 Keep it that way: never splice a repository name into the document text.
+
+## Watching and the handoff
+
+`internal/watch` is a state machine over readings somebody else took: no clock,
+no connection, no goroutine, which is what makes a backoff measured in tens of
+minutes testable in microseconds. Keep it that way.
+
+`WatchSnapshot` is the cheap tripwire, one document per hundred armed pull
+requests because GitHub caps `nodes(ids:)` there. Anything added to
+`watchQuery` is resolved once per pull request in the document, so keep it to
+fields that cost nothing to resolve; the precise question is
+`reviewThreadQuery`'s, asked only of what the tripwire flagged.
+
+A poll the reply did not cover must be pushed out by `Engine.Defer`. `Observe`
+only reschedules what it has a reading for, so anything else stays due at a
+time already past and the schedule computes a zero delay, which is a request
+loop.
+
+`internal/ui` holds one `prRuntime` per pull request rather than a map per
+field. Six maps written from six places and cleaned up from four is how a
+cleanup comes to reach five of them. `a.checks` stays separate: it is fetched
+data that a refresh wipes wholesale.
+
+The two watch renderers share `watchFacts` and differ only in phrasing, because
+the compact section packs onto one line what the expanded page gives a line
+each. Rendering goes through `watchRow`, plain text and a style, so counting
+the page is counting a slice; the scroll arithmetic asks on every key press.
+
+## The application directory
+
+`home.Load` degrades and cannot fail. A configuration that will not parse
+leaves the defaults standing and is never moved or rewritten, because the
+reader wrote it deliberately; an unreadable watch state is moved aside before
+the empty state replacing it can overwrite it. Only `home.Open` failing leaves
+no store, which is the one case with nowhere to write. What could not be read
+reaches the reader on the footer's notice line and stays there.
+
+`git.NewResolver` absorbs a nil store in both its shapes, the plain nil
+interface and a nil `*home.Store` inside one. The second is the trap: it passes
+an ordinary nil check and then dereferences a nil receiver.
 
 ## Things to avoid
 

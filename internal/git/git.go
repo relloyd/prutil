@@ -86,15 +86,25 @@ func (c *Client) Identify(ctx context.Context, dir string) Checkout {
 	return checkout
 }
 
-// cached returns a fresh cache entry, if there is one.
+// cached returns a fresh cache entry, if there is one. It drops what has gone
+// stale while it is in there, so that a discovery walk over a directory of
+// hundreds of checkouts does not leave an entry apiece behind it for the rest
+// of the session.
 func (c *Client) cached(dir string) (Checkout, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	now := c.now()
 	got, ok := c.cache[dir]
-	if !ok || c.now().Sub(got.at) >= cacheLifetime {
-		return Checkout{}, false
+	if ok && now.Sub(got.at) < cacheLifetime {
+		return got.checkout, true
 	}
-	return got.checkout, true
+	for key, entry := range c.cache {
+		if now.Sub(entry.at) >= cacheLifetime {
+			delete(c.cache, key)
+		}
+	}
+	return Checkout{}, false
 }
 
 // identify does the three reads without the cache in the way. A directory git

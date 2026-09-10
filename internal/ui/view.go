@@ -27,8 +27,14 @@ const (
 func (a *App) View() tea.View {
 	v := tea.NewView(a.render())
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeCellMotion
 	v.WindowTitle = "prutil"
+	// Cell motion is the least prutil can ask for and still be told about a
+	// click. It is not free: while it is on, the terminal hands prutil the
+	// wheel and drag-to-select needs a modifier, which is why -mouse=false
+	// exists for anyone who would rather keep both.
+	if a.mouse {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 

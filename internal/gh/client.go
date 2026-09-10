@@ -36,9 +36,9 @@ type Client interface {
 	// Checks returns the individual checks on a pull request's head commit.
 	Checks(ctx context.Context, key model.Key) ([]model.Check, error)
 	// WatchSnapshot reads the cheap tripwire fields for several pull requests
-	// at once, addressed by their GitHub node ids. It is one request and one
-	// rate limit point however many pull requests are watched, and whatever
-	// repositories they are spread across.
+	// at once, addressed by their GitHub node ids, whatever repositories they
+	// are spread across. One request and one rate limit point covers up to
+	// watchNodeLimit of them, which is where GitHub caps nodes(ids:).
 	WatchSnapshot(ctx context.Context, ids []string) ([]model.Snapshot, error)
 	// ReviewThreads returns the review conversations on a pull request,
 	// together with the login prutil is authenticated as. It is the precise
@@ -60,9 +60,10 @@ type Review struct {
 	Truncated bool
 }
 
-// Feedback is the threads still waiting on the viewer.
-func (r Review) Feedback() []model.ReviewThread {
-	return model.Feedback(r.Threads, r.Viewer)
+// Feedback is the threads still waiting on the viewer. marker is the
+// configured self-test marker, empty to ignore one.
+func (r Review) Feedback(marker string) []model.ReviewThread {
+	return model.Feedback(r.Threads, r.Viewer, marker)
 }
 
 // ClosedResult is the outcome of a recently-closed query.

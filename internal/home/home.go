@@ -33,7 +33,17 @@ const (
 	StateFile     = "watch.json"
 	HandoffFile   = "handoffs.jsonl"
 	RepoCacheFile = "repos.json"
+	// PreviousHandoffFile is where the handoff log is rolled when it grows
+	// past handoffLogLimit. One generation is kept, which is what stops a log
+	// nobody prunes from growing for the life of the installation.
+	PreviousHandoffFile = HandoffFile + ".1"
 )
+
+// handoffLogLimit is how large the handoff log grows before it is rolled. Each
+// line carries the prompt that was sent, so a line is closer to a kilobyte
+// than to a hundred bytes; this is a few thousand handoffs, and reading the
+// log is a scan from the start.
+const handoffLogLimit = 1 << 20
 
 // dirPerm and filePerm keep the directory and its files private to the user.
 // The configuration names repositories and local paths, and the handoff log
@@ -258,6 +268,7 @@ func (s *Store) AppendHandoff(h Handoff) error {
 	if err := os.MkdirAll(s.dir, dirPerm); err != nil {
 		return fmt.Errorf("could not create %s: %w", s.dir, err)
 	}
+	s.rollHandoffLog()
 
 	file, err := os.OpenFile(s.Path(HandoffFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, filePerm)
 	if err != nil {
@@ -271,9 +282,24 @@ func (s *Store) AppendHandoff(h Handoff) error {
 	return nil
 }
 
+// rollHandoffLog moves the log aside once it grows past handoffLogLimit, so
+// that appending to it stays cheap and reading it stays bounded.
+//
+// Its own failure is deliberately silent. Rolling is housekeeping: a log that
+// could not be rolled is still a log that can be appended to, and refusing to
+// record a handoff because of it would lose the thing the log is for.
+func (s *Store) rollHandoffLog() {
+	info, err := os.Stat(s.Path(HandoffFile))
+	if err != nil || info.Size() < handoffLogLimit {
+		return
+	}
+	_ = os.Rename(s.Path(HandoffFile), s.Path(PreviousHandoffFile))
+}
+
 // RecentHandoffs returns at most limit handoff attempts for pr, newest first.
-// It streams the JSONL file so a long-running watcher does not load its whole
-// history just to show a few entries in the detail pane.
+// It streams the JSONL files so a long-running watcher does not load its whole
+// history just to show a few entries in the detail pane, and reads through a
+// roll so that one does not blank the pane for every pull request at once.
 func (s *Store) RecentHandoffs(pr string, limit int) ([]Handoff, error) {
 	pr = strings.TrimSpace(pr)
 	if pr == "" {
@@ -283,28 +309,46 @@ func (s *Store) RecentHandoffs(pr string, limit int) ([]Handoff, error) {
 		return nil, nil
 	}
 
-	file, err := os.Open(s.Path(HandoffFile))
+	// Oldest file first, so that the newest limit entries survive the trim
+	// whichever side of a roll they fall.
+	history := make([]Handoff, 0, limit)
+	for _, name := range []string{PreviousHandoffFile, HandoffFile} {
+		var err error
+		if history, err = s.scanHandoffs(name, pr, limit, history); err != nil {
+			return nil, err
+		}
+	}
+
+	slices.Reverse(history)
+	return history, nil
+}
+
+// scanHandoffs reads one log file, appending pr's entries to history and
+// keeping only the newest limit of them. A missing file contributes nothing,
+// which is the ordinary case for the rolled one.
+func (s *Store) scanHandoffs(name, pr string, limit int, history []Handoff) ([]Handoff, error) {
+	file, err := os.Open(s.Path(name))
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return history, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("could not open %s: %w", s.Path(HandoffFile), err)
+		return nil, fmt.Errorf("could not open %s: %w", s.Path(name), err)
 	}
 	defer func() { _ = file.Close() }()
 
-	history := make([]Handoff, 0, limit)
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	line := 0
 	for scanner.Scan() {
-		line++
 		if strings.TrimSpace(scanner.Text()) == "" {
 			continue
 		}
 
 		var handoff Handoff
 		if err := json.Unmarshal(scanner.Bytes(), &handoff); err != nil {
-			return nil, fmt.Errorf("could not read %s line %d: %w", s.Path(HandoffFile), line, err)
+			// One line nobody can read is one handoff nobody can read about,
+			// most likely a write cut short. Failing the whole read over it
+			// would lose the history either side of it too, for good.
+			continue
 		}
 		if handoff.PR != pr {
 			continue
@@ -315,10 +359,8 @@ func (s *Store) RecentHandoffs(pr string, limit int) ([]Handoff, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("could not read %s: %w", s.Path(HandoffFile), err)
+		return nil, fmt.Errorf("could not read %s: %w", s.Path(name), err)
 	}
-
-	slices.Reverse(history)
 	return history, nil
 }
 

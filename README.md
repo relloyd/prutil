@@ -51,6 +51,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `-closed-repo-limit` | 30 | how many repositories the closed view may query individually |
 | `-skip-auth-check` | false | skip the `gh auth status` check at startup |
 | `-dry-run` | false | record what would be sent to a coding agent without sending it |
+| `-mouse` | true | click to select and scroll with the wheel; `-mouse=false` leaves the terminal its own wheel and drag-to-select |
 | `-version` | | print the version and exit |
 
 ## Keys
@@ -177,8 +178,9 @@ The first is cheap and batched. One GraphQL request covers every watched pull
 request at once, whatever repositories they are spread across, and reads only
 enough to notice that something moved: the head commit, the check state, the
 last-updated time, the conversation-comment total, and the total review-thread
-count. It is one request and one rate limit point however many pull requests
-you have marked.
+count. It is one rate limit point per request, and one request per hundred
+pull requests you have marked, which is where GitHub caps the node lookup it
+uses.
 
 The second is the expensive one, and it is asked only of the pull requests the
 first one flagged, or of one that has gone five polls without being asked. That
@@ -228,12 +230,18 @@ watch:
   idle_interval: 10s        # how often a busy agent is re-read
   dormant_after: 3          # polls at the cap before prutil stops asking
   force_precise_every: 5    # polls before the expensive question is asked anyway
+  self_test_marker: "<!-- prutil:test -->"  # "" turns it off
 repos:
   acme/widgets: ~/src/widgets  # optional explicit checkout for W
 discovery:
   roots:
     - ~/src                    # optional roots scanned after repos misses
 ```
+
+Discovery roots are walked four levels deep, and a checkout's origin remote is
+read from its own `.git/config` before git is asked about it, so pointing at a
+directory of a hundred repositories costs a hundred small file reads rather
+than several hundred forked processes.
 
 With `skill` set, the prompt is `/<skill> <pull request url>`. Without it,
 prutil spells the job out instead. Either can be replaced with `herdr.prompt`,

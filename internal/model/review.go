@@ -5,11 +5,17 @@ import (
 	"time"
 )
 
-// SelfTestMarker opts an unresolved code-review thread into watcher feedback
-// when the authenticated viewer placed it in the opening comment or their
-// latest reply. It is an HTML comment so the marker does not add visible
+// DefaultSelfTestMarker opts an unresolved code-review thread into watcher
+// feedback when the authenticated viewer placed it in the opening comment or
+// their latest reply. It is an HTML comment so the marker adds no visible
 // noise to a pull request's rendered discussion.
-const SelfTestMarker = "<!-- prutil:test -->"
+//
+// It only ever answers for a comment the viewer wrote themselves, so nobody
+// else can use it to change what a reader's watcher does. It exists so that
+// the watcher can be tried against a real pull request without waiting for
+// somebody to review it. The marker is configurable, and setting it to the
+// empty string turns the behaviour off; see home.WatchConfig.
+const DefaultSelfTestMarker = "<!-- prutil:test -->"
 
 // ReviewThread is one conversation attached to a pull request, as GitHub's
 // review UI groups them: a first comment on a line of the diff and every reply
@@ -53,34 +59,35 @@ type ReviewThread struct {
 
 // NeedsAttention reports whether a thread is feedback still waiting on viewer.
 // A resolved thread is finished, and a thread whose last word is the viewer's
-// own has already been answered by them unless its self-authored opening
-// comment explicitly carries SelfTestMarker.
-func (t ReviewThread) NeedsAttention(viewer string) bool {
+// own has already been answered by them unless one of their own comments in it
+// carries marker. An empty marker turns that exception off.
+func (t ReviewThread) NeedsAttention(viewer, marker string) bool {
 	if t.Resolved {
 		return false
 	}
 	return viewer == "" ||
 		!strings.EqualFold(t.LatestBy, viewer) ||
-		t.selfTestComment(viewer)
+		t.selfTestComment(viewer, marker)
 }
 
 // selfTestComment recognises an explicit watcher test only when the current
 // viewer wrote the marked comment. A marker from another reviewer must not
-// change the ordinary last-author rule.
-func (t ReviewThread) selfTestComment(viewer string) bool {
-	if viewer == "" {
+// change the ordinary last-author rule, which is what keeps this from being a
+// thing somebody else can do to a reader's watcher.
+func (t ReviewThread) selfTestComment(viewer, marker string) bool {
+	if viewer == "" || marker == "" {
 		return false
 	}
-	return (strings.EqualFold(t.Opener, viewer) && strings.Contains(t.Body, SelfTestMarker)) ||
-		(strings.EqualFold(t.LatestBy, viewer) && strings.Contains(t.LatestBody, SelfTestMarker))
+	return (strings.EqualFold(t.Opener, viewer) && strings.Contains(t.Body, marker)) ||
+		(strings.EqualFold(t.LatestBy, viewer) && strings.Contains(t.LatestBody, marker))
 }
 
 // Feedback selects the threads still waiting on viewer, keeping the order they
 // arrived in.
-func Feedback(threads []ReviewThread, viewer string) []ReviewThread {
+func Feedback(threads []ReviewThread, viewer, marker string) []ReviewThread {
 	out := make([]ReviewThread, 0, len(threads))
 	for _, thread := range threads {
-		if thread.NeedsAttention(viewer) {
+		if thread.NeedsAttention(viewer, marker) {
 			out = append(out, thread)
 		}
 	}

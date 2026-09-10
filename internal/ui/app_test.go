@@ -5,11 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/relloyd/prutil/internal/home"
 	"github.com/relloyd/prutil/internal/model"
 )
 
@@ -724,4 +726,81 @@ func TestCopyDoesNothingWithAnEmptyList(t *testing.T) {
 
 	assert.Nil(t, send(t, app, press("y")), "there is no pull request to copy")
 	assert.Empty(t, clipboardOf(t, app).copied())
+}
+
+func TestTheWheelScrollsTheListAndTakesTheFocusWithIt(t *testing.T) {
+	// Asking the terminal for mouse reporting takes the wheel away from it, so
+	// prutil has to do something with what it took.
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("l"))
+	require.Equal(t, paneDetail, app.focus)
+	require.Zero(t, app.cur().cursor)
+
+	send(t, app, tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 4, Y: headerHeight + 1})
+
+	assert.Equal(t, paneList, app.focus, "scrolling over the list is a way of pointing at it")
+	assert.Equal(t, 1, app.cur().cursor)
+
+	send(t, app, tea.MouseWheelMsg{Button: tea.MouseWheelUp, X: 4, Y: headerHeight + 1})
+	assert.Zero(t, app.cur().cursor)
+}
+
+func TestTheWheelOverTheChecksLeavesTheListWhereItIs(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("l"))
+	listWidth, _ := app.paneWidths()
+	before := app.cur().cursor
+
+	send(t, app, tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: listWidth + 4, Y: headerHeight + 1})
+
+	assert.Equal(t, paneDetail, app.focus, "the pointer was over the checks")
+	assert.Equal(t, before, app.cur().cursor, "so the list did not move out from under them")
+	assert.Equal(t, 1, app.detailCursor)
+}
+
+func TestMouseReportingCanBeTurnedOff(t *testing.T) {
+	// Somebody who would rather keep drag-to-select and their terminal's own
+	// scrolling can have both.
+	app := New(Config{
+		Client:    newFakeClient(samplePRs(), sampleChecks()),
+		Opener:    &fakeOpener{},
+		Clipboard: &fakeClipboard{},
+		Now:       func() time.Time { return testNow },
+		Store:     home.OpenIn(t.TempDir()),
+		State:     home.NewState(),
+		Home:      fastWatch(),
+		NoMouse:   true,
+	})
+	send(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
+	send(t, app, prsMsg{gen: app.gen, prs: samplePRs()})
+
+	assert.Equal(t, tea.MouseModeNone, app.View().MouseMode)
+
+	on, _, _ := newTestApp(t, 120, 40)
+	assert.Equal(t, tea.MouseModeCellMotion, on.View().MouseMode, "and it is on by default")
+}
+
+func TestTheSpinnerStopsAnimatingWhileAHandoffWaitsOnAnAgent(t *testing.T) {
+	// A handoff can wait the configured budget, fifteen minutes by default.
+	// Saying "not hung" is right; redrawing the screen ten times a second for
+	// a quarter of an hour to say it is not.
+	app, _, _ := newTestApp(t, 120, 40)
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	app.mutate(pr.Key()).handing = true
+
+	require.True(t, app.busy(), "the reader is still told something is happening")
+	assert.True(t, app.onlyHandoffOutstanding())
+	assert.Nil(t, drainOne(app, spinner.TickMsg{}), "but the animation stops asking for frames")
+
+	// Anything else in flight and the spinner runs as before.
+	app.mutate(pr.Key()).reviewing = true
+	assert.False(t, app.onlyHandoffOutstanding())
+	assert.NotNil(t, drainOne(app, spinner.TickMsg{}))
+}
+
+// drainOne sends one message and returns the command it produced.
+func drainOne(app *App, msg tea.Msg) tea.Cmd {
+	_, cmd := app.Update(msg)
+	return cmd
 }

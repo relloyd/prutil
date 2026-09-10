@@ -277,19 +277,19 @@ func threads() []model.ReviewThread {
 
 func TestAThreadNeedsAttentionUntilItIsResolvedOrTheViewerHasTheLastWord(t *testing.T) {
 	all := threads()
-	assert.True(t, all[0].NeedsAttention("relloyd"))
-	assert.False(t, all[1].NeedsAttention("relloyd"), "the viewer already answered it")
-	assert.False(t, all[2].NeedsAttention("relloyd"), "resolved is finished with")
-	assert.True(t, all[3].NeedsAttention("relloyd"), "outdated lines may still hide an unanswered point")
+	assert.True(t, all[0].NeedsAttention("relloyd", model.DefaultSelfTestMarker))
+	assert.False(t, all[1].NeedsAttention("relloyd", model.DefaultSelfTestMarker), "the viewer already answered it")
+	assert.False(t, all[2].NeedsAttention("relloyd", model.DefaultSelfTestMarker), "resolved is finished with")
+	assert.True(t, all[3].NeedsAttention("relloyd", model.DefaultSelfTestMarker), "outdated lines may still hide an unanswered point")
 }
 
 func TestAThreadNeedsAttentionWhoeverTheViewerIsWhenThereIsNoViewer(t *testing.T) {
-	assert.True(t, model.ReviewThread{LatestBy: "relloyd"}.NeedsAttention(""),
+	assert.True(t, model.ReviewThread{LatestBy: "relloyd"}.NeedsAttention("", model.DefaultSelfTestMarker),
 		"without a login prutil cannot rule a thread out, so it does not")
 }
 
 func TestTheViewerLoginIsMatchedWithoutRegardToCase(t *testing.T) {
-	assert.False(t, model.ReviewThread{LatestBy: "RelLoyd"}.NeedsAttention("relloyd"))
+	assert.False(t, model.ReviewThread{LatestBy: "RelLoyd"}.NeedsAttention("relloyd", model.DefaultSelfTestMarker))
 }
 
 func TestSelfAuthoredTestMarkerMakesAnUnresolvedThreadEligible(t *testing.T) {
@@ -300,7 +300,7 @@ func TestSelfAuthoredTestMarkerMakesAnUnresolvedThreadEligible(t *testing.T) {
 	}{
 		{
 			name:   "a marked thread opened by the viewer remains eligible",
-			thread: model.ReviewThread{Opener: "ReLloYd", LatestBy: "relloyd", Body: "Please test this.\n" + model.SelfTestMarker},
+			thread: model.ReviewThread{Opener: "ReLloYd", LatestBy: "relloyd", Body: "Please test this.\n" + model.DefaultSelfTestMarker},
 			want:   true,
 		},
 		{
@@ -308,7 +308,7 @@ func TestSelfAuthoredTestMarkerMakesAnUnresolvedThreadEligible(t *testing.T) {
 			thread: model.ReviewThread{
 				Opener:     "reviewer",
 				LatestBy:   "ReLloYd",
-				LatestBody: "I am testing this.\n" + model.SelfTestMarker,
+				LatestBody: "I am testing this.\n" + model.DefaultSelfTestMarker,
 			},
 			want: true,
 		},
@@ -326,32 +326,32 @@ func TestSelfAuthoredTestMarkerMakesAnUnresolvedThreadEligible(t *testing.T) {
 		},
 		{
 			name:   "a resolved marked thread remains excluded",
-			thread: model.ReviewThread{Opener: "relloyd", LatestBy: "relloyd", Body: model.SelfTestMarker, Resolved: true},
+			thread: model.ReviewThread{Opener: "relloyd", LatestBy: "relloyd", Body: model.DefaultSelfTestMarker, Resolved: true},
 			want:   false,
 		},
 		{
 			name: "a resolved marked latest reply remains excluded",
 			thread: model.ReviewThread{
-				Opener: "reviewer", LatestBy: "relloyd", LatestBody: model.SelfTestMarker, Resolved: true,
+				Opener: "reviewer", LatestBy: "relloyd", LatestBody: model.DefaultSelfTestMarker, Resolved: true,
 			},
 			want: false,
 		},
 		{
 			name:   "another reviewer's marker does not override the viewer's reply",
-			thread: model.ReviewThread{Opener: "reviewer", LatestBy: "relloyd", Body: model.SelfTestMarker},
+			thread: model.ReviewThread{Opener: "reviewer", LatestBy: "relloyd", Body: model.DefaultSelfTestMarker},
 			want:   false,
 		},
 	}
 
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, tt.thread.NeedsAttention("relloyd"))
+			assert.Equal(t, tt.want, tt.thread.NeedsAttention("relloyd", model.DefaultSelfTestMarker))
 		})
 	}
 }
 
 func TestFeedbackKeepsOnlyWhatIsStillWaitingAndInOrder(t *testing.T) {
-	got := model.Feedback(threads(), "relloyd")
+	got := model.Feedback(threads(), "relloyd", model.DefaultSelfTestMarker)
 	require.Len(t, got, 2)
 	assert.Equal(t, "T1", got[0].ID)
 	assert.Equal(t, "T4", got[1].ID)
@@ -376,4 +376,32 @@ func TestAReplySinceTheHandoffMakesAThreadNewAgain(t *testing.T) {
 func TestDigestPairsEveryThreadWithItsNewestComment(t *testing.T) {
 	assert.Equal(t, map[string]string{"T1": "C1", "T2": "C2", "T3": "C3", "T4": "C4"},
 		model.Digest(threads()))
+}
+
+func TestAnEmptyMarkerTurnsTheSelfTestExceptionOff(t *testing.T) {
+	// The marker is configurable, and configuring it away must leave the
+	// ordinary rule: a thread whose last word is yours is one you answered.
+	thread := model.ReviewThread{
+		Opener:     "me",
+		Body:       "a note " + model.DefaultSelfTestMarker,
+		LatestBy:   "me",
+		LatestBody: "a note " + model.DefaultSelfTestMarker,
+	}
+
+	assert.True(t, thread.NeedsAttention("me", model.DefaultSelfTestMarker), "marked and mine")
+	assert.False(t, thread.NeedsAttention("me", ""), "no marker configured, so no exception")
+	assert.False(t, thread.NeedsAttention("me", "<!-- other -->"), "a different marker is not this one")
+}
+
+func TestAnotherPersonsMarkerChangesNothing(t *testing.T) {
+	// Nobody else can reach into what a reader's watcher counts as feedback.
+	thread := model.ReviewThread{
+		Opener:     "someone",
+		Body:       "a note " + model.DefaultSelfTestMarker,
+		LatestBy:   "me",
+		LatestBody: "answered",
+	}
+
+	assert.False(t, thread.NeedsAttention("me", model.DefaultSelfTestMarker),
+		"the marker was not in a comment the viewer wrote")
 }

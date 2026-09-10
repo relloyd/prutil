@@ -360,7 +360,7 @@ worst of the three.
 Five defects and a pile of structural work. Suggested order, with the
 justification for the ordering rather than just the list.
 
-**Status: tranches 1, 2, 2b, 3 and 4 are done.** Every defect below is closed, each with
+**Status: every tranche is done.** Every defect below is closed, each with
 a regression test confirmed to fail against the code as it stood. Tranches 3 to
 5 are untouched.
 
@@ -517,7 +517,7 @@ keep an entry. Both now assert what the code actually promises.
 
 `detailSection` and `detailPage` are named fields, `section` and `page`.
 
-## Tranche 5: cost and hygiene, in any order
+## Tranche 5: cost and hygiene (done)
 
 12. Read `.git/config` in checkout discovery instead of forking git three times
     per candidate, and bound the walk depth.
@@ -530,6 +530,47 @@ keep an entry. Both now assert what the code actually promises.
 17. Delete `docs/tmp/watch-and-notify-handoff.md`.
 18. Correct the rate-limit sentence in `AGENTS.md` to name the 100-node limit.
 19. Slow the spinner while only a handoff is outstanding.
+
+### What the fixes turned out to be
+
+**Two of these changed behaviour an existing test pinned, deliberately.**
+`RecentHandoffs` used to fail the whole read on one line it could not parse,
+and a test named that as the intent. The log is appended a line at a time by
+one writer, so the only line that can be damaged is the last and the damage is
+a write cut short; failing over it lost every handoff before it, for every pull
+request, permanently. It now reads past a bad line, and the detail pane still
+says so when the file itself cannot be read. The test was replaced rather than
+deleted.
+
+**The self-test marker's default was kept, against the review's own
+recommendation.** The review said empty by default. Looking at it again, the
+marker only ever answers for a comment the viewer wrote themselves, so nobody
+else can use it to change what a reader's watcher does, which is most of what
+made a default-off sound right. It is now `watch.self_test_marker`, documented
+in the written template and the README, with `""` turning it off, and the
+behaviour is unchanged for anyone already relying on it.
+
+**Making it configurable introduced a data race, which the race detector
+caught.** The field is a `*string` so that an explicit empty value can be told
+from an absent key, and the first version had `DefaultConfig` point every
+configuration at one package-level variable. The YAML decoder writes through a
+non-nil pointer it finds in the target, so one file with the key set would have
+rewritten the built-in marker for the whole process, and two parsed at once
+raced over it. Each configuration now gets its own.
+
+**The mouse question was settled by doing both.** The wheel now scrolls
+whichever pane the pointer is over, and `-mouse=false` gives the terminal back
+its wheel and drag-to-select.
+
+Discovery reads a checkout's origin from its own `.git/config` before asking
+git, and walks four levels deep, so a root holding a hundred repositories costs
+a hundred file reads rather than several hundred forked processes. The filter
+is a filter: anything it cannot parse is passed to git rather than skipped.
+
+Also done: the identify cache drops what has gone stale as it goes, the handoff
+log rolls at a megabyte and reading sees through the roll, the spinner stops
+animating while the only thing outstanding is a handoff waiting on an agent,
+`docs/tmp` is gone, and the rate-limit wording now names the hundred-node cap.
 
 ## What this does not include
 

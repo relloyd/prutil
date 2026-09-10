@@ -177,3 +177,94 @@ func TestResolverReportsAMissingCheckoutWithoutAnApplicationDirectory(t *testing
 	_, err := git.NewResolver(&fakeIdentifier{}, cfg, store).Resolve(context.Background(), "acme/widgets")
 	assert.ErrorIs(t, err, git.ErrCheckoutNotFound)
 }
+
+// writeCheckout lays down a checkout whose config names origin.
+func writeCheckout(t *testing.T, dir, origin string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
+	config := "[core]\n\trepositoryformatversion = 0\n"
+	if origin != "" {
+		config += "[remote \"origin\"]\n\turl = " + origin + "\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "config"), []byte(config), 0o600))
+}
+
+func TestDiscoveryReadsTheOriginRemoteBeforeAskingGit(t *testing.T) {
+	// A directory of checkouts used to cost three forked git processes each.
+	// The repository's own config answers the same question with one file
+	// read, so only the checkout that matches costs a process at all.
+	base := t.TempDir()
+	want := filepath.Join(base, "widgets")
+	writeCheckout(t, want, "git@github.com:acme/widgets.git")
+	for _, name := range []string{"gadgets", "sprockets", "cogs"} {
+		writeCheckout(t, filepath.Join(base, name), "https://github.com/acme/"+name+".git")
+	}
+
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{
+		want: {Root: want, Repo: "acme/widgets", Branch: "main"},
+	}}
+	cfg := home.DefaultConfig()
+	cfg.Discovery.Roots = []string{base}
+
+	got, err := git.NewResolver(id, cfg, home.OpenIn(t.TempDir())).Resolve(context.Background(), "acme/widgets")
+
+	require.NoError(t, err)
+	assert.Equal(t, want, got.Root)
+	assert.Equal(t, []string{want}, id.calls, "only the matching checkout was asked about")
+}
+
+func TestDiscoveryStillAsksGitAboutACheckoutItCannotRead(t *testing.T) {
+	// The config filter is a filter, not an answer. Anything it cannot parse
+	// is passed through, so an unusual layout costs a process rather than a
+	// checkout nobody finds.
+	base := t.TempDir()
+	odd := filepath.Join(base, "odd")
+	require.NoError(t, os.MkdirAll(filepath.Join(odd, ".git"), 0o755))
+
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{
+		odd: {Root: odd, Repo: "acme/widgets", Branch: "main"},
+	}}
+	cfg := home.DefaultConfig()
+	cfg.Discovery.Roots = []string{base}
+
+	got, err := git.NewResolver(id, cfg, home.OpenIn(t.TempDir())).Resolve(context.Background(), "acme/widgets")
+
+	require.NoError(t, err)
+	assert.Equal(t, odd, got.Root)
+}
+
+func TestDiscoveryDoesNotWalkForever(t *testing.T) {
+	// Somebody pointing at a home directory should not pay for every vendored
+	// tree beneath it.
+	base := t.TempDir()
+	deep := filepath.Join(base, "a", "b", "c", "d", "e", "f", "widgets")
+	writeCheckout(t, deep, "https://github.com/acme/widgets.git")
+
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{
+		deep: {Root: deep, Repo: "acme/widgets", Branch: "main"},
+	}}
+	cfg := home.DefaultConfig()
+	cfg.Discovery.Roots = []string{base}
+
+	_, err := git.NewResolver(id, cfg, home.OpenIn(t.TempDir())).Resolve(context.Background(), "acme/widgets")
+
+	assert.ErrorIs(t, err, git.ErrCheckoutNotFound, "past the depth prutil is willing to walk")
+	assert.Empty(t, id.calls, "and nothing down there was asked about")
+}
+
+func TestDiscoveryFindsACheckoutWithinTheDepthItWalks(t *testing.T) {
+	base := t.TempDir()
+	nested := filepath.Join(base, "work", "acme", "widgets")
+	writeCheckout(t, nested, "https://github.com/acme/widgets.git")
+
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{
+		nested: {Root: nested, Repo: "acme/widgets", Branch: "main"},
+	}}
+	cfg := home.DefaultConfig()
+	cfg.Discovery.Roots = []string{base}
+
+	got, err := git.NewResolver(id, cfg, home.OpenIn(t.TempDir())).Resolve(context.Background(), "acme/widgets")
+
+	require.NoError(t, err)
+	assert.Equal(t, nested, got.Root)
+}
