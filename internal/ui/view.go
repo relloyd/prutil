@@ -27,6 +27,7 @@ const (
 func (a *App) View() tea.View {
 	v := tea.NewView(a.render())
 	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
 	v.WindowTitle = "prutil"
 	return v
 }

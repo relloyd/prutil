@@ -83,6 +83,42 @@ func TestFocusDoesNotEnterAnEmptyList(t *testing.T) {
 	assert.Equal(t, paneList, app.focus, "there is nothing to show in the detail pane")
 }
 
+func TestMouseClickSelectsAVisibleListRowAndReturnsFocusToTheList(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+
+	send(t, app, press("l"))
+	require.Equal(t, paneDetail, app.focus)
+
+	cmd := send(t, app, click(2, headerHeight+rowHeight+1))
+
+	assert.Equal(t, paneList, app.focus)
+	assert.Equal(t, 1, app.cur().cursor)
+	assert.Equal(t, detailOverview, app.detailPage)
+	assert.Equal(t, detailChecks, app.detailSection)
+	assert.NotNil(t, cmd, "selecting another row should use the debounced fetch path")
+}
+
+func TestMouseClickOutsideTheListDoesNothing(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	listWidth, _ := app.paneWidths()
+
+	send(t, app, click(2, headerHeight-1))
+	send(t, app, click(listWidth+1, headerHeight+1))
+	send(t, app, tea.MouseClickMsg{X: 2, Y: headerHeight + 1, Button: tea.MouseRight})
+
+	assert.Equal(t, 0, app.cur().cursor)
+	assert.Equal(t, paneList, app.focus)
+}
+
+func TestMouseClickSelectsRowsInNarrowMode(t *testing.T) {
+	app, _, _ := newTestApp(t, 60, 24)
+
+	send(t, app, click(59, headerHeight+rowHeight+1))
+
+	assert.Equal(t, paneList, app.focus)
+	assert.Equal(t, 1, app.cur().cursor)
+}
+
 func TestMovingTheListResetsTheDetailCursor(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	send(t, app, press("l"))

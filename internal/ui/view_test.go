@@ -51,6 +51,36 @@ func TestRenderFitsEveryTerminalSize(t *testing.T) {
 	}
 }
 
+func TestExpandedWatchFitsEveryTerminalSize(t *testing.T) {
+	sizes := []struct{ width, height int }{
+		{40, 12}, {60, 20}, {79, 24}, {120, 8},
+	}
+	for _, size := range sizes {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			app, _, _ := newTestApp(t, size.width, size.height)
+			send(t, app, press("w"))
+			send(t, app, press("l"))
+			send(t, app, press("k"))
+			send(t, app, press("l"))
+			require.Equal(t, detailWatchPage, app.detailPage)
+
+			rendered := lines(app)
+			assert.LessOrEqual(t, len(rendered), size.height,
+				"the expanded WATCH page must not overflow vertically")
+			for i, line := range rendered {
+				assert.LessOrEqual(t, ansi.StringWidth(line), size.width,
+					"line %d overflows the terminal: %q", i, line)
+			}
+		})
+	}
+}
+
+func TestViewEnablesCellMotionMouseMode(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+
+	assert.Equal(t, tea.MouseModeCellMotion, app.View().MouseMode)
+}
+
 func TestWideLayoutShowsBothPanes(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	screen := plain(app.render())
@@ -71,6 +101,28 @@ func TestWideLayoutShowsBothPanes(t *testing.T) {
 	assert.Contains(t, screen, "lint")
 	assert.Contains(t, screen, "opened 2d ago")
 	assert.Contains(t, screen, "4 conversations")
+}
+
+func TestDetailLeavesAGapBetweenWatchAndChecks(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("w"))
+
+	rendered := lines(app)
+	watch, checks := -1, -1
+	for i, line := range rendered {
+		switch {
+		case strings.Contains(line, "WATCH"):
+			watch = i
+		case strings.Contains(line, "CHECKS (3)"):
+			checks = i
+		}
+	}
+
+	require.GreaterOrEqual(t, watch, 0)
+	require.Greater(t, checks, watch)
+	parts := strings.SplitN(rendered[checks-1], "│", 2)
+	require.Len(t, parts, 2, "the rendered line should include the pane border")
+	assert.Empty(t, strings.TrimSpace(parts[1]), "WATCH and CHECKS need one blank separator line")
 }
 
 func TestDetailDistinguishesConversationsFromReviewThreads(t *testing.T) {
@@ -299,7 +351,7 @@ func TestTheFooterFitsEveryShortcutAt120Columns(t *testing.T) {
 	// is last, so this is the test that notices when a new binding pushes it
 	// off the screen.
 	for _, want := range []string{
-		"→/l checks", "enter browser", "y copy URL", "tab open/closed",
+		"→/l detail", "enter browser", "y copy URL", "tab open/closed",
 		"r refresh", "a auto-refresh", "w watch", "? help", "q quit",
 	} {
 		assert.Contains(t, footer, want)

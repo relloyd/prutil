@@ -495,6 +495,11 @@ func press(s string) tea.KeyPressMsg {
 	}
 }
 
+// click builds a left-button mouse click at a terminal coordinate.
+func click(x, y int) tea.MouseClickMsg {
+	return tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft}
+}
+
 // drain runs a command, following batches, and returns every message produced.
 // Commands that would block on a timer are skipped.
 func drain(cmd tea.Cmd) []tea.Msg {

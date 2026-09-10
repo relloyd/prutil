@@ -17,11 +17,18 @@ func (a *App) renderDetail(width, height int) []string {
 		return a.centeredNotice("nothing selected", width, a.styles.Meta)
 	}
 
+	if a.detailPage == detailWatchPage {
+		return a.renderWatchPage(pr, width, height)
+	}
+
 	lines := a.detailHeader(pr, width)
 	// Keep a check heading and at least one check line visible below watcher
 	// diagnostics, even in a short terminal.
-	watchBudget := max(height-len(lines)-3, 0)
-	lines = append(lines, a.watchDetail(pr, width, watchBudget)...)
+	watchBudget := max(height-len(lines)-4, 0)
+	if watch := a.watchDetail(pr, width, watchBudget, a.detailSection == detailWatch); len(watch) > 0 {
+		lines = append(lines, watch...)
+		lines = append(lines, "")
+	}
 	state := a.checks[pr.Key()]
 
 	switch {
@@ -37,19 +44,31 @@ func (a *App) renderDetail(width, height int) []string {
 		return lines
 	}
 
-	lines = append(lines, a.styles.SectionHdr.Render(fmt.Sprintf("CHECKS (%d)", len(state.checks))))
+	lines = append(lines, a.sectionHeading(fmt.Sprintf("CHECKS (%d)", len(state.checks)),
+		a.detailSection == detailChecks))
 
 	window := checkWindow(height, len(lines))
 	start := min(a.detailOffset, max(len(state.checks)-1, 0))
 	end := min(start+window, len(state.checks))
 	for i := start; i < end; i++ {
-		selected := a.focus == paneDetail && i == a.detailCursor
+		selected := a.focus == paneDetail && a.detailSection == detailChecks && i == a.detailCursor
 		lines = append(lines, a.renderCheck(state.checks[i], width, selected))
 	}
 	if end < len(state.checks) || start > 0 {
 		lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("  %d–%d of %d", start+1, end, len(state.checks))))
 	}
 	return lines
+}
+
+// sectionHeading renders one of the selectable detail sections.
+func (a *App) sectionHeading(text string, selected bool) string {
+	prefix := "  "
+	style := a.styles.SectionHdr
+	if selected {
+		prefix = a.styles.SelectBar.Render("▌") + " "
+		style = a.styles.Title
+	}
+	return prefix + style.Render(text)
 }
 
 // detailHeader renders everything above the check list.
@@ -159,8 +178,13 @@ func (a *App) checksHeight() int {
 	_, detailWidth := a.paneWidths()
 	// One line is spent on the CHECKS heading.
 	header := a.detailHeader(pr, detailWidth)
-	watchBudget := max(a.bodyHeight()-len(header)-3, 0)
-	return checkWindow(a.bodyHeight(), len(header)+len(a.watchDetail(pr, detailWidth, watchBudget))+1)
+	watchBudget := max(a.bodyHeight()-len(header)-4, 0)
+	watch := a.watchDetail(pr, detailWidth, watchBudget, false)
+	gap := 0
+	if len(watch) > 0 {
+		gap = 1
+	}
+	return checkWindow(a.bodyHeight(), len(header)+len(watch)+gap+1)
 }
 
 // checkWindow is the number of check lines that fit beneath a header of the
