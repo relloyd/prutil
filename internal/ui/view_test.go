@@ -64,7 +64,7 @@ func TestExpandedWatchFitsEveryTerminalSize(t *testing.T) {
 			send(t, app, press("l"))
 			send(t, app, press("k"))
 			send(t, app, press("l"))
-			require.Equal(t, detailWatchPage, app.detailPage)
+			require.Equal(t, detailWatchPage, app.page)
 
 			rendered := lines(app)
 			assert.LessOrEqual(t, len(rendered), size.height,

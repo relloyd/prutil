@@ -17,7 +17,7 @@ func (a *App) renderDetail(width, height int) []string {
 		return a.centeredNotice("nothing selected", width, a.styles.Meta)
 	}
 
-	if a.detailPage == detailWatchPage {
+	if a.page == detailWatchPage {
 		return a.renderWatchPage(pr, width, height)
 	}
 
@@ -25,7 +25,7 @@ func (a *App) renderDetail(width, height int) []string {
 	// Keep a check heading and at least one check line visible below watcher
 	// diagnostics, even in a short terminal.
 	watchBudget := max(height-len(lines)-4, 0)
-	if watch := a.watchDetail(pr, width, watchBudget, a.detailSection == detailWatch); len(watch) > 0 {
+	if watch := a.watchDetail(pr, width, watchBudget, a.section == detailWatch); len(watch) > 0 {
 		lines = append(lines, watch...)
 		lines = append(lines, "")
 	}
@@ -45,13 +45,13 @@ func (a *App) renderDetail(width, height int) []string {
 	}
 
 	lines = append(lines, a.sectionHeading(fmt.Sprintf("CHECKS (%d)", len(state.checks)),
-		a.detailSection == detailChecks))
+		a.section == detailChecks))
 
 	window := checkWindow(height, len(lines))
 	start := min(a.detailOffset, max(len(state.checks)-1, 0))
 	end := min(start+window, len(state.checks))
 	for i := start; i < end; i++ {
-		selected := a.focus == paneDetail && a.detailSection == detailChecks && i == a.detailCursor
+		selected := a.focus == paneDetail && a.section == detailChecks && i == a.detailCursor
 		lines = append(lines, a.renderCheck(state.checks[i], width, selected))
 	}
 	if end < len(state.checks) || start > 0 {

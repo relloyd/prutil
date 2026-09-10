@@ -61,7 +61,8 @@ func (a *App) toggleWatch() tea.Cmd {
 
 	tick := a.syncWatch()
 	if !armed {
-		delete(a.feedback, key)
+		entry := a.mutate(key)
+		entry.feedback, entry.hasFeedback = 0, false
 		a.setWatchOperation(key, "")
 		a.recordWatchActivity(key, "stopped watching")
 		return tea.Batch(tick, status("stopped watching "+key.String()))
@@ -202,10 +203,10 @@ func (a *App) applyWatch(msg watchSnapshotMsg) tea.Cmd {
 
 // loadReview reads the review conversations for a watcher or manual discovery.
 func (a *App) loadReview(key model.Key, manual bool) tea.Cmd {
-	if a.reviewing[key] {
+	if a.runtimeOf(key).reviewing {
 		return nil
 	}
-	a.reviewing[key] = true
+	a.mutate(key).reviewing = true
 	client := a.client
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
@@ -223,7 +224,7 @@ func (a *App) loadReview(key model.Key, manual bool) tea.Cmd {
 // at all, or work for an agent.
 func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	now := a.now()
-	delete(a.reviewing, msg.key)
+	a.mutate(msg.key).reviewing = false
 	a.setWatchOperation(msg.key, "")
 	if msg.err != nil {
 		a.engine.Defer([]model.Key{msg.key}, a.watchRetry(), now)
@@ -232,7 +233,8 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	}
 
 	feedback := msg.review.Feedback()
-	a.feedback[msg.key] = len(feedback)
+	entry := a.mutate(msg.key)
+	entry.feedback, entry.hasFeedback = len(feedback), true
 	a.engine.Precise(msg.key, len(feedback), false, now)
 	activity := fmt.Sprintf("review feedback: %d %s awaiting",
 		len(feedback), plural(len(feedback), "thread"))
@@ -242,7 +244,7 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	a.recordWatchActivity(msg.key, activity)
 
 	fresh := model.Unhandled(feedback, a.state.Get(msg.key.String()).NotifiedThreads)
-	if len(fresh) == 0 || a.handing[msg.key] {
+	if len(fresh) == 0 || entry.handing {
 		if msg.manual && len(fresh) == 0 {
 			return status("no new review feedback on " + msg.key.String())
 		}
@@ -258,7 +260,7 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 			msg.key, len(fresh), plural(len(fresh), "comment")))
 	}
 
-	a.handing[msg.key] = true
+	entry.handing = true
 	a.setWatchOperation(msg.key, "handing feedback to an agent")
 	activity = "started an automatic handoff"
 	if msg.manual {
@@ -290,10 +292,10 @@ func (a *App) notifyNewFeedback() tea.Cmd {
 		return nil
 	}
 	key := pr.Key()
-	if a.handing[key] {
+	if a.runtimeOf(key).handing {
 		return status("already handing " + key.String() + " over")
 	}
-	if a.reviewing[key] {
+	if a.runtimeOf(key).reviewing {
 		return status("already reading review feedback on " + key.String())
 	}
 
@@ -327,14 +329,14 @@ func (a *App) handOff() tea.Cmd {
 	if a.hand == nil {
 		return status("cannot reach herdr: " + a.handErr.Error())
 	}
-	if a.handing[pr.Key()] {
+	if a.runtimeOf(pr.Key()).handing {
 		return status("already handing " + pr.Key().String() + " over")
 	}
-	if a.reviewing[pr.Key()] {
+	if a.runtimeOf(pr.Key()).reviewing {
 		return status("already reading review feedback on " + pr.Key().String())
 	}
 
-	a.handing[pr.Key()] = true
+	a.mutate(pr.Key()).handing = true
 	a.setWatchOperation(pr.Key(), "reading review feedback for a manual handoff")
 	a.recordWatchActivity(pr.Key(), "started a manual handoff")
 	note := "reading the review threads on " + pr.Key().String() + "…"
@@ -417,7 +419,7 @@ func (a *App) handoffBudget() time.Duration {
 // applyHandoff records what became of a handoff: a line in the log whatever
 // happened, and the threads marked as handed over only when they really were.
 func (a *App) applyHandoff(msg handoffMsg) error {
-	delete(a.handing, msg.pr.Key())
+	a.mutate(msg.pr.Key()).handing = false
 	a.setWatchOperation(msg.pr.Key(), "")
 	if msg.nothing {
 		a.recordWatchActivity(msg.pr.Key(), "no open review feedback")
@@ -546,12 +548,12 @@ func (a *App) watchSeg(pr model.PullRequest) seg {
 // feedbackSeg reports how much review feedback is still waiting on a watched
 // pull request, which is the number the reader actually wants from a row.
 func (a *App) feedbackSeg(pr model.PullRequest) seg {
-	open, ok := a.feedback[pr.Key()]
-	if !ok || open == 0 || !a.armed(pr.Key()) {
+	got := a.runtimeOf(pr.Key())
+	if !got.hasFeedback || got.feedback == 0 || !a.armed(pr.Key()) {
 		return seg{}
 	}
 	return seg{
-		text:  fmt.Sprintf("%d open %s", open, plural(open, "thread")),
+		text:  fmt.Sprintf("%d open %s", got.feedback, plural(got.feedback, "thread")),
 		style: a.styles.Watch,
 	}
 }

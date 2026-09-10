@@ -93,8 +93,8 @@ func TestMouseClickSelectsAVisibleListRowAndReturnsFocusToTheList(t *testing.T) 
 
 	assert.Equal(t, paneList, app.focus)
 	assert.Equal(t, 1, app.cur().cursor)
-	assert.Equal(t, detailOverview, app.detailPage)
-	assert.Equal(t, detailChecks, app.detailSection)
+	assert.Equal(t, detailOverview, app.page)
+	assert.Equal(t, detailChecks, app.section)
 	assert.NotNil(t, cmd, "selecting another row should use the debounced fetch path")
 }
 

@@ -198,8 +198,12 @@ type App struct {
 
 	detailCursor int
 	detailOffset int
-	detailSection
-	detailPage
+	// section and page are named fields rather than embedded types. Embedded,
+	// they read like fields with an inferred type and quietly promote onto App
+	// any method either type is ever given.
+	section detailSection
+	page    detailPage
+	// watchOffset is the first line shown of the expanded WATCH page.
 	watchOffset int
 
 	focus    pane
@@ -235,26 +239,75 @@ type App struct {
 	// handErr explains its absence.
 	hand    dispatcher
 	handErr error
-	// handing names the pull requests with a handoff in flight, so that
-	// holding the key down cannot send the same work twice.
-	handing map[model.Key]bool
-	// reviewing names pull requests whose precise review-thread query is in
-	// flight, which keeps manual discovery from racing itself or the watcher.
-	reviewing map[model.Key]bool
 	// engine schedules the polling of every armed pull request.
 	engine *watch.Engine
 	// watchSeq names the watch schedule currently in flight, the same way
 	// autoSeq names a run of auto-refresh ticks.
 	watchSeq int
+	// runtime is what the app knows about each pull request beyond the list
+	// row itself. See prRuntime.
+	runtime map[model.Key]*prRuntime
+}
+
+// prRuntime is everything the watcher knows about one pull request: what is
+// being done with it, what that found, and what has been sent about it.
+//
+// It is one struct rather than a field per map on purpose. These were six maps
+// written from six places and cleaned up from four, and two of the defects
+// this code has already had were a cleanup that reached five of them.
+type prRuntime struct {
+	// handing and reviewing name work in flight, which is what stops a held
+	// key sending the same work twice.
+	handing   bool
+	reviewing bool
+	// operation says what that work is, in words, for the detail pane.
+	operation string
 	// feedback is the last known count of review threads still waiting on the
-	// reader, per pull request, which is what a watched row shows.
-	feedback map[model.Key]int
-	// activity holds a bounded, session-only explanation of what the watcher
-	// has done for a pull request, while watching names work still in flight.
-	activity map[model.Key][]watchActivity
-	watching map[model.Key]string
-	// handoffHistory is loaded outside rendering, then cached by pull request.
-	handoffHistory map[model.Key]handoffHistoryState
+	// reader, and hasFeedback whether there has ever been a count. A pull
+	// request nobody has asked about is not one with nothing waiting.
+	feedback    int
+	hasFeedback bool
+	// activity is a bounded, session-only account of what the watcher has
+	// done, oldest first.
+	activity []watchActivity
+	// history is the tail of the durable handoff log, read outside rendering.
+	history handoffHistoryState
+}
+
+// runtimeOf reads the runtime state for one pull request. A pull request
+// nothing has happened to reads as the zero value rather than gaining an
+// entry, so drawing the list cannot grow the map.
+func (a *App) runtimeOf(key model.Key) prRuntime {
+	if got, ok := a.runtime[key]; ok {
+		return *got
+	}
+	return prRuntime{}
+}
+
+// mutate returns the entry for one pull request, creating it if it is new.
+//
+// There is no matching removal. An entry outlives the work that created it on
+// purpose: the activity log is what the reader reads afterwards, and a history
+// read that came back empty is worth remembering, since asking again would
+// find the same nothing. The map is bounded by the pull requests the reader
+// touched in one session.
+func (a *App) mutate(key model.Key) *prRuntime {
+	if got, ok := a.runtime[key]; ok {
+		return got
+	}
+	entry := &prRuntime{}
+	a.runtime[key] = entry
+	return entry
+}
+
+// anyInFlight reports whether any pull request has watcher work outstanding.
+func (a *App) anyInFlight() bool {
+	for _, got := range a.runtime {
+		if got.handing || got.reviewing {
+			return true
+		}
+	}
+	return false
 }
 
 // New builds an App ready to be handed to tea.NewProgram.
@@ -285,33 +338,28 @@ func New(cfg Config) *App {
 	}
 
 	a := &App{
-		client:         cfg.Client,
-		opener:         cfg.Opener,
-		clip:           clip,
-		query:          cfg.Query,
-		limit:          cfg.Limit,
-		closed:         cfg.Closed,
-		now:            now,
-		version:        cfg.Version,
-		keys:           defaultKeys(),
-		styles:         styles,
-		help:           help.New(),
-		spin:           sp,
-		checks:         map[model.Key]checkState{},
-		store:          cfg.Store,
-		state:          state,
-		storeErr:       storeErr,
-		homeCfg:        cfg.Home,
-		homeNote:       joinNotes(cfg.HomeNotes),
-		hand:           cfg.Handoff,
-		handErr:        handErr,
-		handing:        map[model.Key]bool{},
-		reviewing:      map[model.Key]bool{},
-		engine:         watch.New(cfg.Home.Watch),
-		feedback:       map[model.Key]int{},
-		activity:       map[model.Key][]watchActivity{},
-		watching:       map[model.Key]string{},
-		handoffHistory: map[model.Key]handoffHistoryState{},
+		client:   cfg.Client,
+		opener:   cfg.Opener,
+		clip:     clip,
+		query:    cfg.Query,
+		limit:    cfg.Limit,
+		closed:   cfg.Closed,
+		now:      now,
+		version:  cfg.Version,
+		keys:     defaultKeys(),
+		styles:   styles,
+		help:     help.New(),
+		spin:     sp,
+		checks:   map[model.Key]checkState{},
+		store:    cfg.Store,
+		state:    state,
+		storeErr: storeErr,
+		homeCfg:  cfg.Home,
+		homeNote: joinNotes(cfg.HomeNotes),
+		hand:     cfg.Handoff,
+		handErr:  handErr,
+		engine:   watch.New(cfg.Home.Watch),
+		runtime:  map[model.Key]*prRuntime{},
 	}
 	a.views[viewOpen].loading = true
 	return a
@@ -473,13 +521,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(status(a.handoffNote(msg)), history)
 
 	case handoffHistoryMsg:
-		state, ok := a.handoffHistory[msg.key]
-		if !ok || msg.generation != state.generation {
+		// A reply whose generation does not match was asked for by a read
+		// since replaced, or by an entry since pruned; either way it is stale.
+		// The zero generation of a missing entry never matches, because the
+		// first read numbers itself one.
+		entry, ok := a.runtime[msg.key]
+		if !ok || msg.generation != entry.history.generation {
 			return a, nil
 		}
-		state.handoffs, state.err = msg.handoffs, msg.err
-		state.loading, state.loaded = false, true
-		a.handoffHistory[msg.key] = state
+		entry.history.handoffs, entry.history.err = msg.handoffs, msg.err
+		entry.history.loading, entry.history.loaded = false, true
 		// The reply is what decides whether the WATCH section has anything to
 		// show, so the detail selection is reconciled against the answer.
 		a.clampScroll()
@@ -532,11 +583,11 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			a.resetDetailNavigation()
 			return a, a.withSpinner(a.ensureChecks(a.selectedKey()))
 		}
-		if a.focus == paneDetail && a.detailPage == detailOverview && a.detailSection == detailWatch {
+		if a.focus == paneDetail && a.page == detailOverview && a.section == detailWatch {
 			// Gated on the section still being there. clampScroll normalises a
 			// stale selection, but this key can arrive before it has run.
 			if pr, ok := a.selectedPR(); ok && a.hasWatchSection(pr) {
-				a.detailPage = detailWatchPage
+				a.page = detailWatchPage
 				a.watchOffset = 0
 				a.clampScroll()
 			}
@@ -544,8 +595,8 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case key.Matches(msg, a.keys.Back):
-		if a.focus == paneDetail && a.detailPage == detailWatchPage {
-			a.detailPage = detailOverview
+		if a.focus == paneDetail && a.page == detailWatchPage {
+			a.page = detailOverview
 			a.watchOffset = 0
 			a.clampScroll()
 			return a, nil
@@ -636,7 +687,7 @@ func (a *App) jump(index int) tea.Cmd {
 	index = min(max(index, 0), count-1)
 
 	if a.focus == paneDetail {
-		if a.detailPage == detailWatchPage {
+		if a.page == detailWatchPage {
 			a.watchOffset = index
 			a.clampScroll()
 			return nil
@@ -712,7 +763,7 @@ func (a *App) selectedTarget() (target, label string, ok bool) {
 	}
 
 	target, label = pr.URL, pr.Key().String()
-	if a.focus == paneDetail && a.detailPage == detailOverview && a.detailSection == detailChecks {
+	if a.focus == paneDetail && a.page == detailOverview && a.section == detailChecks {
 		checks := a.checks[pr.Key()].checks
 		if a.detailCursor < len(checks) {
 			check := checks[a.detailCursor]
@@ -998,7 +1049,7 @@ func (a *App) selectedChecks() checkState {
 // cursorIndex is the cursor of the focused pane.
 func (a *App) cursorIndex() int {
 	if a.focus == paneDetail {
-		if a.detailPage == detailWatchPage {
+		if a.page == detailWatchPage {
 			return a.watchOffset
 		}
 		return a.detailIndex()
@@ -1009,7 +1060,7 @@ func (a *App) cursorIndex() int {
 // itemCount is the number of rows in the focused pane.
 func (a *App) itemCount() int {
 	if a.focus == paneDetail {
-		if a.detailPage == detailWatchPage {
+		if a.page == detailWatchPage {
 			return a.watchLineCount()
 		}
 		return a.detailItemCount()
@@ -1032,7 +1083,7 @@ func (a *App) busy() bool {
 	// A handoff can spend minutes waiting for an agent to finish what it is
 	// doing, which is exactly the stretch the reader needs to be told is not a
 	// hang.
-	return len(a.reviewing) > 0 || len(a.handing) > 0
+	return a.anyInFlight()
 }
 
 // narrow reports whether the terminal is too slim for side-by-side panes.
@@ -1049,7 +1100,7 @@ func (a *App) clampScroll() {
 	state.cursor = min(max(state.cursor, 0), max(len(state.prs)-1, 0))
 	state.listOffset = clampOffset(state.listOffset, state.cursor, listRows(a.bodyHeight()), len(state.prs))
 
-	if a.focus == paneDetail && a.detailPage == detailWatchPage {
+	if a.focus == paneDetail && a.page == detailWatchPage {
 		a.watchOffset = clampOffset(a.watchOffset, a.watchOffset, a.watchWindow(), a.watchLineCount())
 		return
 	}
@@ -1068,12 +1119,12 @@ func (a *App) normalizeDetailSelection() {
 	if pr, ok := a.selectedPR(); ok && a.hasWatchSection(pr) {
 		return
 	}
-	if a.detailSection == detailWatch {
-		a.detailSection = detailChecks
+	if a.section == detailWatch {
+		a.section = detailChecks
 		a.detailCursor, a.detailOffset = 0, 0
 	}
-	if a.detailPage == detailWatchPage {
-		a.detailPage = detailOverview
+	if a.page == detailWatchPage {
+		a.page = detailOverview
 		a.watchOffset = 0
 	}
 }
@@ -1082,8 +1133,8 @@ func (a *App) normalizeDetailSelection() {
 func (a *App) resetDetailNavigation() {
 	a.detailCursor = 0
 	a.detailOffset = 0
-	a.detailSection = detailChecks
-	a.detailPage = detailOverview
+	a.section = detailChecks
+	a.page = detailOverview
 	a.watchOffset = 0
 }
 
@@ -1099,7 +1150,7 @@ func (a *App) detailItemCount() int {
 // detailIndex returns the normal-detail selection as one contiguous index.
 func (a *App) detailIndex() int {
 	pr, hasPR := a.selectedPR()
-	if hasPR && a.detailSection == detailWatch && a.hasWatchSection(pr) {
+	if hasPR && a.section == detailWatch && a.hasWatchSection(pr) {
 		return 0
 	}
 	if hasPR && a.hasWatchSection(pr) {
@@ -1114,13 +1165,13 @@ func (a *App) setDetailIndex(index int) {
 	pr, hasPR := a.selectedPR()
 	hasWatch := hasPR && a.hasWatchSection(pr)
 	if hasWatch && index == 0 {
-		a.detailSection = detailWatch
+		a.section = detailWatch
 		a.detailCursor = 0
 		a.detailOffset = 0
 		return
 	}
 
-	a.detailSection = detailChecks
+	a.section = detailChecks
 	if hasWatch {
 		index--
 	}

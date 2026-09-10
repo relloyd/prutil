@@ -38,16 +38,16 @@ type watchFacts struct {
 func (a *App) watchFactsOf(pr model.PullRequest) watchFacts {
 	key := pr.Key()
 	status, armed := a.engine.Status(key)
-	open, hasOpen := a.feedback[key]
+	got := a.runtimeOf(key)
 	return watchFacts{
 		key:       key,
 		armed:     armed,
 		status:    status,
-		operation: a.watching[key],
-		open:      open,
-		hasOpen:   hasOpen,
-		events:    a.activity[key],
-		history:   a.handoffHistory[key],
+		operation: got.operation,
+		open:      got.feedback,
+		hasOpen:   got.hasFeedback,
+		events:    got.activity,
+		history:   got.history,
 	}
 }
 

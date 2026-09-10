@@ -506,3 +506,10 @@ func drain(cmd tea.Cmd) []tea.Msg {
 	}
 	return []tea.Msg{msg}
 }
+
+// setFeedback records how much review feedback a pull request has waiting, the
+// way a finished review-thread read would.
+func setFeedback(app *App, key model.Key, open int) {
+	entry := app.mutate(key)
+	entry.feedback, entry.hasFeedback = open, true
+}

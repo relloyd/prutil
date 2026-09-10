@@ -360,7 +360,7 @@ worst of the three.
 Five defects and a pile of structural work. Suggested order, with the
 justification for the ordering rather than just the list.
 
-**Status: tranches 1, 2, 2b and 3 are done.** Every defect below is closed, each with
+**Status: tranches 1, 2, 2b, 3 and 4 are done.** Every defect below is closed, each with
 a regression test confirmed to fail against the code as it stood. Tranches 3 to
 5 are untouched.
 
@@ -483,7 +483,7 @@ Also fixed in passing: the page heading was being truncated after its escape
 codes had gone in, which `AGENTS.md` warns against. Headings are now a row kind
 that renders through `sectionHeading` rather than being styled and then cut.
 
-## Tranche 4: the structural change (one to two days)
+## Tranche 4: the structural change (done)
 
 10. **Collapse the seven per-key maps in `App` into one
     `map[model.Key]*prRuntime`.** Do it after tranche 2, not before: two of the
@@ -491,6 +491,31 @@ that renders through `sectionHeading` rather than being styled and then cut.
     first gives the refactor a regression test to land against.
 11. **Rename the embedded `detailSection`/`detailPage` to named fields.** Fold
     into 10; it touches the same struct.
+
+### What the fixes turned out to be
+
+The six watcher maps are now one `map[model.Key]*prRuntime`. `checks` stays
+separate, as planned: it is fetched data with a different lifetime, wiped
+wholesale by a refresh, where the other six are watcher state. Rendering was
+diffed against the code it replaced across seven scenarios and is byte for byte
+identical.
+
+**The plan's pruning was ceremony and came back out.** The first draft added a
+prune step to drop entries holding nothing, which sounded tidy and almost never
+fired: a history read that came back empty is worth remembering, since asking
+again finds the same nothing, and that alone keeps every selected pull request's
+entry alive. Rather than keep a guard that does not guard, `mutate` now says
+plainly that an entry outlives the work that created it, and clearing an
+operation that was never set creates nothing. The map is bounded by the pull
+requests one session touched, which is what the seven maps did anyway.
+
+Two of the tests written for this failed first time, and both times the test was
+wrong rather than the code: one asserted no operation was left after a review
+read when the state machine had legitimately moved on to a handoff, and the
+other asserted an empty runtime map when the durable history cache is meant to
+keep an entry. Both now assert what the code actually promises.
+
+`detailSection` and `detailPage` are named fields, `section` and `page`.
 
 ## Tranche 5: cost and hygiene, in any order
 

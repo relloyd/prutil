@@ -20,20 +20,24 @@ type watchActivity struct {
 
 // recordWatchActivity adds one readable watcher event for a pull request.
 func (a *App) recordWatchActivity(key model.Key, text string) {
-	events := append(a.activity[key], watchActivity{at: a.now(), text: text})
-	if len(events) > watchActivityLimit {
-		events = events[len(events)-watchActivityLimit:]
+	entry := a.mutate(key)
+	entry.activity = append(entry.activity, watchActivity{at: a.now(), text: text})
+	if len(entry.activity) > watchActivityLimit {
+		entry.activity = entry.activity[len(entry.activity)-watchActivityLimit:]
 	}
-	a.activity[key] = events
 }
 
 // setWatchOperation records the work currently in flight for a pull request.
+// Clearing one that was never set creates nothing, so a screenful of rows the
+// watcher has never touched costs no entries.
 func (a *App) setWatchOperation(key model.Key, text string) {
 	if text == "" {
-		delete(a.watching, key)
+		if got, ok := a.runtime[key]; ok {
+			got.operation = ""
+		}
 		return
 	}
-	a.watching[key] = text
+	a.mutate(key).operation = text
 }
 
 // loadSelectedHandoffHistory starts a history read for the current list
@@ -52,15 +56,14 @@ func (a *App) loadHandoffHistory(key model.Key, refresh bool) tea.Cmd {
 		return nil
 	}
 
-	state := a.handoffHistory[key]
-	if !refresh && (state.loading || state.loaded) {
+	entry := a.mutate(key)
+	if !refresh && (entry.history.loading || entry.history.loaded) {
 		return nil
 	}
-	state.generation++
-	state.loading, state.loaded, state.err = true, false, nil
-	a.handoffHistory[key] = state
+	entry.history.generation++
+	entry.history.loading, entry.history.loaded, entry.history.err = true, false, nil
 
-	store, generation := a.store, state.generation
+	store, generation := a.store, entry.history.generation
 	return func() tea.Msg {
 		handoffs, err := store.RecentHandoffs(key.String(), handoffHistoryLimit)
 		return handoffHistoryMsg{key: key, handoffs: handoffs, err: err, generation: generation}

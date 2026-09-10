@@ -634,14 +634,14 @@ func TestTheWatchSectionCanBeSelectedAndDrilledInto(t *testing.T) {
 	send(t, app, press("w"))
 	send(t, app, press("l"))
 	require.Equal(t, paneDetail, app.focus)
-	require.Equal(t, detailChecks, app.detailSection)
+	require.Equal(t, detailChecks, app.section)
 
 	send(t, app, press("k"))
-	assert.Equal(t, detailWatch, app.detailSection)
+	assert.Equal(t, detailWatch, app.section)
 	assert.Contains(t, plain(app.render()), "▌ WATCH")
 
 	send(t, app, press("l"))
-	assert.Equal(t, detailWatchPage, app.detailPage)
+	assert.Equal(t, detailWatchPage, app.page)
 	screen := plain(app.render())
 	assert.Contains(t, screen, "cadence:")
 	assert.Contains(t, screen, "ACTIVITY")
@@ -649,7 +649,7 @@ func TestTheWatchSectionCanBeSelectedAndDrilledInto(t *testing.T) {
 	assert.Contains(t, screen, "started watching")
 
 	send(t, app, press("h"))
-	assert.Equal(t, detailOverview, app.detailPage)
+	assert.Equal(t, detailOverview, app.page)
 	assert.Equal(t, paneDetail, app.focus)
 	send(t, app, press("h"))
 	assert.Equal(t, paneList, app.focus)
@@ -790,7 +790,7 @@ func TestAPollIsStillAppliedToThePullRequestsThatWereAnswered(t *testing.T) {
 // activityText joins everything the watcher has recorded for one pull request.
 func activityText(app *App, key model.Key) string {
 	var out []string
-	for _, event := range app.activity[key] {
+	for _, event := range app.runtimeOf(key).activity {
 		out = append(out, event.text)
 	}
 	return strings.Join(out, " | ")
@@ -805,11 +805,11 @@ func TestTheWatchSectionStaysAwayWhileItsHistoryIsStillLoading(t *testing.T) {
 	pr, ok := app.selectedPR()
 	require.True(t, ok)
 
-	require.True(t, app.handoffHistory[pr.Key()].loading, "the history read is in flight")
+	require.True(t, app.runtimeOf(pr.Key()).history.loading, "the history read is in flight")
 	assert.False(t, app.hasWatchSection(pr), "a read in flight is not something to show")
 	assert.NotContains(t, plain(app.render()), "WATCH")
 
-	send(t, app, handoffHistoryMsg{key: pr.Key(), generation: app.handoffHistory[pr.Key()].generation})
+	send(t, app, handoffHistoryMsg{key: pr.Key(), generation: app.runtimeOf(pr.Key()).history.generation})
 
 	assert.False(t, app.hasWatchSection(pr), "an empty history leaves nothing to show either")
 	assert.NotContains(t, plain(app.render()), "WATCH", "the section never appeared, so it cannot vanish")
@@ -826,12 +826,12 @@ func TestTheWatchSectionStaysOnceItHasSomethingToSay(t *testing.T) {
 	require.True(t, ok)
 	send(t, app, press("l"))
 	send(t, app, press("k"))
-	require.Equal(t, detailWatch, app.detailSection)
+	require.Equal(t, detailWatch, app.section)
 
 	send(t, app, press("w"))
 
 	assert.True(t, app.hasWatchSection(pr), "the activity from this session is still worth showing")
-	assert.Equal(t, detailWatch, app.detailSection, "the selection is still on something real")
+	assert.Equal(t, detailWatch, app.section, "the selection is still on something real")
 	assert.Contains(t, plain(app.render()), "WATCH")
 }
 
@@ -846,14 +846,14 @@ func TestASelectionLeftOnAWatchSectionThatIsGoneFallsBackToTheChecks(t *testing.
 	require.False(t, app.hasWatchSection(pr), "nothing armed and nothing recorded")
 
 	app.focus = paneDetail
-	app.detailSection = detailWatch
+	app.section = detailWatch
 
 	app.clampScroll()
-	assert.Equal(t, detailChecks, app.detailSection, "the stale selection falls back")
+	assert.Equal(t, detailChecks, app.section, "the stale selection falls back")
 
-	app.detailSection = detailWatch
+	app.section = detailWatch
 	send(t, app, press("l"))
-	assert.Equal(t, detailOverview, app.detailPage, "there is no page to drill into")
+	assert.Equal(t, detailOverview, app.page, "there is no page to drill into")
 	assert.NotContains(t, plain(app.render()), "nothing to show for WATCH")
 }
 
@@ -864,12 +864,12 @@ func TestAWatchPageLeftOpenOnAnEmptySectionCloses(t *testing.T) {
 	require.False(t, app.hasWatchSection(pr))
 
 	app.focus = paneDetail
-	app.detailSection, app.detailPage = detailWatch, detailWatchPage
+	app.section, app.page = detailWatch, detailWatchPage
 
 	app.clampScroll()
 
-	assert.Equal(t, detailOverview, app.detailPage)
-	assert.Equal(t, detailChecks, app.detailSection)
+	assert.Equal(t, detailOverview, app.page)
+	assert.Equal(t, detailChecks, app.section)
 	assert.Zero(t, app.watchOffset)
 }
 
@@ -881,7 +881,7 @@ func TestTheCompactWatchSectionSpendsItsWidthOnFactsAndThePageOnLabels(t *testin
 	send(t, app, press("w"))
 	pr, ok := app.selectedPR()
 	require.True(t, ok)
-	app.feedback[pr.Key()] = 3
+	setFeedback(app, pr.Key(), 3)
 
 	compact := plain(app.render())
 	assert.Contains(t, compact, "3 open threads")
@@ -890,7 +890,7 @@ func TestTheCompactWatchSectionSpendsItsWidthOnFactsAndThePageOnLabels(t *testin
 	send(t, app, press("l"))
 	send(t, app, press("k"))
 	send(t, app, press("l"))
-	require.Equal(t, detailWatchPage, app.detailPage)
+	require.Equal(t, detailWatchPage, app.page)
 
 	page := plain(app.render())
 	assert.Contains(t, page, "feedback: 3 open threads")
@@ -928,7 +928,7 @@ func TestTheExpandedWatchPageIsMeasuredByCountingRatherThanRendering(t *testing.
 	send(t, app, press("l"))
 	send(t, app, press("k"))
 	send(t, app, press("l"))
-	require.Equal(t, detailWatchPage, app.detailPage)
+	require.Equal(t, detailWatchPage, app.page)
 
 	_, width := app.paneWidths()
 	rendered := app.renderWatchPage(pr, width, app.bodyHeight())
@@ -958,5 +958,52 @@ func TestEverySectionHeadingLinesUpWithTheOthers(t *testing.T) {
 			}
 		}
 		assert.Truef(t, found, "%s is on the page", heading)
+	}
+}
+
+func TestOnePullRequestsWatcherStateLivesInOneEntry(t *testing.T) {
+	// Seven maps written from six places and cleaned up from four is how a
+	// cleanup comes to reach five of them. One entry is cleared in one place.
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("w"))
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	key := pr.Key()
+
+	// Everything on this pull request has already been handed over, so the
+	// read finishes without starting anything else.
+	app.state.RecordHandoff(key.String(), model.Digest(sampleThreads().Feedback()), testNow)
+
+	send(t, app, watchSnapshotMsg{
+		keys:  []model.Key{key},
+		snaps: []model.Snapshot{{Key: key, NodeID: pr.NodeID, HeadOID: "abc", UpdatedAt: testNow}},
+	})
+	require.True(t, app.runtimeOf(key).reviewing, "the precise read is in flight")
+	require.NotEmpty(t, app.runtimeOf(key).operation, "and the pane says so")
+
+	send(t, app, watchReviewMsg{key: key, review: sampleThreads()})
+
+	got := app.runtimeOf(key)
+	assert.False(t, got.reviewing, "the read is done")
+	assert.False(t, got.handing, "and nothing new to hand over")
+	assert.Empty(t, got.operation, "so nothing is left saying otherwise")
+	assert.True(t, got.hasFeedback, "what it found is recorded")
+	assert.NotEmpty(t, got.activity, "along with why")
+}
+
+func TestClearingAnOperationThatWasNeverSetRemembersNothing(t *testing.T) {
+	// Entries exist for pull requests something has happened to, the durable
+	// history read that follows a selection included. Clearing an operation
+	// must not add to that: it runs for every pull request a poll covered.
+	app, _, _ := newTestApp(t, 120, 40)
+	before := len(app.runtime)
+
+	for _, pr := range app.cur().prs {
+		app.setWatchOperation(pr.Key(), "")
+	}
+
+	assert.Len(t, app.runtime, before, "clearing what was never set conjures nothing")
+	for _, pr := range app.cur().prs {
+		assert.Empty(t, app.runtimeOf(pr.Key()).operation)
 	}
 }
