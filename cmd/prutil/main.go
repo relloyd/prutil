@@ -108,7 +108,7 @@ func run() error {
 	// Assigned inside the branch rather than from a two-value call, because a
 	// nil *Dispatcher stored in an interface field is not a nil interface, and
 	// the app decides whether the feature exists by comparing that field.
-	if dispatcher, err := newDispatcher(cfg); err != nil {
+	if dispatcher, err := newDispatcher(cfg, store); err != nil {
 		uiCfg.HandoffErr = err
 	} else {
 		uiCfg.Handoff = dispatcher
@@ -133,7 +133,7 @@ func openHome(dryRun bool) (*home.Store, *home.State, home.Config, error) {
 		return nil, nil, cfg, err
 	}
 
-	loaded, err := store.LoadConfig()
+	loaded, err := store.LoadOrCreateConfig()
 	if err != nil {
 		return nil, nil, cfg, err
 	}
@@ -149,7 +149,7 @@ func openHome(dryRun bool) (*home.Store, *home.State, home.Config, error) {
 // newDispatcher wires the handoff to a running herdr server. herdr not being
 // installed, or its server not running, is an ordinary answer: prutil is a
 // dashboard first and a courier second.
-func newDispatcher(cfg home.Config) (*handoff.Dispatcher, error) {
+func newDispatcher(cfg home.Config, store *home.Store) (*handoff.Dispatcher, error) {
 	control, err := herdr.NewExec()
 	if err != nil {
 		return nil, err
@@ -169,6 +169,8 @@ func newDispatcher(cfg home.Config) (*handoff.Dispatcher, error) {
 	return handoff.New(handoff.Options{
 		Herdr:  control,
 		Git:    checkouts,
+		Repos:  git.NewResolver(checkouts, cfg, store),
+		Fetch:  checkouts,
 		Config: cfg,
 		// herdr injects the calling pane into every process it starts, which
 		// is how prutil knows never to hand work to the terminal it is itself

@@ -47,6 +47,34 @@ func TestAnArmedPullRequestIsDueStraightAway(t *testing.T) {
 	assert.Equal(t, 1, e.Watching())
 }
 
+func TestStatusExplainsAnArmedPullRequestsScheduleWithoutLeakingItsEntry(t *testing.T) {
+	e := engine(t)
+	e.Sync([]model.Key{key}, start)
+
+	before, ok := e.Status(key)
+	require.True(t, ok)
+	assert.Equal(t, watch.TierSettled, before.Tier)
+	assert.Equal(t, 2*time.Minute, before.Interval)
+	assert.Equal(t, start, before.NextDue)
+	assert.False(t, before.SnapshotSeen)
+	assert.Equal(t, 5, before.PollsUntilPrecise)
+
+	e.Observe([]model.Snapshot{snap(start, model.StatusPending)}, start)
+	after, ok := e.Status(key)
+	require.True(t, ok)
+	assert.Equal(t, watch.TierActive, after.Tier)
+	assert.Equal(t, 30*time.Second, after.Interval)
+	assert.True(t, after.SnapshotSeen)
+	assert.Equal(t, 5, after.PollsUntilPrecise, "the first poll was precise and reset the counter")
+}
+
+func TestStatusDoesNotExistForAnUnarmedPullRequest(t *testing.T) {
+	e := engine(t)
+
+	_, ok := e.Status(key)
+	assert.False(t, ok)
+}
+
 func TestSyncForgetsWhatIsNoLongerArmedAndLeavesTheRestAlone(t *testing.T) {
 	e := engine(t)
 	e.Sync([]model.Key{key, other}, start)

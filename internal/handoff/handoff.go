@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/relloyd/prutil/internal/git"
 	"github.com/relloyd/prutil/internal/herdr"
@@ -33,11 +34,20 @@ var (
 	// ErrStillWorking means the target never settled inside the configured
 	// wait.
 	ErrStillWorking = errors.New("the agent is still working")
+	// ErrAgentKindRequired means a manual handoff needs to create an agent but
+	// the configuration deliberately does not name a concrete agent kind.
+	ErrAgentKindRequired = errors.New("herdr.agent_kind is required to start a new agent")
 )
 
 // Identifier reports what repository and branch a directory holds.
 type Identifier interface {
 	Identify(ctx context.Context, dir string) git.Checkout
+}
+
+// RepositoryResolver finds the local checkout where a manual handoff can
+// create a worktree.
+type RepositoryResolver interface {
+	Resolve(ctx context.Context, repo string) (git.Checkout, error)
 }
 
 // Request is one pull request's feedback, ready to be handed over.
@@ -50,6 +60,9 @@ type Request struct {
 	// Threads maps each unresolved review thread id to the id of its newest
 	// comment, which is what the caller records once the handoff lands.
 	Threads map[string]string
+	// AllowProvision means the reader explicitly pressed W and permits a
+	// no-agent handoff to create a worktree and start an agent.
+	AllowProvision bool
 }
 
 // Result is what became of a handoff, in the shape the log wants.
@@ -60,6 +73,11 @@ type Result struct {
 	Dir     string
 	Prompt  string
 	Detail  string
+	// Provisioned says the result came from a workspace prutil created or
+	// opened for the handoff, rather than an agent it found already running.
+	Provisioned bool
+	Workspace   string
+	Tab         string
 	// Waited is how long prutil spent waiting for a working agent to settle.
 	Waited time.Duration
 }
@@ -68,6 +86,8 @@ type Result struct {
 type Dispatcher struct {
 	herdr    herdr.Controller
 	git      Identifier
+	repos    RepositoryResolver
+	fetch    git.PullRequestFetcher
 	cfg      home.HerdrConfig
 	selfPane string
 	idleGap  time.Duration
@@ -78,6 +98,12 @@ type Dispatcher struct {
 type Options struct {
 	Herdr herdr.Controller
 	Git   Identifier
+	// Repos locates a local checkout to provision only after a manual handoff
+	// found no existing agent.
+	Repos RepositoryResolver
+	// Fetch reads a pull request head into the local branch a new worktree
+	// uses. It is separate from Git so tests can make no process calls.
+	Fetch git.PullRequestFetcher
 	// Config supplies the prompt, the agent kind and the wait budget from
 	// Herdr, and the agent polling gap from Watch.
 	Config home.Config
@@ -99,6 +125,8 @@ func New(opts Options) *Dispatcher {
 	return &Dispatcher{
 		herdr:    opts.Herdr,
 		git:      opts.Git,
+		repos:    opts.Repos,
+		fetch:    opts.Fetch,
 		cfg:      opts.Config.Herdr,
 		selfPane: opts.SelfPane,
 		idleGap:  opts.Config.Watch.IdleInterval.Duration(),
@@ -120,13 +148,22 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) (Result, error) 
 
 	agent, note, found := d.pick(ctx, agents, req.PR)
 	if !found {
+		if req.AllowProvision {
+			return d.provision(ctx, agents, req)
+		}
 		res := Result{Outcome: home.OutcomeNoAgent, Detail: ErrNoAgent.Error()}
 		d.toast(ctx, req, "no agent found in "+req.PR.Repo)
 		return res, ErrNoAgent
 	}
 
 	res := Result{Target: agent.Target(), Kind: agent.Kind, Dir: agent.Dir()}
+	return d.send(ctx, req, agent, note, res)
+}
 
+// send settles an agent, renders the prompt and submits it. initial carries
+// workspace metadata when the agent was created for this handoff.
+func (d *Dispatcher) send(ctx context.Context, req Request, agent herdr.Agent, note string, initial Result) (Result, error) {
+	res := initial
 	settled, waited, err := d.settle(ctx, agent)
 	res.Waited = waited
 	if err != nil {
@@ -144,19 +181,15 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) (Result, error) 
 		d.toast(ctx, req, res.Detail)
 		return res, err
 	}
-	res.Target, res.Kind, res.Dir = settled.Target(), settled.Kind, settled.Dir()
+	res.Target = settled.Target()
+	if settled.Kind != "" {
+		res.Kind = settled.Kind
+	}
+	if settled.Dir() != "" {
+		res.Dir = settled.Dir()
+	}
 
-	text, err := d.cfg.RenderPrompt(home.PromptData{
-		Repo:            req.PR.Repo,
-		Number:          req.PR.Number,
-		URL:             req.PR.URL,
-		Title:           req.PR.Title,
-		HeadRef:         req.PR.HeadRef,
-		BaseRef:         req.PR.BaseRef,
-		UnresolvedCount: req.UnresolvedCount,
-		NewCount:        req.NewCount,
-		Note:            note,
-	})
+	text, err := d.cfg.RenderPrompt(promptData(req, note))
 	if err != nil {
 		res.Outcome, res.Detail = home.OutcomeFailed, err.Error()
 		return res, err
@@ -184,6 +217,197 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) (Result, error) 
 	res.Outcome = home.OutcomeSent
 	d.toast(ctx, req, fmt.Sprintf("sent to %s in %s", agentLabel(settled), short(res.Dir)))
 	return res, nil
+}
+
+// startAgentTimeout allows herdr enough time to recognise a new agent without
+// holding the handoff open for its full work duration.
+const startAgentTimeout = time.Minute
+
+// provision creates or reopens a herdr worktree only for a reader-initiated
+// handoff that had no existing agent candidate.
+func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Request) (Result, error) {
+	if strings.TrimSpace(d.cfg.AgentKind) == "" {
+		res := Result{Outcome: home.OutcomeFailed, Detail: ErrAgentKindRequired.Error()}
+		d.toast(ctx, req, res.Detail)
+		return res, ErrAgentKindRequired
+	}
+	if d.repos == nil || d.fetch == nil {
+		err := errors.New("manual workspace provisioning is not configured")
+		res := Result{Outcome: home.OutcomeFailed, Detail: err.Error()}
+		d.toast(ctx, req, res.Detail)
+		return res, err
+	}
+
+	checkout, err := d.repos.Resolve(ctx, req.PR.Repo)
+	if err != nil {
+		res := Result{Outcome: home.OutcomeFailed, Detail: err.Error()}
+		d.toast(ctx, req, res.Detail)
+		return res, err
+	}
+	if checkout.Root == "" {
+		err := errors.New("the local checkout has no repository root")
+		res := Result{Outcome: home.OutcomeFailed, Detail: err.Error()}
+		d.toast(ctx, req, res.Detail)
+		return res, err
+	}
+
+	name, err := agentName(req.PR, agents)
+	if err != nil {
+		res := Result{Outcome: home.OutcomeFailed, Detail: err.Error()}
+		d.toast(ctx, req, res.Detail)
+		return res, err
+	}
+	label := req.PR.Key().String()
+	res := Result{
+		Target: name,
+		Kind:   d.cfg.AgentKind,
+		Dir:    checkout.Root,
+	}
+	if d.cfg.DryRun {
+		text, err := d.cfg.RenderPrompt(promptData(req, ""))
+		if err != nil {
+			res.Outcome, res.Detail = home.OutcomeFailed, err.Error()
+			return res, err
+		}
+		res.Outcome = home.OutcomeDryRun
+		res.Prompt = text
+		res.Detail = "would create a worktree and start a new agent"
+		return res, nil
+	}
+
+	session, err := d.openWorktree(ctx, checkout.Root, workspaceBranch(req.PR), label, req.PR.Number)
+	if err != nil {
+		res.Outcome, res.Detail = home.OutcomeFailed, err.Error()
+		d.toast(ctx, req, res.Detail)
+		return res, err
+	}
+	res.Workspace, res.Tab = session.WorkspaceID, session.TabID
+	res.Provisioned = true
+
+	agent, err := d.herdr.StartAgent(ctx, name, d.cfg.AgentKind, session.RootPaneID, startAgentTimeout)
+	if err != nil {
+		res.Outcome, res.Detail = home.OutcomeFailed, err.Error()
+		d.toast(ctx, req, res.Detail)
+		return res, err
+	}
+	if agent.Target() == "" {
+		err := errors.New("herdr started an agent without a target")
+		res.Outcome, res.Detail = home.OutcomeFailed, err.Error()
+		d.toast(ctx, req, res.Detail)
+		return res, err
+	}
+
+	return d.send(ctx, req, agent, "", res)
+}
+
+// openWorktree reuses an existing matching checkout before asking herdr to
+// create one. If creation reports an error after creating the checkout, a
+// fresh list can safely recover only an exact branch match; otherwise the
+// original error remains visible instead of guessing at a path.
+func (d *Dispatcher) openWorktree(ctx context.Context, root, branch, label string, number int) (herdr.WorktreeSession, error) {
+	worktrees, err := d.herdr.Worktrees(ctx, root)
+	if err != nil {
+		return herdr.WorktreeSession{}, err
+	}
+	if existing, ok := worktreeForBranch(worktrees, branch); ok {
+		return d.herdr.OpenWorktree(ctx, root, existing.Path, branch, label)
+	}
+	if err := d.fetch.FetchPullRequest(ctx, root, number, branch); err != nil {
+		return herdr.WorktreeSession{}, err
+	}
+
+	session, createErr := d.herdr.CreateWorktree(ctx, root, branch, label)
+	if createErr == nil {
+		return session, nil
+	}
+
+	worktrees, listErr := d.herdr.Worktrees(ctx, root)
+	if listErr != nil {
+		return herdr.WorktreeSession{}, createErr
+	}
+	if existing, ok := worktreeForBranch(worktrees, branch); ok {
+		return d.herdr.OpenWorktree(ctx, root, existing.Path, branch, label)
+	}
+	return herdr.WorktreeSession{}, createErr
+}
+
+// worktreeForBranch returns a usable existing worktree for branch.
+func worktreeForBranch(worktrees []herdr.Worktree, branch string) (herdr.Worktree, bool) {
+	for _, worktree := range worktrees {
+		if worktree.Branch == branch && strings.TrimSpace(worktree.Path) != "" {
+			return worktree, true
+		}
+	}
+	return herdr.Worktree{}, false
+}
+
+// workspaceBranch is a collision-resistant local ref owned by prutil. It
+// deliberately differs from the pull request's head ref, which may be checked
+// out or contain a user's divergent work in another worktree.
+func workspaceBranch(pr model.PullRequest) string {
+	return fmt.Sprintf("prutil/%s-%d", agentStem(pr.Repo), pr.Number)
+}
+
+// promptData builds the shared prompt template input.
+func promptData(req Request, note string) home.PromptData {
+	return home.PromptData{
+		Repo:            req.PR.Repo,
+		Number:          req.PR.Number,
+		URL:             req.PR.URL,
+		Title:           req.PR.Title,
+		HeadRef:         req.PR.HeadRef,
+		BaseRef:         req.PR.BaseRef,
+		UnresolvedCount: req.UnresolvedCount,
+		NewCount:        req.NewCount,
+		Note:            note,
+	}
+}
+
+// agentName derives a valid, stable herdr name from the pull request and adds
+// a short numeric suffix only when a live agent already holds that name.
+func agentName(pr model.PullRequest, agents []herdr.Agent) (string, error) {
+	used := make(map[string]bool, len(agents))
+	for _, agent := range agents {
+		if agent.Name != "" {
+			used[agent.Name] = true
+		}
+	}
+
+	stem := agentStem(pr.Repo)
+	for attempt := 1; attempt <= 9999; attempt++ {
+		suffix := fmt.Sprintf("-%d", pr.Number)
+		if attempt > 1 {
+			suffix += fmt.Sprintf("-%d", attempt)
+		}
+		limit := 32 - len("pr-") - len(suffix)
+		if limit < 1 {
+			return "", fmt.Errorf("could not name an agent for %s within herdr's limit", pr.Key())
+		}
+		name := "pr-" + stem[:min(len(stem), max(limit, 1))] + suffix
+		if !used[name] {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("could not find an unused herdr agent name for %s", pr.Key())
+}
+
+// agentStem reduces a repository name to the ASCII herdr agent-name alphabet.
+func agentStem(repo string) string {
+	var out strings.Builder
+	for _, r := range strings.ToLower(repo) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			out.WriteRune(r)
+			continue
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '/' || r == '.' {
+			out.WriteByte('-')
+		}
+	}
+	stem := strings.Trim(out.String(), "-_")
+	if stem == "" {
+		return "review"
+	}
+	return stem
 }
 
 // pick chooses the agent to hand the work to, and returns any warning the

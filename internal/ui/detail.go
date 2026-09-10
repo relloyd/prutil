@@ -18,6 +18,10 @@ func (a *App) renderDetail(width, height int) []string {
 	}
 
 	lines := a.detailHeader(pr, width)
+	// Keep a check heading and at least one check line visible below watcher
+	// diagnostics, even in a short terminal.
+	watchBudget := max(height-len(lines)-3, 0)
+	lines = append(lines, a.watchDetail(pr, width, watchBudget)...)
 	state := a.checks[pr.Key()]
 
 	switch {
@@ -94,7 +98,11 @@ func (a *App) detailHeader(pr model.PullRequest, width int) []string {
 		size = append(size, seg{text: diff, style: a.styles.Meta})
 	}
 	if pr.Comments > 0 {
-		size = append(size, seg{text: fmt.Sprintf("%d comments", pr.Comments), style: a.styles.Meta})
+		size = append(size, seg{text: fmt.Sprintf("%d %s", pr.Comments, plural(pr.Comments, "conversation")), style: a.styles.Meta})
+	}
+	if pr.ReviewThreadCount != nil {
+		count := *pr.ReviewThreadCount
+		size = append(size, seg{text: fmt.Sprintf("%d review %s", count, plural(count, "thread")), style: a.styles.Meta})
 	}
 	if len(size) > 0 {
 		lines = append(lines, fitSegs(width, " · ", size...))
@@ -150,7 +158,9 @@ func (a *App) checksHeight() int {
 	}
 	_, detailWidth := a.paneWidths()
 	// One line is spent on the CHECKS heading.
-	return checkWindow(a.bodyHeight(), len(a.detailHeader(pr, detailWidth))+1)
+	header := a.detailHeader(pr, detailWidth)
+	watchBudget := max(a.bodyHeight()-len(header)-3, 0)
+	return checkWindow(a.bodyHeight(), len(header)+len(a.watchDetail(pr, detailWidth, watchBudget))+1)
 }
 
 // checkWindow is the number of check lines that fit beneath a header of the

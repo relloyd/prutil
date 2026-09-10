@@ -66,7 +66,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `r` | refresh from GitHub |
 | `a` | auto-refresh: reload every 30s, five times over. press again to add five more |
 | `w` | watch the selected pull request, or stop watching it |
-| `W` | hand the selected pull request's open review feedback to a coding agent now |
+| `W` | hand the selected pull request's open review feedback to a coding agent now, creating one when needed |
 | `tab` | switch between your open and your recently closed pull requests |
 | `?` | toggle the full key list |
 | `q` or `ctrl+c` | quit |
@@ -116,6 +116,15 @@ prutil is itself running in is never given work. If the agent is busy prutil
 waits for it to finish, up to fifteen minutes, and if it is stuck at a prompt of
 its own nothing is sent at all.
 
+`W` is also the explicit consent to set up a workspace when no suitable agent
+exists. It resolves a local checkout, fetches the pull request's
+`pull/<number>/head` ref, reopens an existing matching herdr worktree when it
+can, or creates a no-focus worktree workspace and starts the configured agent
+there. Set `herdr.agent_kind` to the herdr agent kind to start (for example
+`claude` or `copilot`); it is required only for this creation path. The
+automatic watcher never creates a Git worktree, herdr workspace, or agent: it
+continues to report that no local agent was available.
+
 Nothing is ever handed over twice. Each thread prutil sends is remembered
 against the comment it ended on, so pressing `W` again on a review whose
 comments you have decided not to act on costs one GitHub request and sends
@@ -123,7 +132,15 @@ nobody anything. That is what makes it safe to leave a pull request watched.
 
 Every attempt is recorded, sent or not, one JSON object per line, in
 `handoffs.jsonl` beside the configuration. Start with `-dry-run`, which writes
-that log and shows the status line without saying anything to an agent.
+that log and shows the status line without mutating a repository, worktree,
+workspace, or agent.
+
+The selected pull request's detail pane includes a `WATCH` section when it has
+watch or handoff activity. It shows the current state-machine tier, cadence and
+next check; work currently in flight; a bounded activity feed from this TUI
+session; and the three most recent durable handoff attempts for that pull
+request. The activity feed resets when prutil exits; `handoffs.jsonl` is the
+cross-session record.
 
 ### What the watching costs
 
@@ -132,13 +149,14 @@ Watching a pull request is two questions, asked at very different rates.
 The first is cheap and batched. One GraphQL request covers every watched pull
 request at once, whatever repositories they are spread across, and reads only
 enough to notice that something moved: the head commit, the check state, the
-last-updated time, and the two comment totals. It is one request and one rate
-limit point however many pull requests you have marked.
+last-updated time, the conversation-comment total, and the total review-thread
+count. It is one request and one rate limit point however many pull requests
+you have marked.
 
 The second is the expensive one, and it is asked only of the pull requests the
 first one flagged, or of one that has gone five polls without being asked. That
 second part matters: a reply inside an existing review thread moves neither
-comment total, so a counter on its own would miss it.
+count, so a counter on its own would miss it.
 
 How often the first question is asked depends on what the pull request is
 doing:
@@ -157,12 +175,12 @@ hollow to say so; `r` wakes it, along with everything else.
 ### Configuration
 
 prutil reads `config.yaml` from `$PRUTIL_HOME`, else `$XDG_CONFIG_HOME/prutil`,
-else `~/.config/prutil`. There is no file to begin with and every key is
-optional:
+else `~/.config/prutil`. On first startup it creates a complete editable
+template there, with these defaults. Every key remains optional:
 
 ```yaml
 herdr:
-  agent_kind: claude        # only hand work to this kind of agent
+  agent_kind: claude        # required only when W starts a new agent
   skill: pr-comment-triage  # the skill the default prompt invokes
   wait_for_idle: 15m        # how long to wait for a busy agent
   dry_run: false
@@ -176,6 +194,11 @@ watch:
   idle_interval: 10s        # how often a busy agent is re-read
   dormant_after: 3          # polls at the cap before prutil stops asking
   force_precise_every: 5    # polls before the expensive question is asked anyway
+repos:
+  acme/widgets: ~/src/widgets  # optional explicit checkout for W
+discovery:
+  roots:
+    - ~/src                    # optional roots scanned after repos misses
 ```
 
 With `skill` set, the prompt is `/<skill> <pull request url>`. Without it,
@@ -183,8 +206,11 @@ prutil spells the job out instead. Either can be replaced with `herdr.prompt`,
 a Go template given `Repo`, `Number`, `URL`, `Title`, `HeadRef`, `BaseRef`,
 `Skill`, `UnresolvedCount`, `NewCount` and `Note`.
 
-Poll intervals are clamped to fifteen seconds at the shortest, so a typo cannot
-turn a dashboard into a load test.
+Explicit `repos` entries win. When none exists, prutil checks its private
+`repos.json` cache and then scans `discovery.roots`, validating every candidate
+against its origin remote before it can be used. Stale cache paths are ignored
+and refreshed. GitHub poll intervals are clamped to fifteen seconds at the
+shortest, so a typo cannot turn a dashboard into a load test.
 
 ## Views
 

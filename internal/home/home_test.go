@@ -38,6 +38,8 @@ func TestAMissingConfigurationIsTheDefaultsRatherThanAnError(t *testing.T) {
 	cfg, err := store.LoadConfig()
 	require.NoError(t, err)
 	assert.Equal(t, home.DefaultConfig(), cfg)
+	_, err = os.Stat(store.Path(home.ConfigFile))
+	assert.ErrorIs(t, err, os.ErrNotExist, "LoadConfig stays read-only and does not create config.yaml")
 }
 
 func TestAConfigurationSettingOneKeyLeavesEveryOtherAtItsDefault(t *testing.T) {
@@ -206,4 +208,28 @@ func TestEveryHandoffIsAppendedAsItsOwnLine(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(line), &got))
 		assert.NotEmpty(t, got.PR)
 	}
+}
+
+func TestRecentHandoffsReturnsOnlyTheSelectedPullRequestNewestFirst(t *testing.T) {
+	store := home.OpenIn(t.TempDir())
+	require.NoError(t, store.AppendHandoff(home.Handoff{PR: "a/b#1", Outcome: home.OutcomeSent}))
+	require.NoError(t, store.AppendHandoff(home.Handoff{PR: "a/b#2", Outcome: home.OutcomeNoAgent}))
+	require.NoError(t, store.AppendHandoff(home.Handoff{PR: "a/b#1", Outcome: home.OutcomeFailed}))
+
+	history, err := store.RecentHandoffs("a/b#1", 1)
+
+	require.NoError(t, err)
+	require.Len(t, history, 1)
+	assert.Equal(t, home.OutcomeFailed, history[0].Outcome)
+}
+
+func TestRecentHandoffsReportsMalformedHistoryRatherThanIgnoringIt(t *testing.T) {
+	dir := t.TempDir()
+	store := home.OpenIn(dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, home.HandoffFile), []byte("{not json}\n"), 0o600))
+
+	_, err := store.RecentHandoffs("a/b#1", 3)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "line 1")
 }

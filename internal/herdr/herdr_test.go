@@ -37,6 +37,8 @@ type reply struct {
 	err error
 }
 
+var _ herdr.Controller = (*herdr.Client)(nil)
+
 func (f *fakeRunner) Run(_ context.Context, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
 	got, ok := f.replies[strings.Join(args, " ")]
@@ -177,4 +179,108 @@ func TestStartingAnAgentPassesTheTimeoutInMilliseconds(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "pr-prutil-42", agent.Name)
 	assert.True(t, agent.Settled())
+}
+
+func TestListingWorktreesPassesTheRootAsCwdAndDecodesBranchAndPath(t *testing.T) {
+	runner := &fakeRunner{replies: map[string]reply{
+		"worktree list --cwd /repos/prutil": {
+			out: `{"result":{"worktrees":[{"path":"/repos/prutil","branch":"main","kind":"main"},{"path":"/repos/prutil-pr42","branch":"pr-42"}]}}`,
+		},
+	}}
+
+	worktrees, err := herdr.New(runner).Worktrees(context.Background(), "/repos/prutil")
+	require.NoError(t, err)
+	require.Len(t, worktrees, 2)
+	assert.Equal(t, "/repos/prutil", worktrees[0].Path)
+	assert.Equal(t, "main", worktrees[0].Branch)
+	assert.Equal(t, "/repos/prutil-pr42", worktrees[1].Path)
+	assert.Equal(t, "pr-42", worktrees[1].Branch)
+
+	require.Len(t, runner.calls, 1)
+	assert.Equal(t, []string{"worktree", "list", "--cwd", "/repos/prutil"}, runner.calls[0])
+}
+
+func TestCreatingAWorktreePinsTheArgumentOrderAndReadsWorkspaceTabAndRootPane(t *testing.T) {
+	runner := &fakeRunner{replies: map[string]reply{
+		"worktree create --cwd /repos/prutil --branch pr-42 --label prutil#42 --no-focus": {
+			out: `{"result":{"workspace":"ws-1","tab":"tab-9","root_pane":"pane-3"}}`,
+		},
+	}}
+
+	got, err := herdr.New(runner).CreateWorktree(context.Background(), "/repos/prutil", "pr-42", "prutil#42")
+	require.NoError(t, err)
+	assert.Equal(t, "ws-1", got.WorkspaceID)
+	assert.Equal(t, "tab-9", got.TabID)
+	assert.Equal(t, "pane-3", got.RootPaneID)
+
+	require.Len(t, runner.calls, 1)
+	assert.Equal(t,
+		[]string{"worktree", "create", "--cwd", "/repos/prutil", "--branch", "pr-42", "--label", "prutil#42", "--no-focus"},
+		runner.calls[0],
+	)
+}
+
+func TestOpeningAWorktreeDecodesObjectIdentifiersAndPassesNoFocus(t *testing.T) {
+	runner := &fakeRunner{replies: map[string]reply{
+		"worktree open --cwd /repos/prutil --path /repos/prutil-pr42 --branch pr-42 --label prutil#42 --no-focus": {
+			out: `{"result":{"workspace":{"workspace_id":"ws-2"},"tab":{"id":"tab-4"},"root_pane":{"pane_id":"pane-7"}}}`,
+		},
+	}}
+
+	got, err := herdr.New(runner).OpenWorktree(context.Background(), "/repos/prutil", "/repos/prutil-pr42", "pr-42", "prutil#42")
+	require.NoError(t, err)
+	assert.Equal(t, "ws-2", got.WorkspaceID)
+	assert.Equal(t, "tab-4", got.TabID)
+	assert.Equal(t, "pane-7", got.RootPaneID)
+
+	require.Len(t, runner.calls, 1)
+	assert.Equal(t,
+		[]string{"worktree", "open", "--cwd", "/repos/prutil", "--path", "/repos/prutil-pr42", "--branch", "pr-42", "--label", "prutil#42", "--no-focus"},
+		runner.calls[0],
+	)
+}
+
+func TestCreatingAWorktreeUnwrapsAServerErrorEnvelopeFromStandardError(t *testing.T) {
+	runner := &fakeRunner{replies: map[string]reply{
+		"worktree create --cwd /repos/prutil --branch pr-42 --label prutil#42 --no-focus": {
+			err: serverError(herdr.CodeAgentNotReady, "server is still loading"),
+		},
+	}}
+
+	_, err := herdr.New(runner).CreateWorktree(context.Background(), "/repos/prutil", "pr-42", "prutil#42")
+	require.Error(t, err)
+	assert.Equal(t, herdr.CodeAgentNotReady, herdr.Code(err))
+	assert.Contains(t, err.Error(), "server is still loading")
+}
+
+func TestOpeningAWorktreeFailsWhenRequiredIdentifiersAreMissing(t *testing.T) {
+	runner := &fakeRunner{replies: map[string]reply{
+		"worktree open --cwd /repos/prutil --path /repos/prutil-pr42 --branch pr-42 --label prutil#42 --no-focus": {
+			out: `{"result":{"workspace":{},"tab":"tab-4","root_pane":"pane-7"}}`,
+		},
+	}}
+
+	_, err := herdr.New(runner).OpenWorktree(context.Background(), "/repos/prutil", "/repos/prutil-pr42", "pr-42", "prutil#42")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workspace")
+	assert.Contains(t, err.Error(), "could not read the reply")
+}
+
+func TestWorktreeCommandsValidateRequiredInputsBeforeAnyProcessCall(t *testing.T) {
+	runner := &fakeRunner{}
+	client := herdr.New(runner)
+
+	_, err := client.Worktrees(context.Background(), " ")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worktree list: root is required")
+
+	_, err = client.CreateWorktree(context.Background(), "/repos/prutil", "", "label")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worktree create: branch is required")
+
+	_, err = client.OpenWorktree(context.Background(), "/repos/prutil", "/path", "pr-42", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worktree open: label is required")
+
+	assert.Empty(t, runner.calls, "invalid inputs must not spawn a process")
 }

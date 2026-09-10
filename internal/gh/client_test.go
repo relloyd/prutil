@@ -89,6 +89,8 @@ func TestListPullRequestsDecodesSearchResults(t *testing.T) {
 	assert.Equal(t, 30, first.Deletions)
 	assert.Equal(t, 7, first.ChangedFiles)
 	assert.Equal(t, 4, first.Comments)
+	require.NotNil(t, first.ReviewThreadCount)
+	assert.Equal(t, 6, *first.ReviewThreadCount)
 	assert.False(t, first.IsDraft)
 	assert.Equal(t, time.Date(2026, 8, 30, 9, 0, 0, 0, time.UTC), first.CreatedAt.UTC())
 
@@ -97,10 +99,14 @@ func TestListPullRequestsDecodesSearchResults(t *testing.T) {
 	assert.Equal(t, model.MergeConflicting, draft.Mergeable)
 	assert.Equal(t, model.ReviewChangesRequested, draft.ReviewDecision)
 	assert.Equal(t, model.StatusFailure, draft.Rollup)
+	require.NotNil(t, draft.ReviewThreadCount)
+	assert.Equal(t, 2, *draft.ReviewThreadCount)
 
 	noChecks := prs[2]
 	assert.Equal(t, model.StatusUnknown, noChecks.Rollup, "a missing rollup is unknown, not failing")
 	assert.Equal(t, model.ReviewNone, noChecks.ReviewDecision)
+	require.NotNil(t, noChecks.ReviewThreadCount)
+	assert.Zero(t, *noChecks.ReviewThreadCount)
 }
 
 func TestListPullRequestsSendsExpectedArguments(t *testing.T) {
@@ -117,6 +123,7 @@ func TestListPullRequestsSendsExpectedArguments(t *testing.T) {
 	assert.Contains(t, args, "-F")
 	assert.Contains(t, args, "first=10", "the page size is capped by the limit")
 	assert.Contains(t, args, "q="+gh.DefaultSearchQuery, "an empty query falls back to the default")
+	assert.Contains(t, strings.Join(args, " "), "reviewThreads { totalCount }")
 	assert.NotContains(t, strings.Join(args, " "), "after=", "the first page has no cursor")
 }
 
@@ -250,6 +257,7 @@ func TestClosedSweepThatReachesTheEndCostsOneRequest(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), prs[0].ClosedAt.UTC())
 	assert.Equal(t, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), prs[0].MergedAt.UTC())
 	assert.True(t, prs[1].MergedAt.IsZero(), "an unmerged pull request has no merge time")
+	assert.Nil(t, prs[0].ReviewThreadCount, "closed results omit the headline review-thread count")
 }
 
 func TestClosedSweepSendsExpectedArguments(t *testing.T) {
@@ -268,6 +276,8 @@ func TestClosedSweepSendsExpectedArguments(t *testing.T) {
 	assert.NotContains(t, args, "mergeable", "mergeable means nothing once a pull request is closed")
 	assert.NotContains(t, args, "statusCheckRollup",
 		"resolving the rollup costs budget the ten-second document limit cannot spare")
+	assert.NotContains(t, args, "reviewThreads",
+		"review-thread totals belong only to the open headline query")
 }
 
 func TestClosedFillQueriesOnlyTheRepositoriesThatCameUpShort(t *testing.T) {

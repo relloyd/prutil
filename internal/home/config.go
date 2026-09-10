@@ -30,6 +30,19 @@ It is {{.HeadRef}} into {{.BaseRef}}, with {{.UnresolvedCount}} unresolved revie
 type Config struct {
 	Herdr HerdrConfig `yaml:"herdr"`
 	Watch WatchConfig `yaml:"watch"`
+	// Repos maps a repository in owner/name form to the local checkout path
+	// prutil should use for it.
+	Repos map[string]string `yaml:"repos"`
+	// Discovery configures how prutil discovers repository checkouts when a
+	// repository is not listed in Repos.
+	Discovery DiscoveryConfig `yaml:"discovery"`
+}
+
+// DiscoveryConfig controls checkout discovery on disk.
+type DiscoveryConfig struct {
+	// Roots are directories prutil walks to discover git checkouts by reading
+	// each checkout's origin remote.
+	Roots []string `yaml:"roots"`
 }
 
 // HerdrConfig governs what prutil says to a coding agent, and to which one.
@@ -99,6 +112,10 @@ func DefaultConfig() Config {
 			DormantAfter:        3,
 			ForcePreciseEvery:   5,
 		},
+		Repos: map[string]string{},
+		Discovery: DiscoveryConfig{
+			Roots: []string{},
+		},
 	}
 }
 
@@ -133,11 +150,14 @@ func (c *Config) clamp() {
 	floor := Duration(minPollInterval)
 	for _, d := range []*Duration{
 		&w.ActiveInterval, &w.BaseInterval, &w.MaxInterval,
-		&w.NotifiedInterval, &w.MaxNotifiedInterval, &w.IdleInterval,
+		&w.NotifiedInterval, &w.MaxNotifiedInterval,
 	} {
 		if *d < floor {
 			*d = floor
 		}
+	}
+	if w.IdleInterval < Duration(time.Second) {
+		w.IdleInterval = Duration(time.Second)
 	}
 	// A cap below the interval it caps would make the backoff run backwards.
 	w.MaxInterval = max(w.MaxInterval, w.BaseInterval)
@@ -148,6 +168,13 @@ func (c *Config) clamp() {
 	}
 	if w.ForcePreciseEvery < 1 {
 		w.ForcePreciseEvery = 1
+	}
+
+	if c.Repos == nil {
+		c.Repos = map[string]string{}
+	}
+	if c.Discovery.Roots == nil {
+		c.Discovery.Roots = []string{}
 	}
 }
 

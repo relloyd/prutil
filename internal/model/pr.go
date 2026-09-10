@@ -81,8 +81,14 @@ type PullRequest struct {
 	Additions      int
 	Deletions      int
 	ChangedFiles   int
-	Comments       int
-	Rollup         Status
+	// Comments counts pull request conversation comments. It excludes both
+	// code-review threads and review submissions.
+	Comments int
+	// ReviewThreadCount is the total number of code-review threads, including
+	// resolved ones. Nil means the query that built this pull request did not
+	// select it, as happens in the performance-sensitive closed view.
+	ReviewThreadCount *int
+	Rollup            Status
 }
 
 // Key returns the identity of the pull request.

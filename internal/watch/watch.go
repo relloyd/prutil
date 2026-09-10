@@ -39,6 +39,17 @@ const (
 	TierDormant
 )
 
+// Status is a read-only view of one pull request's watch schedule. It lets a
+// caller explain the state machine without exposing the mutable entry that
+// drives it.
+type Status struct {
+	Tier              Tier
+	Interval          time.Duration
+	NextDue           time.Time
+	SnapshotSeen      bool
+	PollsUntilPrecise int
+}
+
 // String names the tier the way the header should.
 func (t Tier) String() string {
 	switch t {
@@ -121,15 +132,37 @@ func (e *Engine) Tier(key model.Key) (Tier, bool) {
 	if !ok {
 		return TierSettled, false
 	}
+	return tierOf(got), true
+}
+
+// Status reports the selected pull request's current scheduling state, and
+// false when it is not armed. The returned value is a copy, so inspecting it
+// cannot affect the engine's polling decisions.
+func (e *Engine) Status(key model.Key) (Status, bool) {
+	got, ok := e.prs[key]
+	if !ok {
+		return Status{}, false
+	}
+	return Status{
+		Tier:              tierOf(got),
+		Interval:          got.interval,
+		NextDue:           got.dueAt,
+		SnapshotSeen:      got.seen,
+		PollsUntilPrecise: max(e.cfg.ForcePreciseEvery-got.sincePrecise, 0),
+	}, true
+}
+
+// tierOf names the schedule held by one mutable engine entry.
+func tierOf(got *entry) Tier {
 	switch {
 	case got.dormant:
-		return TierDormant, true
+		return TierDormant
 	case got.seen && got.last.Busy():
-		return TierActive, true
+		return TierActive
 	case got.notified:
-		return TierNotified, true
+		return TierNotified
 	default:
-		return TierSettled, true
+		return TierSettled
 	}
 }
 

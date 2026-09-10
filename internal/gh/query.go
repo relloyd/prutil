@@ -38,6 +38,7 @@ query($q: String!, $first: Int!, $after: String) {
         baseRefName
         repository { nameWithOwner }
         comments { totalCount }
+        reviewThreads { totalCount }
         commits(last: 1) {
           nodes { commit { statusCheckRollup { state } } }
         }

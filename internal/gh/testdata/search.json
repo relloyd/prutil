@@ -22,6 +22,7 @@
           "baseRefName": "main",
           "repository": { "nameWithOwner": "relloyd/prutil" },
           "comments": { "totalCount": 4 },
+          "reviewThreads": { "totalCount": 6 },
           "commits": {
             "nodes": [
               { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }
@@ -46,6 +47,7 @@
           "baseRefName": "develop",
           "repository": { "nameWithOwner": "relloyd/other" },
           "comments": { "totalCount": 0 },
+          "reviewThreads": { "totalCount": 2 },
           "commits": {
             "nodes": [
               { "commit": { "statusCheckRollup": { "state": "FAILURE" } } }
@@ -70,6 +72,7 @@
           "baseRefName": "main",
           "repository": { "nameWithOwner": "relloyd/third" },
           "comments": { "totalCount": 1 },
+          "reviewThreads": { "totalCount": 0 },
           "commits": { "nodes": [ { "commit": { "statusCheckRollup": null } } ] }
         },
         { "__typename": "Issue" }

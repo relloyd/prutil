@@ -61,6 +61,14 @@ type Controller interface {
 	Agents(ctx context.Context) ([]Agent, error)
 	// Agent re-reads one agent, addressed by pane id or by live agent name.
 	Agent(ctx context.Context, target string) (Agent, error)
+	// Worktrees lists the known worktrees beneath one repository root.
+	Worktrees(ctx context.Context, root string) ([]Worktree, error)
+	// CreateWorktree asks herdr to create a worktree, tab and workspace for a branch.
+	CreateWorktree(ctx context.Context, root, branch, label string) (WorktreeSession, error)
+	// OpenWorktree asks herdr to open an existing worktree in herdr.
+	OpenWorktree(ctx context.Context, root, path, branch, label string) (WorktreeSession, error)
+	// StartAgent launches a supported agent in a shell pane and waits for it to settle.
+	StartAgent(ctx context.Context, name, kind, pane string, timeout time.Duration) (Agent, error)
 	// Prompt submits text to an agent, followed by Enter.
 	Prompt(ctx context.Context, target, text string) error
 	// Notify shows a toast in the herdr UI.
@@ -87,6 +95,51 @@ type Agent struct {
 	WorkspaceID string `json:"workspace_id"`
 	Focused     bool   `json:"focused"`
 	Title       string `json:"terminal_title_stripped"`
+}
+
+// Worktree is one git worktree herdr reports from a repository root.
+type Worktree struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+}
+
+// WorktreeSession is where herdr opened a worktree: workspace and tab
+// identifiers plus the root pane where an agent can be started.
+type WorktreeSession struct {
+	WorkspaceID string
+	TabID       string
+	RootPaneID  string
+}
+
+// UnmarshalJSON accepts identifiers either as plain strings or as objects
+// carrying an id-like field, which herdr versions have been seen to vary on.
+func (s *WorktreeSession) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Workspace json.RawMessage `json:"workspace"`
+		Tab       json.RawMessage `json:"tab"`
+		RootPane  json.RawMessage `json:"root_pane"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	workspaceID, err := decodeIdentifier(raw.Workspace, "workspace_id", "workspace")
+	if err != nil {
+		return fmt.Errorf("workspace: %w", err)
+	}
+	tabID, err := decodeIdentifier(raw.Tab, "tab_id", "tab")
+	if err != nil {
+		return fmt.Errorf("tab: %w", err)
+	}
+	rootPaneID, err := decodeIdentifier(raw.RootPane, "pane_id", "root_pane_id", "root_pane")
+	if err != nil {
+		return fmt.Errorf("root_pane: %w", err)
+	}
+
+	s.WorkspaceID = workspaceID
+	s.TabID = tabID
+	s.RootPaneID = rootPaneID
+	return nil
 }
 
 // Target is how this agent is addressed on the command line. The pane id is
@@ -158,6 +211,70 @@ func (c *Client) Agent(ctx context.Context, target string) (Agent, error) {
 		return Agent{}, err
 	}
 	return result.Agent, nil
+}
+
+// Worktrees implements Controller.
+func (c *Client) Worktrees(ctx context.Context, root string) ([]Worktree, error) {
+	root, err := requireText("worktree list", "root", root)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Worktrees []Worktree `json:"worktrees"`
+	}
+	if err := c.call(ctx, &result, "worktree", "list", "--cwd", root); err != nil {
+		return nil, err
+	}
+	return result.Worktrees, nil
+}
+
+// CreateWorktree implements Controller.
+func (c *Client) CreateWorktree(ctx context.Context, root, branch, label string) (WorktreeSession, error) {
+	root, err := requireText("worktree create", "root", root)
+	if err != nil {
+		return WorktreeSession{}, err
+	}
+	branch, err = requireText("worktree create", "branch", branch)
+	if err != nil {
+		return WorktreeSession{}, err
+	}
+	label, err = requireText("worktree create", "label", label)
+	if err != nil {
+		return WorktreeSession{}, err
+	}
+
+	var result WorktreeSession
+	if err := c.call(ctx, &result, "worktree", "create", "--cwd", root, "--branch", branch, "--label", label, "--no-focus"); err != nil {
+		return WorktreeSession{}, err
+	}
+	return result, nil
+}
+
+// OpenWorktree implements Controller.
+func (c *Client) OpenWorktree(ctx context.Context, root, path, branch, label string) (WorktreeSession, error) {
+	root, err := requireText("worktree open", "root", root)
+	if err != nil {
+		return WorktreeSession{}, err
+	}
+	path, err = requireText("worktree open", "path", path)
+	if err != nil {
+		return WorktreeSession{}, err
+	}
+	branch, err = requireText("worktree open", "branch", branch)
+	if err != nil {
+		return WorktreeSession{}, err
+	}
+	label, err = requireText("worktree open", "label", label)
+	if err != nil {
+		return WorktreeSession{}, err
+	}
+
+	var result WorktreeSession
+	if err := c.call(ctx, &result, "worktree", "open", "--cwd", root, "--path", path, "--branch", branch, "--label", label, "--no-focus"); err != nil {
+		return WorktreeSession{}, err
+	}
+	return result, nil
 }
 
 // Prompt implements Controller. It deliberately does not wait: a handoff is
@@ -256,6 +373,48 @@ func apiErrorFrom(err error) *APIError {
 	}
 	_ = json.Unmarshal([]byte(runErr.Stderr), &env)
 	return env.Error
+}
+
+func requireText(command, field, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("herdr %s: %s is required", command, field)
+	}
+	return value, nil
+}
+
+func decodeIdentifier(raw json.RawMessage, preferredKeys ...string) (string, error) {
+	if len(raw) == 0 {
+		return "", errors.New("identifier is required")
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return "", errors.New("identifier is empty")
+		}
+		return text, nil
+	}
+
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return "", errors.New("identifier must be a string or object")
+	}
+
+	keys := append([]string{}, preferredKeys...)
+	keys = append(keys, "id", "value")
+	for _, key := range keys {
+		nested, ok := object[key]
+		if !ok {
+			continue
+		}
+		id, err := decodeIdentifier(nested, preferredKeys...)
+		if err == nil {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("identifier object must include one of %q", keys)
 }
 
 // Code returns the herdr error code carried by err, or the empty string when

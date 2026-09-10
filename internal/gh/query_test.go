@@ -68,4 +68,6 @@ func TestClosedListQueryCarriesItsFragment(t *testing.T) {
 	assert.Contains(t, closedListQuery, "...prFields")
 	assert.Contains(t, closedListQuery, "fragment prFields on PullRequest")
 	assert.Equal(t, 1, strings.Count(closedListQuery, "fragment prFields"))
+	assert.NotContains(t, closedPRFields, "reviewThreads",
+		"the closed view omits this open-headline field to protect its query budget")
 }

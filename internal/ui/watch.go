@@ -62,8 +62,11 @@ func (a *App) toggleWatch() tea.Cmd {
 	tick := a.syncWatch()
 	if !armed {
 		delete(a.feedback, key)
+		a.setWatchOperation(key, "")
+		a.recordWatchActivity(key, "stopped watching")
 		return tea.Batch(tick, status("stopped watching "+key.String()))
 	}
+	a.recordWatchActivity(key, "started watching")
 	return tea.Batch(tick, status(fmt.Sprintf(
 		"watching %s · its review feedback goes to an agent when it appears", key)))
 }
@@ -132,6 +135,10 @@ func (a *App) pollWatched() tea.Cmd {
 		a.engine.Defer(due, a.watchRetry(), now)
 		return a.scheduleWatch()
 	}
+	for _, key := range due {
+		a.setWatchOperation(key, "checking for changes")
+		a.recordWatchActivity(key, "started a change check")
+	}
 
 	client := a.client
 	return func() tea.Msg {
@@ -145,15 +152,26 @@ func (a *App) pollWatched() tea.Cmd {
 		for i := range snaps {
 			snaps[i].Key = byID[snaps[i].NodeID]
 		}
-		return watchSnapshotMsg{snaps: snaps}
+		return watchSnapshotMsg{keys: due, snaps: snaps}
 	}
 }
 
 // applyWatch takes a batch of readings and asks the expensive question of
 // whichever pull requests moved.
 func (a *App) applyWatch(msg watchSnapshotMsg) tea.Cmd {
+	precise := a.engine.Observe(msg.snaps, a.now())
+	for _, key := range msg.keys {
+		a.setWatchOperation(key, "")
+		if slices.Contains(precise, key) {
+			a.setWatchOperation(key, "reading review feedback")
+			a.recordWatchActivity(key, "changes found; reading review feedback")
+			continue
+		}
+		a.recordWatchActivity(key, "checked for changes")
+	}
+
 	cmds := []tea.Cmd{a.scheduleWatch()}
-	for _, key := range a.engine.Observe(msg.snaps, a.now()) {
+	for _, key := range precise {
 		cmds = append(cmds, a.loadReview(key))
 	}
 	return tea.Batch(cmds...)
@@ -178,14 +196,18 @@ func (a *App) loadReview(key model.Key) tea.Cmd {
 // at all, or work for an agent.
 func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	now := a.now()
+	a.setWatchOperation(msg.key, "")
 	if msg.err != nil {
 		a.engine.Defer([]model.Key{msg.key}, a.watchRetry(), now)
+		a.recordWatchActivity(msg.key, "could not read review feedback: "+msg.err.Error())
 		return status("could not read the review threads on " + msg.key.String() + ": " + msg.err.Error())
 	}
 
 	feedback := msg.review.Feedback()
 	a.feedback[msg.key] = len(feedback)
 	a.engine.Precise(msg.key, len(feedback), false, now)
+	a.recordWatchActivity(msg.key, fmt.Sprintf("review feedback: %d %s awaiting",
+		len(feedback), plural(len(feedback), "thread")))
 
 	fresh := model.Unhandled(feedback, a.state.Get(msg.key.String()).NotifiedThreads)
 	if len(fresh) == 0 || a.handing[msg.key] {
@@ -202,6 +224,8 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	}
 
 	a.handing[msg.key] = true
+	a.setWatchOperation(msg.key, "handing feedback to an agent")
+	a.recordWatchActivity(msg.key, "started an automatic handoff")
 	return tea.Batch(
 		a.handoffOf(handoffMsg{
 			pr:      pr,
@@ -242,6 +266,8 @@ func (a *App) handOff() tea.Cmd {
 	}
 
 	a.handing[pr.Key()] = true
+	a.setWatchOperation(pr.Key(), "reading review feedback for a manual handoff")
+	a.recordWatchActivity(pr.Key(), "started a manual handoff")
 	note := "reading the review threads on " + pr.Key().String() + "…"
 	if a.hand.DryRun() {
 		note = "dry run: " + note
@@ -254,7 +280,7 @@ func (a *App) handOff() tea.Cmd {
 // handoff can take minutes, and a refresh in the meantime is no reason to
 // throw away the record of what was sent.
 func (a *App) dispatch(pr model.PullRequest) tea.Cmd {
-	client, send := a.client, a.sender()
+	client, send := a.client, a.sender(true)
 	notified := a.state.Get(pr.Key().String()).NotifiedThreads
 	budget := a.handoffBudget()
 
@@ -289,7 +315,7 @@ func (a *App) dispatch(pr model.PullRequest) tea.Cmd {
 // watcher does: it has the threads in hand and has no reason to ask for them
 // again.
 func (a *App) handoffOf(msg handoffMsg) tea.Cmd {
-	send, budget := a.sender(), a.handoffBudget()
+	send, budget := a.sender(false), a.handoffBudget()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
@@ -299,7 +325,7 @@ func (a *App) handoffOf(msg handoffMsg) tea.Cmd {
 
 // sender closes over the dispatcher so that a command can run off the update
 // loop without reaching back into the app.
-func (a *App) sender() func(context.Context, handoffMsg) handoffMsg {
+func (a *App) sender(allowProvision bool) func(context.Context, handoffMsg) handoffMsg {
 	hand := a.hand
 	return func(ctx context.Context, msg handoffMsg) handoffMsg {
 		msg.result, msg.err = hand.Dispatch(ctx, handoff.Request{
@@ -307,6 +333,7 @@ func (a *App) sender() func(context.Context, handoffMsg) handoffMsg {
 			UnresolvedCount: msg.open,
 			NewCount:        msg.fresh,
 			Threads:         msg.threads,
+			AllowProvision:  allowProvision,
 		})
 		return msg
 	}
@@ -320,33 +347,56 @@ func (a *App) handoffBudget() time.Duration {
 
 // applyHandoff records what became of a handoff: a line in the log whatever
 // happened, and the threads marked as handed over only when they really were.
-func (a *App) applyHandoff(msg handoffMsg) {
+func (a *App) applyHandoff(msg handoffMsg) error {
 	delete(a.handing, msg.pr.Key())
-	if msg.nothing || a.store == nil {
-		return
+	a.setWatchOperation(msg.pr.Key(), "")
+	if msg.nothing {
+		a.recordWatchActivity(msg.pr.Key(), "no open review feedback")
+		return nil
 	}
 
+	var recordErr error
 	if msg.result.Outcome == home.OutcomeSent {
 		a.state.RecordHandoff(msg.pr.Key().String(), msg.threads, a.now())
 		// An agent will be minutes over this, so the pull request moves onto
 		// the slower of the two backoffs until the work comes back.
 		a.engine.Precise(msg.pr.Key(), msg.open, true, a.now())
 		if err := a.saveState(); err != nil {
-			a.status = err.Error()
+			recordErr = errors.Join(recordErr, err)
 		}
 	}
 
-	_ = a.store.AppendHandoff(home.Handoff{
-		At:      a.now(),
-		PR:      msg.pr.Key().String(),
-		URL:     msg.pr.URL,
-		Outcome: msg.result.Outcome,
-		Target:  msg.result.Target,
-		Kind:    msg.result.Kind,
-		Dir:     msg.result.Dir,
-		Detail:  msg.result.Detail,
-		Prompt:  msg.result.Prompt,
-	})
+	record := home.Handoff{
+		At:          a.now(),
+		PR:          msg.pr.Key().String(),
+		URL:         msg.pr.URL,
+		Outcome:     msg.result.Outcome,
+		Target:      msg.result.Target,
+		Kind:        msg.result.Kind,
+		Dir:         msg.result.Dir,
+		Provisioned: msg.result.Provisioned,
+		Workspace:   msg.result.Workspace,
+		Tab:         msg.result.Tab,
+		Detail:      msg.result.Detail,
+		Prompt:      msg.result.Prompt,
+	}
+	if a.store != nil {
+		if err := a.store.AppendHandoff(record); err != nil {
+			recordErr = errors.Join(recordErr, err)
+		}
+	}
+	outcome := msg.result.Outcome
+	if outcome == "" {
+		outcome = home.OutcomeFailed
+	}
+	event := "handoff " + outcome
+	if msg.result.Detail != "" {
+		event += ": " + msg.result.Detail
+	} else if msg.err != nil {
+		event += ": " + msg.err.Error()
+	}
+	a.recordWatchActivity(msg.pr.Key(), event)
+	return recordErr
 }
 
 // handoffNote is what the status line says about a finished handoff.
@@ -376,7 +426,11 @@ func (a *App) handoffNote(msg handoffMsg) string {
 	case msg.result.Outcome == home.OutcomeDryRun:
 		return fmt.Sprintf("dry run: %s would go to %s · %s%s", key, target, counts, a.logNote())
 	default:
-		note := fmt.Sprintf("handed %s to %s · %s", key, target, counts)
+		action := "handed"
+		if msg.result.Provisioned {
+			action = "created a workspace and handed"
+		}
+		note := fmt.Sprintf("%s %s to %s · %s", action, key, target, counts)
 		if msg.result.Waited > 0 {
 			note += " · waited " + model.HumanDuration(msg.result.Waited)
 		}
@@ -466,6 +520,7 @@ type watchTickMsg struct {
 // watchSnapshotMsg carries the cheap readings of every pull request polled in
 // one request.
 type watchSnapshotMsg struct {
+	keys  []model.Key
 	snaps []model.Snapshot
 }
 

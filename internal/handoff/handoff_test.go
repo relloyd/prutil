@@ -3,6 +3,7 @@ package handoff_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -33,13 +34,24 @@ type fakeHerdr struct {
 	// gets is consumed one reply per call to Agent, which is how a test makes
 	// a working agent settle after a given number of looks. The last entry is
 	// repeated once the queue runs dry.
-	gets      []herdr.Agent
-	getErr    error
-	promptErr error
+	gets        []herdr.Agent
+	getErr      error
+	promptErr   error
+	worktrees   [][]herdr.Worktree
+	worktreeErr error
+	create      herdr.WorktreeSession
+	createErr   error
+	open        herdr.WorktreeSession
+	openErr     error
+	start       herdr.Agent
+	startErr    error
 
 	prompted []string
 	texts    []string
 	toasts   []string
+	started  []string
+	opened   []string
+	created  []string
 }
 
 func (f *fakeHerdr) Agents(context.Context) ([]herdr.Agent, error) {
@@ -58,6 +70,35 @@ func (f *fakeHerdr) Agent(_ context.Context, target string) (herdr.Agent, error)
 		f.gets = f.gets[1:]
 	}
 	return got, nil
+}
+
+func (f *fakeHerdr) Worktrees(context.Context, string) ([]herdr.Worktree, error) {
+	if f.worktreeErr != nil {
+		return nil, f.worktreeErr
+	}
+	if len(f.worktrees) == 0 {
+		return nil, nil
+	}
+	worktrees := f.worktrees[0]
+	if len(f.worktrees) > 1 {
+		f.worktrees = f.worktrees[1:]
+	}
+	return worktrees, nil
+}
+
+func (f *fakeHerdr) CreateWorktree(_ context.Context, root, branch, label string) (herdr.WorktreeSession, error) {
+	f.created = append(f.created, root+"|"+branch+"|"+label)
+	return f.create, f.createErr
+}
+
+func (f *fakeHerdr) OpenWorktree(_ context.Context, root, path, branch, label string) (herdr.WorktreeSession, error) {
+	f.opened = append(f.opened, root+"|"+path+"|"+branch+"|"+label)
+	return f.open, f.openErr
+}
+
+func (f *fakeHerdr) StartAgent(_ context.Context, name, kind, pane string, _ time.Duration) (herdr.Agent, error) {
+	f.started = append(f.started, name+"|"+kind+"|"+pane)
+	return f.start, f.startErr
 }
 
 func (f *fakeHerdr) Prompt(_ context.Context, target, text string) error {
@@ -80,9 +121,36 @@ type fakeGit map[string]git.Checkout
 
 func (f fakeGit) Identify(_ context.Context, dir string) git.Checkout { return f[dir] }
 
+type fakeResolver struct {
+	checkout git.Checkout
+	err      error
+	repos    []string
+}
+
+func (f *fakeResolver) Resolve(_ context.Context, repo string) (git.Checkout, error) {
+	f.repos = append(f.repos, repo)
+	return f.checkout, f.err
+}
+
+type fakeFetcher struct {
+	err   error
+	calls []string
+}
+
+func (f *fakeFetcher) FetchPullRequest(_ context.Context, root string, number int, branch string) error {
+	f.calls = append(f.calls, fmt.Sprintf("%s|%d|%s", root, number, branch))
+	return f.err
+}
+
 // dispatcherFor builds a dispatcher whose waits cost nothing, and reports how
 // many times it waited.
 func dispatcherFor(t *testing.T, control *fakeHerdr, checkouts fakeGit, tune func(*home.Config)) (*handoff.Dispatcher, *int) {
+	return dispatcherWithProvision(t, control, checkouts, nil, nil, tune)
+}
+
+// dispatcherWithProvision builds a dispatcher with optional local repository
+// seams for tests that exercise manual workspace provisioning.
+func dispatcherWithProvision(t *testing.T, control *fakeHerdr, checkouts fakeGit, repos handoff.RepositoryResolver, fetch git.PullRequestFetcher, tune func(*home.Config)) (*handoff.Dispatcher, *int) {
 	t.Helper()
 
 	cfg := home.DefaultConfig()
@@ -95,6 +163,8 @@ func dispatcherFor(t *testing.T, control *fakeHerdr, checkouts fakeGit, tune fun
 	return handoff.New(handoff.Options{
 		Herdr:    control,
 		Git:      checkouts,
+		Repos:    repos,
+		Fetch:    fetch,
 		Config:   cfg,
 		SelfPane: "w1:p3",
 		Sleep: func(ctx context.Context, _ time.Duration) bool {
@@ -130,6 +200,114 @@ func TestTheAgentOnTheHeadBranchIsPreferredOverOneMerelyInTheRepository(t *testi
 	assert.Equal(t, home.OutcomeSent, res.Outcome)
 	assert.Equal(t, []string{"w3:p1"}, control.prompted)
 	assert.Equal(t, "/pr-triage https://github.com/relloyd/prutil/pull/42", control.texts[0])
+}
+
+func TestAManualHandoffWithoutAnAgentRequiresAConfiguredKindBeforeProvisioning(t *testing.T) {
+	control := &fakeHerdr{}
+	repos := &fakeResolver{checkout: git.Checkout{Root: "/work/prutil", Repo: "relloyd/prutil"}}
+	fetch := &fakeFetcher{}
+	dispatcher, _ := dispatcherWithProvision(t, control, fakeGit{}, repos, fetch, nil)
+	req := request()
+	req.AllowProvision = true
+
+	res, err := dispatcher.Dispatch(context.Background(), req)
+
+	require.ErrorIs(t, err, handoff.ErrAgentKindRequired)
+	assert.Equal(t, home.OutcomeFailed, res.Outcome)
+	assert.Empty(t, repos.repos)
+	assert.Empty(t, fetch.calls)
+	assert.Empty(t, control.created)
+}
+
+func TestAManualHandoffCreatesAWorkspaceAndStartsAnAgentWhenNoneExists(t *testing.T) {
+	control := &fakeHerdr{
+		create: herdr.WorktreeSession{WorkspaceID: "w8", TabID: "w8:t1", RootPaneID: "w8:p1"},
+		start:  herdr.Agent{Kind: "claude", Status: herdr.StatusIdle, CWD: "/work/prutil", PaneID: "w8:p1", Name: "pr-relloyd-prutil-42"},
+	}
+	repos := &fakeResolver{checkout: git.Checkout{Root: "/work/prutil", Repo: "relloyd/prutil"}}
+	fetch := &fakeFetcher{}
+	dispatcher, _ := dispatcherWithProvision(t, control, fakeGit{}, repos, fetch, func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "claude"
+	})
+	req := request()
+	req.AllowProvision = true
+
+	res, err := dispatcher.Dispatch(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, home.OutcomeSent, res.Outcome)
+	assert.True(t, res.Provisioned)
+	assert.Equal(t, "w8", res.Workspace)
+	assert.Equal(t, "w8:t1", res.Tab)
+	assert.Equal(t, []string{"relloyd/prutil"}, repos.repos)
+	assert.Equal(t, []string{"/work/prutil|42|prutil/relloyd-prutil-42"}, fetch.calls)
+	assert.Equal(t, []string{"/work/prutil|prutil/relloyd-prutil-42|relloyd/prutil#42"}, control.created)
+	require.Len(t, control.started, 1)
+	assert.Contains(t, control.started[0], "|claude|w8:p1")
+	assert.Equal(t, []string{"w8:p1"}, control.prompted)
+}
+
+func TestAManualHandoffReopensAnExistingMatchingWorktree(t *testing.T) {
+	control := &fakeHerdr{
+		worktrees: [][]herdr.Worktree{{{Path: "/work/prutil-42", Branch: "prutil/relloyd-prutil-42"}}},
+		open:      herdr.WorktreeSession{WorkspaceID: "w8", TabID: "w8:t1", RootPaneID: "w8:p1"},
+		start:     herdr.Agent{Kind: "claude", Status: herdr.StatusIdle, PaneID: "w8:p1"},
+	}
+	repos := &fakeResolver{checkout: git.Checkout{Root: "/work/prutil", Repo: "relloyd/prutil"}}
+	fetch := &fakeFetcher{}
+	dispatcher, _ := dispatcherWithProvision(t, control, fakeGit{}, repos, fetch, func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "claude"
+	})
+	req := request()
+	req.AllowProvision = true
+
+	_, err := dispatcher.Dispatch(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Empty(t, control.created)
+	assert.Equal(t, []string{"/work/prutil|/work/prutil-42|prutil/relloyd-prutil-42|relloyd/prutil#42"}, control.opened)
+}
+
+func TestAManualProvisioningNeverMutatesDuringADryRun(t *testing.T) {
+	control := &fakeHerdr{}
+	repos := &fakeResolver{checkout: git.Checkout{Root: "/work/prutil", Repo: "relloyd/prutil"}}
+	fetch := &fakeFetcher{}
+	dispatcher, _ := dispatcherWithProvision(t, control, fakeGit{}, repos, fetch, func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "claude"
+		cfg.Herdr.DryRun = true
+	})
+	req := request()
+	req.AllowProvision = true
+
+	res, err := dispatcher.Dispatch(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, home.OutcomeDryRun, res.Outcome)
+	assert.False(t, res.Provisioned)
+	assert.Equal(t, []string{"relloyd/prutil"}, repos.repos)
+	assert.Empty(t, fetch.calls)
+	assert.Empty(t, control.created)
+	assert.Empty(t, control.opened)
+	assert.Empty(t, control.started)
+	assert.Empty(t, control.prompted)
+}
+
+func TestAManualProvisioningReportsAFetchFailureWithoutCreatingAWorkspace(t *testing.T) {
+	control := &fakeHerdr{}
+	repos := &fakeResolver{checkout: git.Checkout{Root: "/work/prutil", Repo: "relloyd/prutil"}}
+	fetch := &fakeFetcher{err: errors.New("fetch refused")}
+	dispatcher, _ := dispatcherWithProvision(t, control, fakeGit{}, repos, fetch, func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "claude"
+	})
+	req := request()
+	req.AllowProvision = true
+
+	res, err := dispatcher.Dispatch(context.Background(), req)
+
+	require.ErrorIs(t, err, fetch.err)
+	assert.Equal(t, home.OutcomeFailed, res.Outcome)
+	assert.Empty(t, control.created)
+	assert.Empty(t, control.started)
 }
 
 func TestAnAgentOnTheWrongBranchIsStillUsedAndToldSo(t *testing.T) {

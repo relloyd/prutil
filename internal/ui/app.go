@@ -109,6 +109,17 @@ type checkState struct {
 	loaded  bool
 }
 
+// handoffHistoryLimit keeps the durable detail history concise.
+const handoffHistoryLimit = 3
+
+type handoffHistoryState struct {
+	handoffs   []home.Handoff
+	err        error
+	loading    bool
+	loaded     bool
+	generation int
+}
+
 // Config wires the application to its collaborators.
 type Config struct {
 	Client gh.Client
@@ -206,6 +217,12 @@ type App struct {
 	// feedback is the last known count of review threads still waiting on the
 	// reader, per pull request, which is what a watched row shows.
 	feedback map[model.Key]int
+	// activity holds a bounded, session-only explanation of what the watcher
+	// has done for a pull request, while watching names work still in flight.
+	activity map[model.Key][]watchActivity
+	watching map[model.Key]string
+	// handoffHistory is loaded outside rendering, then cached by pull request.
+	handoffHistory map[model.Key]handoffHistoryState
 }
 
 // New builds an App ready to be handed to tea.NewProgram.
@@ -236,28 +253,31 @@ func New(cfg Config) *App {
 	}
 
 	a := &App{
-		client:   cfg.Client,
-		opener:   cfg.Opener,
-		clip:     clip,
-		query:    cfg.Query,
-		limit:    cfg.Limit,
-		closed:   cfg.Closed,
-		now:      now,
-		version:  cfg.Version,
-		keys:     defaultKeys(),
-		styles:   styles,
-		help:     help.New(),
-		spin:     sp,
-		checks:   map[model.Key]checkState{},
-		store:    cfg.Store,
-		state:    state,
-		storeErr: storeErr,
-		homeCfg:  cfg.Home,
-		hand:     cfg.Handoff,
-		handErr:  handErr,
-		handing:  map[model.Key]bool{},
-		engine:   watch.New(cfg.Home.Watch),
-		feedback: map[model.Key]int{},
+		client:         cfg.Client,
+		opener:         cfg.Opener,
+		clip:           clip,
+		query:          cfg.Query,
+		limit:          cfg.Limit,
+		closed:         cfg.Closed,
+		now:            now,
+		version:        cfg.Version,
+		keys:           defaultKeys(),
+		styles:         styles,
+		help:           help.New(),
+		spin:           sp,
+		checks:         map[model.Key]checkState{},
+		store:          cfg.Store,
+		state:          state,
+		storeErr:       storeErr,
+		homeCfg:        cfg.Home,
+		hand:           cfg.Handoff,
+		handErr:        handErr,
+		handing:        map[model.Key]bool{},
+		engine:         watch.New(cfg.Home.Watch),
+		feedback:       map[model.Key]int{},
+		activity:       map[model.Key][]watchActivity{},
+		watching:       map[model.Key]string{},
+		handoffHistory: map[model.Key]handoffHistoryState{},
 	}
 	a.views[viewOpen].loading = true
 	return a
@@ -311,19 +331,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.applyPRs(msg.view, msg.prs, msg.unavailable)
 		watching := a.watchAfterLoad(msg.view)
+		history := a.loadSelectedHandoffHistory()
 		if msg.partial {
 			// The sweep's first page is on screen and already interactive;
 			// the rest is filled in behind it without blocking the reader.
 			a.views[msg.view].enriching = true
-			return a, tea.Batch(watching, a.loadClosedFinish(msg.gen, msg.sweepState))
+			return a, tea.Batch(watching, history, a.loadClosedFinish(msg.gen, msg.sweepState))
 		}
 		a.views[msg.view].enriching = false
 		if msg.view != a.active {
 			// A background view finished loading; leave the visible one alone
 			// and warm its checks only once the reader switches to it.
-			return a, watching
+			return a, tea.Batch(watching, history)
 		}
-		return a, tea.Batch(watching, a.withSpinner(tea.Batch(a.prefetch()...)))
+		return a, tea.Batch(watching, history, a.withSpinner(tea.Batch(a.prefetch()...)))
 
 	case errMsg:
 		if msg.gen != a.gen {
@@ -362,7 +383,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != a.gen || a.selectedKey() != msg.key {
 			return a, nil
 		}
-		return a, a.withSpinner(a.ensureChecks(msg.key))
+		return a, tea.Batch(a.withSpinner(a.ensureChecks(msg.key)), a.loadHandoffHistory(msg.key, false))
 
 	case autoRefreshMsg:
 		if msg.seq != a.autoSeq || a.autoLeft <= 0 {
@@ -389,11 +410,28 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case watchErrMsg:
 		a.engine.Defer(msg.keys, a.watchRetry(), a.now())
+		for _, key := range msg.keys {
+			a.setWatchOperation(key, "")
+			a.recordWatchActivity(key, "could not check for changes: "+msg.err.Error())
+		}
 		return a, tea.Batch(a.scheduleWatch(), status("could not poll the watched pull requests: "+msg.err.Error()))
 
 	case handoffMsg:
-		a.applyHandoff(msg)
-		return a, status(a.handoffNote(msg))
+		history := a.loadHandoffHistory(msg.pr.Key(), true)
+		if err := a.applyHandoff(msg); err != nil {
+			return a, tea.Batch(status("could not record handoff: "+err.Error()), history)
+		}
+		return a, tea.Batch(status(a.handoffNote(msg)), history)
+
+	case handoffHistoryMsg:
+		state, ok := a.handoffHistory[msg.key]
+		if !ok || msg.generation != state.generation {
+			return a, nil
+		}
+		state.handoffs, state.err = msg.handoffs, msg.err
+		state.loading, state.loaded = false, true
+		a.handoffHistory[msg.key] = state
+		return a, nil
 
 	case statusMsg:
 		a.status = string(msg)

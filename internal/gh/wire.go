@@ -75,6 +75,9 @@ type prNode struct {
 	Comments struct {
 		TotalCount int `json:"totalCount"`
 	} `json:"comments"`
+	ReviewThreads *struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"reviewThreads"`
 	Commits commitConnection `json:"commits"`
 }
 
@@ -106,6 +109,10 @@ func (n prNode) toPullRequest() (model.PullRequest, bool) {
 		Comments:       n.Comments.TotalCount,
 		NodeID:         n.ID,
 		Rollup:         model.StatusUnknown,
+	}
+	if n.ReviewThreads != nil {
+		count := n.ReviewThreads.TotalCount
+		pr.ReviewThreadCount = &count
 	}
 	if n.CreatedAt != nil {
 		pr.CreatedAt = *n.CreatedAt

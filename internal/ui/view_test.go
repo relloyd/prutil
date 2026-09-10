@@ -70,7 +70,27 @@ func TestWideLayoutShowsBothPanes(t *testing.T) {
 	assert.Contains(t, screen, "CHECKS (3)", "the detail pane is beside the list")
 	assert.Contains(t, screen, "lint")
 	assert.Contains(t, screen, "opened 2d ago")
-	assert.Contains(t, screen, "4 comments")
+	assert.Contains(t, screen, "4 conversations")
+}
+
+func TestDetailDistinguishesConversationsFromReviewThreads(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	count := 6
+	app.views[viewOpen].prs[0].ReviewThreadCount = &count
+
+	screen := plain(app.render())
+	assert.Contains(t, screen, "4 conversations")
+	assert.Contains(t, screen, "6 review threads")
+
+	app.views[viewOpen].prs[0].Comments = 1
+	assert.Contains(t, plain(app.render()), "1 conversation")
+
+	zero := 0
+	app.views[viewOpen].prs[0].ReviewThreadCount = &zero
+	assert.Contains(t, plain(app.render()), "0 review threads")
+
+	app.views[viewOpen].prs[0].ReviewThreadCount = nil
+	assert.NotContains(t, plain(app.render()), "review threads")
 }
 
 func TestNarrowLayoutShowsOnePaneAtATime(t *testing.T) {

@@ -83,6 +83,7 @@ func TestHandingOverSendsOnlyTheThreadsStillWaitingOnTheViewer(t *testing.T) {
 	assert.Equal(t, 2, reqs[0].NewCount)
 	assert.Equal(t, map[string]string{"T1": "C1", "T2": "C2"}, reqs[0].Threads)
 	assert.Equal(t, "relloyd/prutil#42", reqs[0].PR.Key().String())
+	assert.True(t, reqs[0].AllowProvision, "W is the reader's consent to provision when no agent exists")
 }
 
 func TestThreadsAlreadyHandedOverAreNotCountedAsNewAgain(t *testing.T) {
@@ -176,6 +177,7 @@ func TestEveryHandoffAttemptIsLoggedWhateverBecameOfIt(t *testing.T) {
 	dispatcher.result = handoff.Result{
 		Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude",
 		Dir: "/work/prutil", Prompt: "/pr-triage https://example.test",
+		Provisioned: true, Workspace: "w2", Tab: "w2:t1",
 	}
 
 	handOver(t, app)
@@ -186,6 +188,9 @@ func TestEveryHandoffAttemptIsLoggedWhateverBecameOfIt(t *testing.T) {
 	assert.Equal(t, home.OutcomeSent, logged.Outcome)
 	assert.Equal(t, "w2:p1", logged.Target)
 	assert.Equal(t, "/pr-triage https://example.test", logged.Prompt)
+	assert.True(t, logged.Provisioned)
+	assert.Equal(t, "w2", logged.Workspace)
+	assert.Equal(t, "w2:t1", logged.Tab)
 }
 
 func TestASecondHandoffIsRefusedWhileTheFirstIsStillInFlight(t *testing.T) {
@@ -324,6 +329,7 @@ func TestNewFeedbackFoundByTheWatcherGoesToAnAgentWithoutBeingAskedTo(t *testing
 	require.Len(t, reqs, 1)
 	assert.Equal(t, 2, reqs[0].NewCount)
 	assert.Equal(t, "relloyd/prutil#42", reqs[0].PR.Key().String())
+	assert.False(t, reqs[0].AllowProvision, "the automatic watcher must never create a workspace")
 }
 
 func TestFeedbackAlreadyHandedOverIsNotSentAgainOnTheNextPoll(t *testing.T) {
@@ -444,4 +450,63 @@ func TestTheHeaderCountsWhatIsWatchedAndWhenItWillLookAgain(t *testing.T) {
 	header := headerLine(app)
 	assert.Contains(t, header, watchGlyph+" 1")
 	assert.Contains(t, header, "next ")
+}
+
+func TestTheDetailExplainsTheCurrentWatchScheduleAndActivity(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+
+	send(t, app, press("w"))
+
+	screen := plain(app.render())
+	assert.Contains(t, screen, "WATCH")
+	assert.Contains(t, screen, "watching · due now · every 0s",
+		"the fast test configuration makes the schedule immediate")
+	assert.Contains(t, screen, "waiting for first check")
+	assert.Contains(t, screen, "started watching")
+}
+
+func TestTheDetailNamesAWatcherOperationWhileItsCommandIsInFlight(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+
+	send(t, app, press("w"))
+	cmd := send(t, app, watchTickMsg{seq: app.watchSeq})
+	require.NotNil(t, cmd)
+
+	assert.Contains(t, plain(app.render()), "checking for changes")
+}
+
+func TestTheDetailShowsRecentPersistedHandoffsWithoutReadingDuringRender(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	require.NoError(t, app.store.AppendHandoff(home.Handoff{
+		At:          testNow.Add(-time.Minute),
+		PR:          "relloyd/prutil#42",
+		Outcome:     home.OutcomeSent,
+		Kind:        "claude",
+		Target:      "w2:p1",
+		Provisioned: true,
+		Workspace:   "w2",
+	}))
+
+	loadHandoffHistory(t, app, samplePRs()[0].Key())
+
+	screen := plain(app.render())
+	assert.Contains(t, screen, "WATCH")
+	assert.Contains(t, screen, "sent · provisioned · claude w2:p1")
+}
+
+func TestTheDetailExplainsUnreadableHandoffHistory(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	require.NoError(t, os.WriteFile(app.store.Path(home.HandoffFile), []byte("{not json}\n"), 0o600))
+
+	loadHandoffHistory(t, app, samplePRs()[0].Key())
+
+	assert.Contains(t, plain(app.render()), "handoff history unavailable")
+}
+
+func loadHandoffHistory(t *testing.T, app *App, key model.Key) {
+	t.Helper()
+
+	for _, msg := range drain(app.loadHandoffHistory(key, true)) {
+		send(t, app, msg)
+	}
 }

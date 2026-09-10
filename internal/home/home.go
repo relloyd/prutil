@@ -8,21 +8,24 @@
 package home
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
 
 // File names inside the application directory.
 const (
-	ConfigFile  = "config.yaml"
-	StateFile   = "watch.json"
-	HandoffFile = "handoffs.jsonl"
+	ConfigFile    = "config.yaml"
+	StateFile     = "watch.json"
+	HandoffFile   = "handoffs.jsonl"
+	RepoCacheFile = "repos.json"
 )
 
 // dirPerm and filePerm keep the directory and its files private to the user.
@@ -87,6 +90,51 @@ func (s *Store) LoadConfig() (Config, error) {
 	return ParseConfig(data)
 }
 
+// LoadOrCreateConfig reads config.yaml, creating a complete default template
+// when it does not exist yet. Creation is race-safe: an existing file is never
+// overwritten.
+func (s *Store) LoadOrCreateConfig() (Config, error) {
+	data, err := os.ReadFile(s.Path(ConfigFile))
+	if err == nil {
+		return ParseConfig(data)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return DefaultConfig(), fmt.Errorf("could not read %s: %w", s.Path(ConfigFile), err)
+	}
+
+	if err := os.MkdirAll(s.dir, dirPerm); err != nil {
+		return DefaultConfig(), fmt.Errorf("could not create %s: %w", s.dir, err)
+	}
+
+	template := DefaultConfigTemplate()
+	file, err := os.CreateTemp(s.dir, ConfigFile+".*")
+	if err != nil {
+		return DefaultConfig(), fmt.Errorf("could not create %s: %w", s.Path(ConfigFile), err)
+	}
+	tmpName := file.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if err := file.Chmod(filePerm); err != nil {
+		_ = file.Close()
+		return DefaultConfig(), fmt.Errorf("could not create %s: %w", s.Path(ConfigFile), err)
+	}
+	if _, err := file.Write(template); err != nil {
+		_ = file.Close()
+		return DefaultConfig(), fmt.Errorf("could not write %s: %w", s.Path(ConfigFile), err)
+	}
+	if err := file.Close(); err != nil {
+		return DefaultConfig(), fmt.Errorf("could not write %s: %w", s.Path(ConfigFile), err)
+	}
+	// Link makes the fully-written temporary file visible at its final name in
+	// one step and refuses to replace a configuration another process created.
+	if err := os.Link(tmpName, s.Path(ConfigFile)); errors.Is(err, fs.ErrExist) {
+		return s.LoadConfig()
+	} else if err != nil {
+		return DefaultConfig(), fmt.Errorf("could not create %s: %w", s.Path(ConfigFile), err)
+	}
+	return ParseConfig(template)
+}
+
 // LoadState reads the watch state. A missing file is an empty state.
 func (s *Store) LoadState() (*State, error) {
 	data, err := os.ReadFile(s.Path(StateFile))
@@ -142,6 +190,57 @@ func (s *Store) AppendHandoff(h Handoff) error {
 	return nil
 }
 
+// RecentHandoffs returns at most limit handoff attempts for pr, newest first.
+// It streams the JSONL file so a long-running watcher does not load its whole
+// history just to show a few entries in the detail pane.
+func (s *Store) RecentHandoffs(pr string, limit int) ([]Handoff, error) {
+	pr = strings.TrimSpace(pr)
+	if pr == "" {
+		return nil, fmt.Errorf("a pull request key is required")
+	}
+	if limit < 1 {
+		return nil, nil
+	}
+
+	file, err := os.Open(s.Path(HandoffFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("could not open %s: %w", s.Path(HandoffFile), err)
+	}
+	defer func() { _ = file.Close() }()
+
+	history := make([]Handoff, 0, limit)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	line := 0
+	for scanner.Scan() {
+		line++
+		if strings.TrimSpace(scanner.Text()) == "" {
+			continue
+		}
+
+		var handoff Handoff
+		if err := json.Unmarshal(scanner.Bytes(), &handoff); err != nil {
+			return nil, fmt.Errorf("could not read %s line %d: %w", s.Path(HandoffFile), line, err)
+		}
+		if handoff.PR != pr {
+			continue
+		}
+		history = append(history, handoff)
+		if len(history) > limit {
+			history = history[1:]
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("could not read %s: %w", s.Path(HandoffFile), err)
+	}
+
+	slices.Reverse(history)
+	return history, nil
+}
+
 // writeAtomic replaces one file by writing a sibling and renaming it over the
 // target, which is atomic within a directory on every platform prutil runs on.
 func (s *Store) writeAtomic(name string, data []byte) error {
@@ -183,8 +282,13 @@ type Handoff struct {
 	Target string `json:"target,omitempty"`
 	Kind   string `json:"kind,omitempty"`
 	Dir    string `json:"dir,omitempty"`
-	Detail string `json:"detail,omitempty"`
-	Prompt string `json:"prompt,omitempty"`
+	// Provisioned distinguishes an agent prutil created for this handoff from
+	// one that was already running in a local checkout.
+	Provisioned bool   `json:"provisioned,omitempty"`
+	Workspace   string `json:"workspace,omitempty"`
+	Tab         string `json:"tab,omitempty"`
+	Detail      string `json:"detail,omitempty"`
+	Prompt      string `json:"prompt,omitempty"`
 }
 
 // Handoff outcomes, as recorded in the log.
