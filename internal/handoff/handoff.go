@@ -63,6 +63,11 @@ type Request struct {
 	// AllowProvision means the reader explicitly pressed W and permits a
 	// no-agent handoff to create a worktree and start an agent.
 	AllowProvision bool
+	// CheckHandoff makes this a failed-check investigation rather than review
+	// feedback. It uses the separate check prompt and carries all failures.
+	CheckHandoff bool          // use the failed-check investigation prompt
+	HeadOID      string        // commit whose checks are being investigated
+	Checks       []model.Check // all failed checks sent together for correlation
 }
 
 // Result is what became of a handoff, in the shape the log wants.
@@ -189,7 +194,7 @@ func (d *Dispatcher) send(ctx context.Context, req Request, agent herdr.Agent, n
 		res.Dir = settled.Dir()
 	}
 
-	text, err := d.cfg.RenderPrompt(promptData(req, note))
+	text, err := d.renderPrompt(req, note)
 	if err != nil {
 		// No toast, for the same reason as the dry run below: a prompt that
 		// will not render is a configuration mistake that would otherwise
@@ -220,6 +225,14 @@ func (d *Dispatcher) send(ctx context.Context, req Request, agent herdr.Agent, n
 	res.Outcome = home.OutcomeSent
 	d.toast(ctx, req, fmt.Sprintf("sent to %s in %s", agentLabel(settled), short(res.Dir)))
 	return res, nil
+}
+
+func (d *Dispatcher) renderPrompt(req Request, note string) (string, error) {
+	data := promptData(req, note)
+	if req.CheckHandoff {
+		return d.cfg.RenderCheckPrompt(data)
+	}
+	return d.cfg.RenderPrompt(data)
 }
 
 // fail records a handoff that did not happen, keeping whatever the caller had
@@ -265,7 +278,7 @@ func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Re
 		Dir:    checkout.Root,
 	}
 	if d.cfg.DryRun {
-		text, err := d.cfg.RenderPrompt(promptData(req, ""))
+		text, err := d.renderPrompt(req, "")
 		if err != nil {
 			// No toast. A prompt that will not render is a mistake in the
 			// configuration file, which the reader fixes by looking at the
@@ -358,6 +371,7 @@ func promptData(req Request, note string) home.PromptData {
 		UnresolvedCount: req.UnresolvedCount,
 		NewCount:        req.NewCount,
 		Note:            note,
+		Checks:          req.Checks,
 	}
 }
 

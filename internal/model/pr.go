@@ -65,7 +65,10 @@ type PullRequest struct {
 	// NodeID is GitHub's global identifier for the pull request. It is what
 	// lets the watcher ask about every armed pull request in one request,
 	// whatever repositories they are spread across.
-	NodeID         string
+	NodeID string
+	// HeadOID is the commit currently under review. The watcher uses it to
+	// deduplicate failed-check investigations across process restarts.
+	HeadOID        string
 	Title          string
 	URL            string
 	HeadRef        string

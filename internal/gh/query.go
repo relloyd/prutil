@@ -13,7 +13,8 @@ const DefaultSearchQuery = "is:open is:pr author:@me archived:false sort:created
 
 // listQuery is the headline request. It deliberately stops at the check rollup
 // state so that the first paint needs exactly one round trip; the individual
-// check runs are fetched afterwards by detailQuery.
+// check runs are fetched afterwards by detailQuery. The head OID is included
+// so the watcher can persist failed-check deduplication by commit.
 const listQuery = `
 query($q: String!, $first: Int!, $after: String) {
   search(query: $q, type: ISSUE, first: $first, after: $after) {
@@ -40,7 +41,7 @@ query($q: String!, $first: Int!, $after: String) {
         comments { totalCount }
         reviewThreads { totalCount }
         commits(last: 1) {
-          nodes { commit { statusCheckRollup { state } } }
+          nodes { commit { oid statusCheckRollup { state } } }
         }
       }
     }

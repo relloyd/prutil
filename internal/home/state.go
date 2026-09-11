@@ -21,7 +21,8 @@ type PRState struct {
 	// remaining comments will never be resolved should not cost anything.
 	Armed bool `json:"armed"`
 	// LastHandoff is when prutil last sent this pull request to an agent.
-	LastHandoff time.Time `json:"last_handoff,omitempty"`
+	LastHandoff          time.Time `json:"last_handoff,omitempty"`
+	LastCheckHandoffHead string    `json:"last_check_handoff_head,omitempty"`
 	// NotifiedThreads maps each unresolved review thread prutil has handed off
 	// to the id of the newest comment it held at the time. A thread already in
 	// here is not new; a thread in here whose newest comment has changed has
@@ -64,7 +65,11 @@ func (s *State) Armed(key string) bool { return s.Get(key).Armed }
 
 // SetArmed arms or disarms a pull request and reports the new setting.
 func (s *State) SetArmed(key string, armed bool) bool {
-	s.Mutate(key).Armed = armed
+	entry := s.Mutate(key)
+	entry.Armed = armed
+	if !armed {
+		entry.LastCheckHandoffHead = ""
+	}
 	return armed
 }
 
@@ -73,6 +78,9 @@ func (s *State) SetArmed(key string, armed bool) bool {
 func (s *State) ToggleArmed(key string) bool {
 	entry := s.Mutate(key)
 	entry.Armed = !entry.Armed
+	if !entry.Armed {
+		entry.LastCheckHandoffHead = ""
+	}
 	return entry.Armed
 }
 
