@@ -68,8 +68,84 @@ func (a *App) toggleWatch() tea.Cmd {
 		return tea.Batch(tick, status("stopped watching "+key.String()))
 	}
 	a.recordWatchActivity(key, "started watching")
-	return tea.Batch(tick, status(fmt.Sprintf(
+	return tea.Batch(tick, a.checkHandoff(false, false, pr.HeadOID), status(fmt.Sprintf(
 		"watching %s · its review feedback goes to an agent when it appears", key)))
+}
+
+func (a *App) selectedFailedCheck() bool {
+	if a.focus != paneDetail || a.section != detailChecks {
+		return false
+	}
+	checks := a.selectedChecks().checks
+	return a.detailCursor >= 0 && a.detailCursor < len(checks) && checks[a.detailCursor].Status == model.StatusFailure
+}
+
+func (a *App) checkHandoff(force, allowProvision bool, headOID ...string) tea.Cmd {
+	pr, ok := a.selectedPR()
+	if !ok || a.active != viewOpen {
+		return status("failed-check investigation is available only for open pull requests")
+	}
+	if a.hand == nil {
+		return status("cannot reach herdr: " + a.handErr.Error())
+	}
+	key := pr.Key()
+	entry := a.mutate(key)
+	if entry.handing {
+		return status("already handing " + key.String() + " over")
+	}
+	entry.handing = true
+	if len(headOID) > 0 {
+		entry.headOID = headOID[0]
+	} else if pr.HeadOID != "" {
+		entry.headOID = pr.HeadOID
+	} else if entry.headOID == "" {
+		entry.headOID = pr.HeadOID
+	}
+	state := a.checks[key]
+	if state.loaded && !force {
+		return a.applyFailedChecks(key, entry.headOID, state.checks, false, allowProvision)
+	}
+	return tea.Batch(a.loadChecksForHandoff(a.gen, key, entry.headOID, force, allowProvision), a.spin.Tick)
+}
+
+func (a *App) applyFailedChecks(key model.Key, headOID string, checks []model.Check, force, allowProvision bool) tea.Cmd {
+	entry := a.mutate(key)
+	entry.handing = false
+	failed := make([]model.Check, 0, len(checks))
+	pending := false
+	for _, check := range checks {
+		if check.Status == model.StatusPending || check.Status == model.StatusUnknown {
+			pending = true
+		}
+		if check.Status == model.StatusFailure {
+			failed = append(failed, check)
+		}
+	}
+	if !force && pending {
+		return nil
+	}
+	if len(failed) == 0 || (!force && a.state.Get(key.String()).LastCheckHandoffHead == headOID) {
+		a.setWatchOperation(key, "")
+		return nil
+	}
+	pr, ok := a.prByKey(key)
+	if !ok {
+		return nil
+	}
+	entry.handing = true
+	a.setWatchOperation(key, "handing failed checks to an agent")
+	a.recordWatchActivity(key, fmt.Sprintf("found %d failed %s", len(failed), plural(len(failed), "check")))
+	return tea.Batch(a.failedCheckHandoff(handoffMsg{pr: pr, check: true, headOID: headOID, checks: failed, allowProvision: allowProvision, force: force}), a.spin.Tick)
+}
+
+func (a *App) failedCheckHandoff(msg handoffMsg) tea.Cmd {
+	hand, budget := a.hand, a.handoffBudget()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		defer cancel()
+		msg.result, msg.err = hand.Dispatch(ctx, handoff.Request{PR: msg.pr, CheckHandoff: true, HeadOID: msg.headOID, Checks: msg.checks, AllowProvision: msg.allowProvision})
+		return msg
+	}
 }
 
 // watchRetry is how long a refused request waits before the pull requests it
@@ -183,6 +259,10 @@ func (a *App) applyWatch(msg watchSnapshotMsg) tea.Cmd {
 
 	for _, key := range msg.keys {
 		a.setWatchOperation(key, "")
+		if snap, ok := snapshotFor(msg.snaps, key); ok {
+			entry := a.mutate(key)
+			entry.headOID, entry.rollup = snap.HeadOID, snap.Rollup
+		}
 		switch {
 		case !answered[key]:
 			a.recordWatchActivity(key, "GitHub said nothing about it; asking again later")
@@ -198,7 +278,22 @@ func (a *App) applyWatch(msg watchSnapshotMsg) tea.Cmd {
 	for _, key := range precise {
 		cmds = append(cmds, a.loadReview(key, false))
 	}
+	for _, snap := range msg.snaps {
+		entry := a.runtimeOf(snap.Key)
+		if snap.Rollup == model.StatusFailure && a.armed(snap.Key) && !entry.handing {
+			cmds = append(cmds, a.loadChecksForHandoff(a.gen, snap.Key, snap.HeadOID, false, false))
+		}
+	}
 	return tea.Batch(cmds...)
+}
+
+func snapshotFor(snaps []model.Snapshot, key model.Key) (model.Snapshot, bool) {
+	for _, snap := range snaps {
+		if snap.Key == key {
+			return snap, true
+		}
+	}
+	return model.Snapshot{}, false
 }
 
 // loadReview reads the review conversations for a watcher or manual discovery.
@@ -428,10 +523,21 @@ func (a *App) applyHandoff(msg handoffMsg) error {
 
 	var recordErr error
 	if msg.result.Outcome == home.OutcomeSent {
-		a.state.RecordHandoff(msg.pr.Key().String(), msg.threads, a.now())
+		if msg.check {
+			// Check handoffs are marked below even when dispatch fails, so an
+			// automatic attempt is not repeated forever without a new head.
+		} else {
+			a.state.RecordHandoff(msg.pr.Key().String(), msg.threads, a.now())
+		}
 		// An agent will be minutes over this, so the pull request moves onto
 		// the slower of the two backoffs until the work comes back.
 		a.engine.Precise(msg.pr.Key(), msg.open, true, a.now())
+		if err := a.saveState(); err != nil {
+			recordErr = errors.Join(recordErr, err)
+		}
+	}
+	if msg.check && !msg.force {
+		a.state.Mutate(msg.pr.Key().String()).LastCheckHandoffHead = msg.headOID
 		if err := a.saveState(); err != nil {
 			recordErr = errors.Join(recordErr, err)
 		}
@@ -613,7 +719,12 @@ type watchErrMsg struct {
 
 // handoffMsg reports one finished handoff attempt.
 type handoffMsg struct {
-	pr model.PullRequest
+	pr             model.PullRequest
+	check          bool
+	allowProvision bool
+	force          bool
+	headOID        string
+	checks         []model.Check
 	// open is how many review threads are still waiting on the viewer, and
 	// fresh how many of those prutil had not already handed over.
 	open  int

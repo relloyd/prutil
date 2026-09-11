@@ -5,22 +5,23 @@ import "charm.land/bubbles/v2/key"
 // keyMap collects every binding in the app so that the help view and the
 // update loop cannot drift apart.
 type keyMap struct {
-	Up      key.Binding
-	Down    key.Binding
-	Top     key.Binding
-	Bottom  key.Binding
-	Into    key.Binding
-	Back    key.Binding
-	Open    key.Binding
-	Copy    key.Binding
-	Refresh key.Binding
-	Auto    key.Binding
-	Watch   key.Binding
-	Handoff key.Binding
-	Notify  key.Binding
-	NextTab key.Binding
-	Help    key.Binding
-	Quit    key.Binding
+	Up           key.Binding
+	Down         key.Binding
+	Top          key.Binding
+	Bottom       key.Binding
+	Into         key.Binding
+	Back         key.Binding
+	Open         key.Binding
+	Copy         key.Binding
+	Refresh      key.Binding
+	Auto         key.Binding
+	Watch        key.Binding
+	Handoff      key.Binding
+	CheckHandoff key.Binding
+	Notify       key.Binding
+	NextTab      key.Binding
+	Help         key.Binding
+	Quit         key.Binding
 }
 
 // defaultKeys returns the bindings described in the README.
@@ -74,6 +75,10 @@ func defaultKeys() keyMap {
 			key.WithKeys("W"),
 			key.WithHelp("W", "hand to agent"),
 		),
+		CheckHandoff: key.NewBinding(
+			key.WithKeys("F"),
+			key.WithHelp("F", "investigate checks"),
+		),
 		Notify: key.NewBinding(
 			key.WithKeys("N"),
 			key.WithHelp("N", "notify new feedback"),
@@ -112,7 +117,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 		{k.Up, k.Down, k.Top, k.Bottom},
 		{k.Into, k.Back, k.Open, k.Copy},
 		{k.Refresh, k.Auto, k.NextTab},
-		{k.Watch, k.Handoff, k.Notify},
+		{k.Watch, k.Handoff, k.CheckHandoff, k.Notify},
 		{k.Help, k.Quit},
 	}
 }

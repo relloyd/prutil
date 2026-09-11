@@ -108,6 +108,7 @@ func (n prNode) toPullRequest() (model.PullRequest, bool) {
 		ChangedFiles:   n.ChangedFiles,
 		Comments:       n.Comments.TotalCount,
 		NodeID:         n.ID,
+		HeadOID:        n.Commits.headOID(),
 		Rollup:         model.StatusUnknown,
 	}
 	if n.ReviewThreads != nil {
@@ -135,9 +136,17 @@ func (n prNode) toPullRequest() (model.PullRequest, bool) {
 type commitConnection struct {
 	Nodes []struct {
 		Commit struct {
+			OID               string             `json:"oid"`
 			StatusCheckRollup *statusCheckRollup `json:"statusCheckRollup"`
 		} `json:"commit"`
 	} `json:"nodes"`
+}
+
+func (c commitConnection) headOID() string {
+	if len(c.Nodes) == 0 {
+		return ""
+	}
+	return c.Nodes[len(c.Nodes)-1].Commit.OID
 }
 
 // rollup returns the head commit's check rollup, or nil when the commit has no

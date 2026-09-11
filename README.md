@@ -69,6 +69,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `a` | auto-refresh: reload every 30s, five times over. press again to add five more |
 | `w` | watch the selected pull request, or stop watching it |
 | `W` | hand the selected pull request's open review feedback to a coding agent now, creating one when needed |
+| `F` | investigate the selected pull request's failed checks now; this never creates an agent |
 | `N` | check the selected open pull request for new review feedback and notify an existing agent |
 | `tab` | switch between your open and your recently closed pull requests |
 | `?` | toggle the full key list |
@@ -101,7 +102,7 @@ left, and once it runs out prutil is back to refreshing only when you press
 Each automatic reload is the same work `r` does, so it costs the same one
 request for the list plus the checks it warms.
 
-## Watching, and handing feedback to an agent
+## Watching, and handing work to an agent
 
 `w` marks a pull request as watched. The row grows a `◉`, the header counts how
 many are marked, and the mark survives quitting: it is kept in prutil's own
@@ -113,6 +114,26 @@ some appears it gives it to a coding agent through
 resolved nor already answered by you, so a conversation you have had the last
 word in is left alone. `W` does the same thing on demand, for a pull request
 you have not armed or one you want looked at again now.
+
+Watching also monitors the pull-request check rollup. When the rollup fails,
+prutil fetches the individual checks and waits until every check is terminal.
+It then sends all failed checks together to an existing matching Herdr agent so
+the agent can decide whether they share a cause. The default check prompt asks
+the agent to fix failures related to the pull request with a follow-up commit,
+re-trigger unrelated failures with `gh`, and ask for human assistance when it
+has already retried an unchanged check or is unsure what to do. A missing agent
+is recorded and notified, but does not cause automatic workspace provisioning.
+
+`F` forces the same investigation immediately using the failures currently
+known, even while other checks are pending. It bypasses automatic
+deduplication but still requires an existing agent. When a failed check is
+selected, `W` sends the same investigation while retaining `W`'s explicit
+permission to provision a workspace and start an agent if needed.
+
+Automatic investigations are recorded against the head commit, so a restart
+does not resend the same failure. Pushing a new head allows a new investigation.
+Stopping and starting the watch clears that remembered head and intentionally
+allows the current failures to be investigated again.
 
 To test watcher delivery with a code-line comment of your own, put this exact
 marker in either the opening comment or your latest reply's Markdown source:
@@ -221,6 +242,9 @@ herdr:
   wait_for_idle: 15m        # how long to wait for a busy agent
   dry_run: false
   toast: true               # show a herdr notification alongside each handoff
+  # Optional separate Go template for failed-check investigations. It receives
+  # Repo, Number, URL, Title, HeadRef, BaseRef, Checks and Note.
+  check_prompt: "..."
 watch:
   active_interval: 30s      # while checks are still running
   base_interval: 2m         # once nothing is in progress
@@ -246,7 +270,10 @@ than several hundred forked processes.
 With `skill` set, the prompt is `/<skill> <pull request url>`. Without it,
 prutil spells the job out instead. Either can be replaced with `herdr.prompt`,
 a Go template given `Repo`, `Number`, `URL`, `Title`, `HeadRef`, `BaseRef`,
-`Skill`, `UnresolvedCount`, `NewCount` and `Note`.
+`Skill`, `UnresolvedCount`, `NewCount` and `Note`. Failed-check handoffs use
+`herdr.check_prompt`, whose `Checks` value contains the failed check entries
+and whose default prompt is designed for deciding between a follow-up commit,
+a retry, and human assistance.
 
 Explicit `repos` entries win. When none exists, prutil checks its private
 `repos.json` cache and then scans `discovery.roots`, validating every candidate

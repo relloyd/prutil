@@ -24,7 +24,19 @@ It is {{.HeadRef}} into {{.BaseRef}}, with {{.UnresolvedCount}} unresolved revie
 	`changes that should be made, and reply on the threads you are leaving alone saying why.` +
 	`{{end}}{{if .Note}}
 
-{{.Note}}{{end}}`
+	{{.Note}}{{end}}`
+
+// DefaultCheckPrompt is what prutil says to an agent when a pull request's
+// checks have failed and no check-specific prompt is configured.
+const DefaultCheckPrompt = `Investigate the failed checks on {{.Repo}}#{{.Number}}: {{.URL}}
+
+The pull request changes {{.HeadRef}} into {{.BaseRef}}. Determine whether each failure is related to these changes. Fix related failures with a follow-up commit. For failures unrelated to the changes, use the gh CLI to re-trigger the check.
+
+Before retrying a check without making changes, verify whether you have already re-triggered that check for this head commit. If you have, notify the human for assistance instead of retrying it again. If you are unsure whether a failure is related or what action to take, ask the human for assistance.
+
+Failed checks:
+{{range .Checks}}- {{.Name}}{{if .Workflow}} ({{.Workflow}}){{end}}: {{.Description}} {{.URL}}
+{{end}}`
 
 // Config is everything the application directory can be asked to remember
 // about how prutil should behave. Every field is optional: an absent file, an
@@ -56,6 +68,8 @@ type HerdrConfig struct {
 	Skill string `yaml:"skill"`
 	// Prompt is a text/template rendered with PromptData.
 	Prompt string `yaml:"prompt"`
+	// CheckPrompt is the prompt used when failed checks are handed to an agent.
+	CheckPrompt string `yaml:"check_prompt"`
 	// WaitForIdle bounds how long prutil will wait for a working agent to
 	// settle before giving up and falling back to a notification.
 	WaitForIdle Duration `yaml:"wait_for_idle"`
@@ -128,6 +142,7 @@ func DefaultConfig() Config {
 	return Config{
 		Herdr: HerdrConfig{
 			Prompt:      DefaultPrompt,
+			CheckPrompt: DefaultCheckPrompt,
 			WaitForIdle: Duration(15 * time.Minute),
 			Toast:       true,
 		},
@@ -171,6 +186,9 @@ const minPollInterval = 15 * time.Second
 func (c *Config) clamp() {
 	if strings.TrimSpace(c.Herdr.Prompt) == "" {
 		c.Herdr.Prompt = DefaultPrompt
+	}
+	if strings.TrimSpace(c.Herdr.CheckPrompt) == "" {
+		c.Herdr.CheckPrompt = DefaultCheckPrompt
 	}
 	if c.Herdr.WaitForIdle < 0 {
 		c.Herdr.WaitForIdle = 0
@@ -225,6 +243,9 @@ type PromptData struct {
 	// Note carries anything prutil needs to warn the agent about, such as the
 	// checkout sitting on a different branch from the pull request.
 	Note string
+	// Checks is populated for failed-check investigations and is empty for
+	// review-feedback handoffs.
+	Checks []model.Check
 }
 
 // RenderPrompt turns the configured template into the text sent to an agent.
@@ -242,6 +263,25 @@ func (h HerdrConfig) RenderPrompt(data PromptData) (string, error) {
 	text := strings.TrimSpace(out.String())
 	if text == "" {
 		return "", fmt.Errorf("the configured herdr prompt rendered to nothing")
+	}
+	return text, nil
+}
+
+// RenderCheckPrompt turns the failed-check template into the text sent to an agent.
+func (h HerdrConfig) RenderCheckPrompt(data PromptData) (string, error) {
+	data.Skill = h.Skill
+
+	tmpl, err := template.New("check-prompt").Parse(h.CheckPrompt)
+	if err != nil {
+		return "", fmt.Errorf("the configured herdr check prompt is not a valid template: %w", err)
+	}
+	var out strings.Builder
+	if err := tmpl.Execute(&out, data); err != nil {
+		return "", fmt.Errorf("could not render the herdr check prompt: %w", err)
+	}
+	text := strings.TrimSpace(out.String())
+	if text == "" {
+		return "", fmt.Errorf("the configured herdr check prompt rendered to nothing")
 	}
 	return text, nil
 }

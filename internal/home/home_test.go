@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/relloyd/prutil/internal/home"
+	"github.com/relloyd/prutil/internal/model"
 )
 
 func TestDirPrefersPrutilHomeThenXdgThenTheDefault(t *testing.T) {
@@ -110,6 +111,22 @@ func TestTheDefaultPromptSpellsTheJobOutWhenNoSkillIsConfigured(t *testing.T) {
 	assert.Contains(t, text, "1 unresolved review thread.", "one thread is singular")
 }
 
+func TestTheDefaultCheckPromptExplainsHowToTriageAndRetryFailures(t *testing.T) {
+	cfg := home.DefaultConfig()
+
+	text, err := cfg.Herdr.RenderCheckPrompt(home.PromptData{
+		Repo: "relloyd/prutil", Number: 42, URL: "https://github.com/relloyd/prutil/pull/42",
+		HeadRef: "feat/retry", BaseRef: "main",
+		Checks: []model.Check{{Name: "linux", Workflow: "CI", URL: "https://example.test/check", Description: "failed"}},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, text, "related to these changes")
+	assert.Contains(t, text, "follow-up commit")
+	assert.Contains(t, text, "re-triggered that check")
+	assert.Contains(t, text, "ask the human")
+	assert.Contains(t, text, "linux (CI): failed https://example.test/check")
+}
+
 func TestAPromptNoteIsAppendedSoTheAgentKnowsAboutTheWrongBranch(t *testing.T) {
 	cfg := home.DefaultConfig()
 	cfg.Herdr.Skill = "pr-triage"
@@ -158,6 +175,16 @@ func TestTogglingArmsThenDisarms(t *testing.T) {
 	assert.Equal(t, []string{"a/b#1"}, state.ArmedKeys())
 	assert.False(t, state.ToggleArmed("a/b#1"))
 	assert.Empty(t, state.ArmedKeys())
+}
+
+func TestDisarmingClearsTheLastFailedCheckHandoffHead(t *testing.T) {
+	state := home.NewState()
+	state.SetArmed("a/b#1", true)
+	state.Mutate("a/b#1").LastCheckHandoffHead = "abc"
+
+	state.ToggleArmed("a/b#1")
+
+	assert.Empty(t, state.Get("a/b#1").LastCheckHandoffHead)
 }
 
 func TestCompactDropsEntriesThatRememberNothingWorthKeeping(t *testing.T) {

@@ -278,6 +278,8 @@ type prRuntime struct {
 	activity []watchActivity
 	// history is the tail of the durable handoff log, read outside rendering.
 	history handoffHistoryState
+	headOID string
+	rollup  model.Status
 }
 
 // runtimeOf reads the runtime state for one pull request. A pull request
@@ -487,6 +489,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.checks[msg.key] = checkState{checks: msg.checks, loaded: true}
 		a.clampScroll()
+		if msg.checkHandoff {
+			return a, a.applyFailedChecks(msg.key, msg.headOID, msg.checks, msg.force, msg.allowProvision)
+		}
 		return a, nil
 
 	case checksErrMsg:
@@ -494,6 +499,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.checks[msg.key] = checkState{err: msg.err, loaded: true}
+		if msg.checkHandoff {
+			a.mutate(msg.key).handing = false
+			a.setWatchOperation(msg.key, "")
+		}
 		return a, nil
 
 	case selectionMsg:
@@ -589,7 +598,13 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, a.toggleWatch()
 
 	case key.Matches(msg, a.keys.Handoff):
+		if a.selectedFailedCheck() {
+			return a, a.checkHandoff(true, true)
+		}
 		return a, a.handOff()
+
+	case key.Matches(msg, a.keys.CheckHandoff):
+		return a, a.checkHandoff(true, false)
 
 	case key.Matches(msg, a.keys.Notify):
 		return a, a.notifyNewFeedback()
@@ -1061,6 +1076,19 @@ func (a *App) loadChecks(gen int, prKey model.Key) tea.Cmd {
 	}
 }
 
+func (a *App) loadChecksForHandoff(gen int, prKey model.Key, headOID string, force, allowProvision bool) tea.Cmd {
+	client := a.client
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		checks, err := client.Checks(ctx, prKey)
+		if err != nil {
+			return checksErrMsg{gen: gen, key: prKey, err: err, checkHandoff: true}
+		}
+		return checksMsg{gen: gen, key: prKey, checks: checks, checkHandoff: true, headOID: headOID, force: force, allowProvision: allowProvision}
+	}
+}
+
 // selectedPR returns the pull request under the list cursor of the visible
 // view.
 func (a *App) selectedPR() (model.PullRequest, bool) {
@@ -1322,14 +1350,19 @@ type (
 		err error
 	}
 	checksMsg struct {
-		gen    int
-		key    model.Key
-		checks []model.Check
+		gen            int
+		key            model.Key
+		checks         []model.Check
+		checkHandoff   bool
+		headOID        string
+		force          bool
+		allowProvision bool
 	}
 	checksErrMsg struct {
-		gen int
-		key model.Key
-		err error
+		gen          int
+		key          model.Key
+		err          error
+		checkHandoff bool
 	}
 	selectionMsg struct {
 		gen int

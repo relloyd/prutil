@@ -29,6 +29,12 @@ func DefaultConfigTemplate() []byte {
 	_, _ = fmt.Fprintf(&out, "  wait_for_idle: %s\n", cfg.Herdr.WaitForIdle)
 	_, _ = fmt.Fprintf(&out, "  dry_run: %t\n", cfg.Herdr.DryRun)
 	_, _ = fmt.Fprintf(&out, "  toast: %t\n\n", cfg.Herdr.Toast)
+	out.WriteString("  # Separate prompt template for failed-check investigations. It receives Repo, Number, URL,\n")
+	out.WriteString("  # Title, HeadRef, BaseRef, Checks and Note.\n")
+	out.WriteString("  check_prompt: |-\n")
+	for _, line := range strings.Split(DefaultCheckPrompt, "\n") {
+		out.WriteString("    " + line + "\n")
+	}
 
 	out.WriteString("watch:\n")
 	_, _ = fmt.Fprintf(&out, "  active_interval: %s\n", cfg.Watch.ActiveInterval)

@@ -183,6 +183,27 @@ func request() handoff.Request {
 	}
 }
 
+func TestFailedCheckHandoffUsesTheSeparatePromptAndIncludesEveryFailure(t *testing.T) {
+	control := &fakeHerdr{agents: []herdr.Agent{{Kind: "claude", Status: herdr.StatusIdle, CWD: "/work/retry", PaneID: "w3:p1"}}}
+	dispatcher, _ := dispatcherFor(t, control, fakeGit{"/work/retry": {Repo: "relloyd/prutil", Branch: "feat/uploader-retry"}}, nil)
+	req := request()
+	req.CheckHandoff = true
+	req.HeadOID = "abc123"
+	req.Checks = []model.Check{
+		{Name: "linux", Workflow: "CI", URL: "https://example.test/linux", Description: "failed"},
+		{Name: "macos", Workflow: "CI", URL: "https://example.test/macos", Description: "timed out"},
+	}
+
+	res, err := dispatcher.Dispatch(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, home.OutcomeSent, res.Outcome)
+	assert.Contains(t, control.texts[0], "Investigate the failed checks")
+	assert.Contains(t, control.texts[0], "linux (CI): failed")
+	assert.Contains(t, control.texts[0], "macos (CI): timed out")
+	assert.NotContains(t, control.texts[0], "unresolved review")
+}
+
 func TestTheAgentOnTheHeadBranchIsPreferredOverOneMerelyInTheRepository(t *testing.T) {
 	control := &fakeHerdr{agents: []herdr.Agent{
 		{Kind: "claude", Status: herdr.StatusIdle, CWD: "/work/main", PaneID: "w2:p1"},
