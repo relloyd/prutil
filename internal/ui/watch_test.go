@@ -678,6 +678,77 @@ func TestWatchingSurvivesAClosedListThatSimplyDoesNotMentionThePullRequest(t *te
 	assert.True(t, app.state.Armed(key.String()), "absence is not evidence that it is finished")
 }
 
+func TestWatchingCannotBeArmedFromAViewOtherThanTheOpenList(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	app.active = viewClosed
+	app.views[viewClosed].prs = sampleClosedPRs()
+	key := app.cur().prs[0].Key()
+
+	cmd := send(t, app, press("w"))
+
+	require.NotNil(t, cmd)
+	assert.Equal(t, statusMsg("watching is available only for open pull requests"), cmd())
+	assert.False(t, app.state.Armed(key.String()), "nothing polls a row from the closed list")
+	assert.Equal(t, 0, app.state.ArmedCount(), "so the tally counts no watch it cannot keep")
+}
+
+func TestWatchingCanStillBeTurnedOffFromTheClosedView(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	require.True(t, app.state.Armed(key.String()))
+
+	// A mark made in the open list has to come off wherever the reader finds
+	// it again, or the guard on arming would trap it instead.
+	app.active = viewClosed
+	app.views[viewClosed].prs = []model.PullRequest{merged(key)}
+	send(t, app, press("w"))
+
+	assert.False(t, app.state.Armed(key.String()), "disarming answers from every view")
+}
+
+func TestAReviewReadLandingAfterTheDisarmHandsNothingOver(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	require.True(t, app.state.Armed(key.String()))
+
+	// The closed view names it merged, so disarmFinished retires it. The read
+	// the watcher had already asked for is still in flight: nothing can recall
+	// a command Bubble Tea is holding.
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: append(sampleClosedPRs(), merged(key))})
+	require.False(t, app.state.Armed(key.String()))
+
+	send(t, app, watchReviewMsg{key: key, review: sampleThreads()})
+
+	assert.Empty(t, dispatcher.requests(),
+		"a pull request prutil has just said it stopped watching is not an agent's work")
+	assert.False(t, app.runtimeOf(key).handing, "and nothing claims otherwise on screen")
+}
+
+func TestFailedChecksLandingAfterTheDisarmHandNothingOver(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: append(sampleClosedPRs(), merged(key))})
+	require.False(t, app.state.Armed(key.String()))
+
+	// SetArmed cleared LastCheckHandoffHead, so the repeat brake is gone: the
+	// armed check is the only thing standing between this reply and an agent.
+	send(t, app, checksMsg{
+		gen: app.gen, key: key, checkHandoff: true, headOID: "abc",
+		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
+	})
+
+	assert.Empty(t, dispatcher.requests(), "a merged pull request's failures are nobody's to fix")
+	assert.False(t, app.runtimeOf(key).handing)
+}
+
 func TestAWatchedRowIsHollowWhenNothingIsScheduledToPollIt(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	key := model.Key{Repo: "relloyd/prutil", Number: 42}

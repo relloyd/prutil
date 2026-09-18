@@ -55,6 +55,14 @@ func (a *App) toggleWatch() tea.Cmd {
 	}
 
 	key := pr.Key()
+	// Arming addresses a pull request by the node id the open list came with,
+	// and the failed-check handoff below answers only for an open one, so a row
+	// from another view could be marked and then never polled: a watch the
+	// tally counts, that costs nothing and answers for nothing. Disarming stays
+	// available from every view, so a mark already made can always be taken off.
+	if !a.armed(key) && a.active != viewOpen {
+		return status("watching is available only for open pull requests")
+	}
 	armed := a.state.ToggleArmed(key.String())
 	if err := a.saveState(); err != nil {
 		return status(err.Error())
@@ -112,6 +120,16 @@ func (a *App) checkHandoff(force, allowProvision bool, headOID ...string) tea.Cm
 func (a *App) applyFailedChecks(key model.Key, headOID string, checks []model.Check, force, allowProvision bool) tea.Cmd {
 	entry := a.mutate(key)
 	entry.handing = false
+	// The read this answers was dispatched while the pull request was watched,
+	// and disarmFinished can retire it before the reply lands. Handing it over
+	// now would give an agent work on a pull request prutil has just said it
+	// stopped watching, and SetArmed has cleared LastCheckHandoffHead, so the
+	// repeat brake below is gone exactly when it would be needed. force is the
+	// reader's own key press, which answers whatever is armed.
+	if !force && !a.armed(key) {
+		a.setWatchOperation(key, "")
+		return nil
+	}
 	failed := make([]model.Check, 0, len(checks))
 	pending := false
 	for _, check := range checks {
@@ -351,6 +369,13 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	now := a.now()
 	a.mutate(msg.key).reviewing = false
 	a.setWatchOperation(msg.key, "")
+	// As in applyFailedChecks: the watcher's read can land after
+	// disarmFinished retired the pull request, and acting on it would hand a
+	// merged one to an agent moments after saying it was no longer watched.
+	// Manual discovery is the reader's own request, so it still answers.
+	if !msg.manual && !a.armed(msg.key) {
+		return nil
+	}
 	if msg.err != nil {
 		a.engine.Defer([]model.Key{msg.key}, a.watchRetry(), now)
 		a.recordWatchActivity(msg.key, "could not read review feedback: "+msg.err.Error())
