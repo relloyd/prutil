@@ -1047,7 +1047,10 @@ func (a *App) prefetch() []tea.Cmd {
 // request cover every armed pull request at once.
 func (a *App) watchAfterLoad(v view) tea.Cmd {
 	if v != viewOpen {
-		return nil
+		// The closed list is the one place a merged or closed pull request is
+		// seen as itself rather than simply missing, so it is where an armed
+		// entry that has outlived its pull request is retired.
+		return a.disarmFinished(a.views[v].prs)
 	}
 	return a.syncWatch()
 }

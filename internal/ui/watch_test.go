@@ -611,8 +611,86 @@ func TestTheHeaderCountsWhatIsWatchedAndWhenItWillLookAgain(t *testing.T) {
 	poll(t, app)
 
 	header := headerLine(app)
-	assert.Contains(t, header, watchGlyph+" 1")
-	assert.Contains(t, header, "next ")
+	assert.Contains(t, header, watchGlyph+" 1 watched", "the count says what it counts")
+	assert.NotContains(t, header, dormantGlyph, "nothing has gone quiet, so the hollow half is left off")
+	assert.Contains(t, header, "next poll ")
+}
+
+func TestTheHeaderCountsAQuietPullRequestApartFromOneItIsStillAskingAbout(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+
+	send(t, app, press("w"))
+	for range 8 {
+		advance(app, time.Minute)
+		poll(t, app)
+	}
+	require.Contains(t, plain(app.render()), dormantGlyph+" #42", "the row has gone hollow")
+
+	header := headerLine(app)
+	assert.Contains(t, header, watchGlyph+" 0 "+dormantGlyph+" 1 watched",
+		"the header agrees with the row rather than claiming a poll that is not happening")
+	assert.NotContains(t, header, "next poll ", "there is nothing left to poll")
+}
+
+// merged is the watched sample pull request as the closed list returns it once
+// somebody has merged it.
+func merged(key model.Key) model.PullRequest {
+	return model.PullRequest{
+		Repo: key.Repo, Number: key.Number,
+		Title:    "Retry uploads on 5xx",
+		State:    model.PRStateMerged,
+		ClosedAt: testNow, MergedAt: testNow,
+	}
+}
+
+func TestWatchingStopsOnceThePullRequestTurnsUpMergedInTheClosedList(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	require.True(t, app.state.Armed(key.String()))
+
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: append(sampleClosedPRs(), merged(key))})
+
+	assert.False(t, app.state.Armed(key.String()), "a merged pull request answers for nothing")
+	assert.Equal(t, 0, app.state.ArmedCount())
+	assert.Equal(t, 0, app.engine.Watching(), "and the engine has let it go")
+
+	// The point of disarming is that it outlives the session, so the file has
+	// to have been written, not just the in-memory state changed.
+	saved, err := app.store.LoadState()
+	require.NoError(t, err)
+	assert.Equal(t, 0, saved.ArmedCount(), "the state file no longer carries it")
+}
+
+func TestWatchingSurvivesAClosedListThatSimplyDoesNotMentionThePullRequest(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	require.True(t, app.state.Armed(key.String()))
+
+	// The closed list is narrowed by the configured query and limit, so a pull
+	// request missing from it has not been shown to be finished. Only a row
+	// saying so disarms.
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs()})
+
+	assert.True(t, app.state.Armed(key.String()), "absence is not evidence that it is finished")
+}
+
+func TestAWatchedRowIsHollowWhenNothingIsScheduledToPollIt(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	require.Contains(t, plain(app.render()), watchGlyph+" #42", "it starts out being polled")
+
+	// Whatever the reason the engine is not holding it — merged, or a row the
+	// list came back with no node id to address — the mark should not claim a
+	// poll that is not scheduled.
+	app.engine.Forget(key)
+
+	assert.Contains(t, plain(app.render()), dormantGlyph+" #42")
 }
 
 func TestTheDetailExplainsTheCurrentWatchScheduleAndActivity(t *testing.T) {

@@ -181,6 +181,23 @@ request for the list plus the checks it warms.
 many are marked, and the mark survives quitting: it is kept in prutil's own
 directory, not in the terminal.
 
+The header's tally reads `◉ 3 ◎ 1 watched · next poll 45s`. The filled count is
+how many watched pull requests prutil is still asking GitHub about; the hollow
+one, shown only when it is not zero, is how many are still armed but not being
+asked about — either they have gone dormant (see below) or they are not in the
+list prutil is holding, so there is nothing to address a poll to. Together they
+add up to everything `w` has marked, and a row carries the same glyph as the
+half of the tally it belongs to. `next poll` is how long until the soonest of
+the active ones is read again.
+
+A watched pull request stops being watched on its own once prutil sees it
+merged or closed in the recently closed view, and says which ones it retired.
+That is the only thing besides `w` that ever disarms, and it waits to be shown
+a finished pull request rather than inferring one: the open list is narrowed by
+`-query` and `-limit`, so a pull request can drop out of it and still be open.
+Until that view is next loaded a finished pull request stays armed, counted in
+the hollow half of the tally; nothing polls it, so it costs no requests.
+
 From then on prutil watches that pull request for review feedback, and when
 some appears it gives it to a coding agent through
 [herdr](https://herdr.dev). Open feedback means a review thread that is neither

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -724,15 +725,66 @@ func (a *App) saveState() error {
 // watchSeg is the marker shown against a watched pull request on a list row.
 // It is hollow for a pull request prutil has stopped asking about, so that a
 // glance says which of the marks are still costing anything.
+//
+// Not being in the engine at all counts as hollow too, and not only as
+// dormant: syncWatch can schedule a pull request only when the open list holds
+// it with a node id to address it by, so one it cannot is just as unpolled as
+// one that has gone quiet. Filled would claim otherwise, and would disagree
+// with the header's tally, which counts the same two cases together.
 func (a *App) watchSeg(pr model.PullRequest) seg {
 	if !a.armed(pr.Key()) {
 		return seg{}
 	}
 	glyph := watchGlyph
-	if tier, ok := a.engine.Tier(pr.Key()); ok && tier == watch.TierDormant {
+	if tier, ok := a.engine.Tier(pr.Key()); !ok || tier == watch.TierDormant {
 		glyph = dormantGlyph
 	}
 	return seg{text: glyph, style: a.styles.Watch}
+}
+
+// disarmFinished stops watching every pull request in prs that has merged or
+// closed, and reports what it turned off.
+//
+// It is the only thing that ever disarms without the reader pressing w, and it
+// waits for positive evidence: a row GitHub has returned whose state is no
+// longer open. Absence from the open list would be the wrong signal, because
+// that list is narrowed by the configured query and limit, so a pull request
+// can drop out of it while still being open and still worth watching.
+//
+// Without this an armed entry outlives its pull request. Nothing polls it —
+// syncWatch only ever schedules what the open list holds — and Compact keeps
+// anything armed, so it would sit in the state file for good, counted in the
+// header and answering for nothing.
+func (a *App) disarmFinished(prs []model.PullRequest) tea.Cmd {
+	if a.store == nil {
+		return nil
+	}
+
+	var done []string
+	for _, pr := range prs {
+		key := pr.Key()
+		if pr.State == model.PRStateOpen || !a.armed(key) {
+			continue
+		}
+		a.state.SetArmed(key.String(), false)
+		a.engine.Forget(key)
+		entry := a.mutate(key)
+		entry.feedback, entry.hasFeedback = 0, false
+		a.setWatchOperation(key, "")
+		a.recordWatchActivity(key, "stopped watching: "+pr.State.String())
+		done = append(done, key.String())
+	}
+	if len(done) == 0 {
+		return nil
+	}
+
+	if err := a.saveState(); err != nil {
+		return status(err.Error())
+	}
+	slices.Sort(done)
+	return tea.Batch(a.scheduleWatch(), status(fmt.Sprintf(
+		"stopped watching %d finished %s: %s",
+		len(done), plural(len(done), "pull request"), strings.Join(done, ", "))))
 }
 
 // feedbackSeg reports how much review feedback is still waiting on a watched
@@ -750,15 +802,28 @@ func (a *App) feedbackSeg(pr model.PullRequest) seg {
 
 // watchNote is what the header says about watching, or the empty string when
 // nothing is armed.
+//
+// It splits the armed set the way the list rows do, because the two glyphs
+// mean different things and a single filled count claimed more polling than
+// was happening. Filled is what the engine is still asking about; hollow is
+// the rest, which is the dormant ones plus any armed pull request the current
+// list does not hold, since syncWatch can only schedule what it can address.
+// The unit is spelled out: a bare number in a header is a number without a
+// question.
 func (a *App) watchNote() string {
-	count := a.state.ArmedCount()
-	if count == 0 {
+	armed := a.state.ArmedCount()
+	if armed == 0 {
 		return ""
 	}
 
-	note := fmt.Sprintf(" · %s %d", watchGlyph, count)
+	polling := a.engine.Polling()
+	note := fmt.Sprintf(" · %s %d", watchGlyph, polling)
+	if idle := armed - polling; idle > 0 {
+		note += fmt.Sprintf(" %s %d", dormantGlyph, idle)
+	}
+	note += " watched"
 	if next, ok := a.engine.NextDue(); ok {
-		note += " · next " + model.HumanDuration(max(next.Sub(a.now()), time.Second))
+		note += " · next poll " + model.HumanDuration(max(next.Sub(a.now()), time.Second))
 	}
 	return note
 }

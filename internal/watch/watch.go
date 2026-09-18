@@ -125,6 +125,20 @@ func (e *Engine) arm(key model.Key, now time.Time) {
 // Watching is how many pull requests the engine holds.
 func (e *Engine) Watching() int { return len(e.prs) }
 
+// Polling is how many of those the engine is still asking GitHub about. It is
+// Watching minus the dormant ones, and it is the number the header reports,
+// because a count that includes pull requests nothing is being asked about
+// claims more watching than is going on.
+func (e *Engine) Polling() int {
+	n := 0
+	for _, got := range e.prs {
+		if !got.dormant {
+			n++
+		}
+	}
+	return n
+}
+
 // Tier reports why a pull request is polled as it is, and false when it is not
 // being watched at all.
 func (e *Engine) Tier(key model.Key) (Tier, bool) {
