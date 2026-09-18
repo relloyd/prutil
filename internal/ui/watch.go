@@ -42,6 +42,23 @@ func (a *App) armed(key model.Key) bool {
 	return a.state.Armed(key.String())
 }
 
+// clearWatch drops what a watch leaves behind on a pull request and records why
+// it stopped. Both ways of disarming end here, so neither can grow a step the
+// other lacks.
+//
+// It leaves the armed flag itself alone, because the two callers reach it
+// differently: toggleWatch has already flipped the flag and lets syncWatch
+// reconcile the engine, while disarmFinished clears the flag and forgets the
+// engine's copy directly. handing and reviewing are left alone too — a handoff
+// or a read still in flight reports its own end, and clearing the flag here
+// would strand the spinner it answers to.
+func (a *App) clearWatch(key model.Key, why string) {
+	entry := a.mutate(key)
+	entry.feedback, entry.hasFeedback = 0, false
+	a.setWatchOperation(key, "")
+	a.recordWatchActivity(key, why)
+}
+
 // toggleWatch arms or disarms the selected pull request. Arming is per pull
 // request on purpose: a review whose remaining comments are never going to be
 // resolved should cost nothing to leave on screen.
@@ -70,10 +87,7 @@ func (a *App) toggleWatch() tea.Cmd {
 
 	tick := a.syncWatch()
 	if !armed {
-		entry := a.mutate(key)
-		entry.feedback, entry.hasFeedback = 0, false
-		a.setWatchOperation(key, "")
-		a.recordWatchActivity(key, "stopped watching")
+		a.clearWatch(key, "stopped watching")
 		return tea.Batch(tick, status("stopped watching "+key.String()))
 	}
 	a.recordWatchActivity(key, "started watching")
@@ -793,10 +807,7 @@ func (a *App) disarmFinished(prs []model.PullRequest) tea.Cmd {
 		}
 		a.state.SetArmed(key.String(), false)
 		a.engine.Forget(key)
-		entry := a.mutate(key)
-		entry.feedback, entry.hasFeedback = 0, false
-		a.setWatchOperation(key, "")
-		a.recordWatchActivity(key, "stopped watching: "+pr.State.String())
+		a.clearWatch(key, "stopped watching: "+pr.State.String())
 		done = append(done, key.String())
 	}
 	if len(done) == 0 {
