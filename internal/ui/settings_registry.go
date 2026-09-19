@@ -277,7 +277,6 @@ func intSetting(m settingMeta, f field[int], min, step int, format string) setti
 // allSettings returns the complete registry of settings displayed in the pane,
 // grouped by their section headers.
 func allSettings() []settingDescriptor {
-
 	return []settingDescriptor{
 		// ---------------------------------------------------------------------
 		// DESKTOP NOTIFICATIONS
@@ -847,12 +846,6 @@ func (a *App) setNotification(event home.NotificationEvent, on bool) error {
 		}
 		c.Notifications.Set(event, on)
 	}, func() error { return a.store.SetNotification(event, on) })
-}
-
-// setWatchSelfReview turns self-review feedback on or off.
-func (a *App) setWatchSelfReview(on bool) error {
-	return a.applySetting(func(c *home.Config) { c.Watch.SelfReview = on },
-		func() error { return a.store.SetWatchSelfReview(on) })
 }
 
 // saveSetting writes one setting into config.yaml and, once that has succeeded,
