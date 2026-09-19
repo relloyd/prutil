@@ -305,6 +305,39 @@ func stringSetting(m settingMeta, f field[string], empty, emptyNotice string) se
 	return d
 }
 
+// templateSetting is a Go template, previewed on the row and edited in $EDITOR
+// rather than in place, so it has no step, toggle or inline entry.
+func templateSetting(m settingMeta, f field[string], def string) settingDescriptor {
+	d := m.base(settingKindTemplate)
+	d.getDisplay = func(a *App) string {
+		if f.get(&a.homeCfg) == def {
+			return "(default)"
+		}
+		return "(custom template)"
+	}
+	d.getRaw = func(a *App) string { return f.get(&a.homeCfg) }
+	d.isDefault = func(a *App) bool { return f.get(&a.homeCfg) == def }
+	d.reset = func(a *App) error {
+		return a.resetSetting(m.path, func(c *home.Config) { f.set(c, def) })
+	}
+	return d
+}
+
+// collectionSetting is a map or a list, managed in a sub-pane of its own. The
+// row only counts what is in it, so one and many are how that count reads.
+func collectionSetting(m settingMeta, kind settingKind, count func(a *App) int, one, many string) settingDescriptor {
+	d := m.base(kind)
+	d.getDisplay = func(a *App) string {
+		if n := count(a); n != 1 {
+			return fmt.Sprintf("%d %s", n, many)
+		}
+		return "1 " + one
+	}
+	d.getRaw = func(a *App) string { return "" }
+	d.isDefault = func(a *App) bool { return count(a) == 0 }
+	return d
+}
+
 // allSettings returns the complete registry of settings displayed in the pane,
 // grouped by their section headers.
 func allSettings() []settingDescriptor {
@@ -510,28 +543,14 @@ func allSettings() []settingDescriptor {
 			get: func(c *home.Config) string { return c.Review.CommentFor("") },
 			set: func(c *home.Config, v string) { c.Review.Comment = &v },
 		}, "(disabled)", "Review comment trigger disabled"),
-		{
-			id:          "review.repos",
-			section:     "AI REVIEW TRIGGER",
-			title:       "Repository comment overrides",
-			detail:      "Per-repository review comment overrides (e.g. owner/repo -> @coderabbitai review). Press enter to manage.",
-			defaultText: "0 overrides",
-			kind:        settingKindMap,
-			path:        []string{"review", "repos"},
-			getDisplay: func(a *App) string {
-				n := len(a.homeCfg.Review.Repos)
-				if n == 1 {
-					return "1 override"
-				}
-				return fmt.Sprintf("%d overrides", n)
-			},
-			getRaw: func(a *App) string {
-				return ""
-			},
-			isDefault: func(a *App) bool {
-				return len(a.homeCfg.Review.Repos) == 0
-			},
-		},
+		collectionSetting(settingMeta{
+			id:      "review.repos",
+			section: "AI REVIEW TRIGGER",
+			title:   "Repository comment overrides",
+			detail:  "Per-repository review comment overrides (e.g. owner/repo -> @coderabbitai review). Press enter to manage.",
+			def:     "0 overrides",
+			path:    []string{"review", "repos"},
+		}, settingKindMap, func(a *App) int { return len(a.homeCfg.Review.Repos) }, "override", "overrides"),
 
 		// ---------------------------------------------------------------------
 		// CODING AGENT (HERDR)
@@ -639,106 +658,48 @@ func allSettings() []settingDescriptor {
 			get: func(c *home.Config) bool { return c.Herdr.Toast },
 			set: func(c *home.Config, v bool) { c.Herdr.Toast = v },
 		}),
-		{
-			id:          "herdr.prompt",
-			section:     "CODING AGENT (HERDR)",
-			title:       "Review handoff prompt",
-			detail:      "Template rendered with Repo, Number, URL, Title, HeadRef, BaseRef, UnresolvedCount, Note. Press enter to preview, e to edit in $EDITOR.",
-			defaultText: "(default template)",
-			kind:        settingKindTemplate,
-			path:        []string{"herdr", "prompt"},
-			getDisplay: func(a *App) string {
-				if a.homeCfg.Herdr.Prompt == home.DefaultPrompt {
-					return "(default)"
-				}
-				return "(custom template)"
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Herdr.Prompt
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Herdr.Prompt == home.DefaultPrompt
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"herdr", "prompt"}, func(c *home.Config) {
-					c.Herdr.Prompt = home.DefaultPrompt
-				})
-			},
-		},
-		{
-			id:          "herdr.check_prompt",
-			section:     "CODING AGENT (HERDR)",
-			title:       "Failed checks prompt",
-			detail:      "Template rendered for failed-check investigations with Repo, Number, URL, Checks, Note. Press enter to preview, e to edit in $EDITOR.",
-			defaultText: "(default template)",
-			kind:        settingKindTemplate,
-			path:        []string{"herdr", "check_prompt"},
-			getDisplay: func(a *App) string {
-				if a.homeCfg.Herdr.CheckPrompt == home.DefaultCheckPrompt {
-					return "(default)"
-				}
-				return "(custom template)"
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Herdr.CheckPrompt
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Herdr.CheckPrompt == home.DefaultCheckPrompt
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"herdr", "check_prompt"}, func(c *home.Config) {
-					c.Herdr.CheckPrompt = home.DefaultCheckPrompt
-				})
-			},
-		},
+		templateSetting(settingMeta{
+			id:      "herdr.prompt",
+			section: "CODING AGENT (HERDR)",
+			title:   "Review handoff prompt",
+			detail:  "Template rendered with Repo, Number, URL, Title, HeadRef, BaseRef, UnresolvedCount, Note. Press enter to preview, e to edit in $EDITOR.",
+			def:     "(default template)",
+			path:    []string{"herdr", "prompt"},
+		}, field[string]{
+			get: func(c *home.Config) string { return c.Herdr.Prompt },
+			set: func(c *home.Config, v string) { c.Herdr.Prompt = v },
+		}, home.DefaultPrompt),
+		templateSetting(settingMeta{
+			id:      "herdr.check_prompt",
+			section: "CODING AGENT (HERDR)",
+			title:   "Failed checks prompt",
+			detail:  "Template rendered for failed-check investigations with Repo, Number, URL, Checks, Note. Press enter to preview, e to edit in $EDITOR.",
+			def:     "(default template)",
+			path:    []string{"herdr", "check_prompt"},
+		}, field[string]{
+			get: func(c *home.Config) string { return c.Herdr.CheckPrompt },
+			set: func(c *home.Config, v string) { c.Herdr.CheckPrompt = v },
+		}, home.DefaultCheckPrompt),
 
 		// ---------------------------------------------------------------------
 		// REPOSITORIES & DISCOVERY
 		// ---------------------------------------------------------------------
-		{
-			id:          "repos",
-			section:     "REPOSITORIES & DISCOVERY",
-			title:       "Explicit repository paths",
-			detail:      "Map GitHub repository (owner/name) to explicit local checkout directory path. Press enter to manage.",
-			defaultText: "0 paths",
-			kind:        settingKindMap,
-			path:        []string{"repos"},
-			getDisplay: func(a *App) string {
-				n := len(a.homeCfg.Repos)
-				if n == 1 {
-					return "1 path"
-				}
-				return fmt.Sprintf("%d paths", n)
-			},
-			getRaw: func(a *App) string {
-				return ""
-			},
-			isDefault: func(a *App) bool {
-				return len(a.homeCfg.Repos) == 0
-			},
-		},
-		{
-			id:          "discovery.roots",
-			section:     "REPOSITORIES & DISCOVERY",
-			title:       "Checkout discovery roots",
-			detail:      "Root directories scanned to discover git checkouts by matching remote origin URLs. Press enter to manage.",
-			defaultText: "0 roots",
-			kind:        settingKindList,
-			path:        []string{"discovery", "roots"},
-			getDisplay: func(a *App) string {
-				n := len(a.homeCfg.Discovery.Roots)
-				if n == 1 {
-					return "1 root"
-				}
-				return fmt.Sprintf("%d roots", n)
-			},
-			getRaw: func(a *App) string {
-				return ""
-			},
-			isDefault: func(a *App) bool {
-				return len(a.homeCfg.Discovery.Roots) == 0
-			},
-		},
+		collectionSetting(settingMeta{
+			id:      "repos",
+			section: "REPOSITORIES & DISCOVERY",
+			title:   "Explicit repository paths",
+			detail:  "Map GitHub repository (owner/name) to explicit local checkout directory path. Press enter to manage.",
+			def:     "0 paths",
+			path:    []string{"repos"},
+		}, settingKindMap, func(a *App) int { return len(a.homeCfg.Repos) }, "path", "paths"),
+		collectionSetting(settingMeta{
+			id:      "discovery.roots",
+			section: "REPOSITORIES & DISCOVERY",
+			title:   "Checkout discovery roots",
+			detail:  "Root directories scanned to discover git checkouts by matching remote origin URLs. Press enter to manage.",
+			def:     "0 roots",
+			path:    []string{"discovery", "roots"},
+		}, settingKindList, func(a *App) int { return len(a.homeCfg.Discovery.Roots) }, "root", "roots"),
 	}
 }
 
