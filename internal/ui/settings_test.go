@@ -715,20 +715,17 @@ func TestEverySettingAnswersItsOwnControls(t *testing.T) {
 
 			require.NotEmpty(t, d.title, "a row needs something to call itself")
 			require.NotEmpty(t, d.section, "and a section to sit in")
-			// watch.self_review carries isEnabled and no getDisplay, unlike the
-			// other three booleans. Captured as it is rather than asserted away.
-			require.True(t, d.getDisplay != nil || d.isEnabled != nil, "and something to show")
-
-			if d.getDisplay != nil {
-				assert.NotPanics(t, func() { _ = d.getDisplay(app) })
-			}
+			// Every setting shows a value, booleans included. watch.self_review
+			// used not to, which is what going through a constructor fixed.
+			require.NotNil(t, d.getDisplay, "and something to show")
+			assert.NotPanics(t, func() { _ = d.getDisplay(app) })
 			if d.isDefault != nil {
 				assert.True(t, d.isDefault(app), "a default configuration is the default")
 			}
 
 			// Whatever the row offers for editing has to be something it will
 			// take back, unchanged.
-			if d.saveInput != nil && d.getRaw != nil && d.getDisplay != nil {
+			if d.saveInput != nil && d.getRaw != nil {
 				before := d.getDisplay(app)
 				require.NoError(t, d.saveInput(app, d.getRaw(app)), "its own value is valid input")
 				assert.Equal(t, before, d.getDisplay(app), "and saving it changes nothing")
@@ -760,14 +757,8 @@ func TestEverySettingAnswersItsOwnControls(t *testing.T) {
 			saved, err := home.OpenIn(app.store.Dir()).LoadOrCreateConfig()
 			require.NoError(t, err)
 			onDisk := withConfig(app, saved)
-			if d.getDisplay != nil {
-				assert.Equal(t, d.getDisplay(app), d.getDisplay(onDisk),
-					"what prutil is running on is what the file says")
-			}
-			if d.isEnabled != nil {
-				assert.Equal(t, d.isEnabled(app), d.isEnabled(onDisk),
-					"what prutil is running on is what the file says")
-			}
+			assert.Equal(t, d.getDisplay(app), d.getDisplay(onDisk),
+				"what prutil is running on is what the file says")
 		})
 	}
 }

@@ -274,6 +274,37 @@ func intSetting(m settingMeta, f field[int], min, step int, format string) setti
 	return d
 }
 
+// stringSetting is free text, typed in on the row. empty is what the row shows
+// when the value is blank, and emptyNotice what clearing it reports, both of
+// which differ per setting: a blank marker is disabled, a blank agent kind
+// allows any.
+func stringSetting(m settingMeta, f field[string], empty, emptyNotice string) settingDescriptor {
+	d := m.base(settingKindString)
+	d.getDisplay = func(a *App) string {
+		if v := f.get(&a.homeCfg); v != "" {
+			return v
+		}
+		return empty
+	}
+	d.getRaw = func(a *App) string { return f.get(&a.homeCfg) }
+	d.isDefault = isDefaultOf(f)
+	d.reset = resetTo(m, f)
+	d.saveInput = func(a *App, input string) error {
+		v := strings.TrimSpace(input)
+		if err := a.saveSetting(m.path, strconv.Quote(v), func(c *home.Config) { f.set(c, v) }); err != nil {
+			return err
+		}
+		if v == "" {
+			m.saved(a, emptyNotice)
+		} else {
+			m.saved(a, fmt.Sprintf("%s set to %q", m.noticeLabel(), v))
+		}
+		m.run(a)
+		return nil
+	}
+	return d
+}
+
 // allSettings returns the complete registry of settings displayed in the pane,
 // grouped by their section headers.
 func allSettings() []settingDescriptor {
@@ -451,92 +482,34 @@ func allSettings() []settingDescriptor {
 			get: func(c *home.Config) int { return c.Watch.ForcePreciseEvery },
 			set: func(c *home.Config, v int) { c.Watch.ForcePreciseEvery = v },
 		}, 1, 1, "every %d polls"),
-		{
-			id:          "watch.self_test_marker",
-			section:     "WATCHING & POLLING",
-			title:       "Self-test marker comment",
-			detail:      "Review comment marker string treated as feedback when written by yourself. Empty to disable.",
-			defaultText: "[prutil-test]",
-			kind:        settingKindString,
-			path:        []string{"watch", "self_test_marker"},
-			getDisplay: func(a *App) string {
-				m := a.homeCfg.Watch.Marker()
-				if m == "" {
-					return "(disabled)"
-				}
-				return m
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Watch.Marker()
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Watch.Marker() == defCfg.Watch.Marker()
-			},
-			saveInput: func(a *App, input string) error {
-				marker := strings.TrimSpace(input)
-				if err := a.saveSetting([]string{"watch", "self_test_marker"}, strconv.Quote(marker), func(c *home.Config) {
-					c.Watch.SelfTestMarker = &marker
-				}); err != nil {
-					return err
-				}
-				if marker == "" {
-					a.settings.setNotice("Self-test marker disabled · saved", false)
-				} else {
-					a.settings.setNotice(fmt.Sprintf("Self-test marker set to %q · saved", marker), false)
-				}
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"watch", "self_test_marker"}, func(c *home.Config) {
-					c.Watch.SelfTestMarker = defCfg.Watch.SelfTestMarker
-				})
-			},
-		},
+		stringSetting(settingMeta{
+			id:      "watch.self_test_marker",
+			section: "WATCHING & POLLING",
+			title:   "Self-test marker comment",
+			detail:  "Review comment marker string treated as feedback when written by yourself. Empty to disable.",
+			def:     "[prutil-test]",
+			path:    []string{"watch", "self_test_marker"},
+			label:   "Self-test marker",
+		}, field[string]{
+			get: func(c *home.Config) string { return c.Watch.Marker() },
+			set: func(c *home.Config, v string) { c.Watch.SelfTestMarker = &v },
+		}, "(disabled)", "Self-test marker disabled"),
 
 		// ---------------------------------------------------------------------
 		// AI REVIEW TRIGGER
 		// ---------------------------------------------------------------------
-		{
-			id:          "review.comment",
-			section:     "AI REVIEW TRIGGER",
-			title:       "Default review comment",
-			detail:      "Comment posted to an open pull request when pressing R to trigger an AI review. Empty to disable.",
-			defaultText: "/gemini review",
-			kind:        settingKindString,
-			path:        []string{"review", "comment"},
-			getDisplay: func(a *App) string {
-				c := a.homeCfg.Review.CommentFor("")
-				if c == "" {
-					return "(disabled)"
-				}
-				return c
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Review.CommentFor("")
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Review.CommentFor("") == defCfg.Review.CommentFor("")
-			},
-			saveInput: func(a *App, input string) error {
-				comment := strings.TrimSpace(input)
-				if err := a.saveSetting([]string{"review", "comment"}, strconv.Quote(comment), func(c *home.Config) {
-					c.Review.Comment = &comment
-				}); err != nil {
-					return err
-				}
-				if comment == "" {
-					a.settings.setNotice("Review comment trigger disabled · saved", false)
-				} else {
-					a.settings.setNotice(fmt.Sprintf("Review comment set to %q · saved", comment), false)
-				}
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"review", "comment"}, func(c *home.Config) {
-					c.Review.Comment = defCfg.Review.Comment
-				})
-			},
-		},
+		stringSetting(settingMeta{
+			id:      "review.comment",
+			section: "AI REVIEW TRIGGER",
+			title:   "Default review comment",
+			detail:  "Comment posted to an open pull request when pressing R to trigger an AI review. Empty to disable.",
+			def:     "/gemini review",
+			path:    []string{"review", "comment"},
+			label:   "Review comment",
+		}, field[string]{
+			get: func(c *home.Config) string { return c.Review.CommentFor("") },
+			set: func(c *home.Config, v string) { c.Review.Comment = &v },
+		}, "(disabled)", "Review comment trigger disabled"),
 		{
 			id:          "review.repos",
 			section:     "AI REVIEW TRIGGER",
@@ -608,86 +581,29 @@ func allSettings() []settingDescriptor {
 				})
 			},
 		},
-		{
-			id:          "herdr.agent_kind",
-			section:     "CODING AGENT (HERDR)",
-			title:       "Agent kind filter",
-			detail:      "Restrict handoffs to one kind of agent (such as 'claude' or 'copilot'). Empty allows any agent.",
-			defaultText: "(any)",
-			kind:        settingKindString,
-			path:        []string{"herdr", "agent_kind"},
-			getDisplay: func(a *App) string {
-				if a.homeCfg.Herdr.AgentKind == "" {
-					return "(any)"
-				}
-				return a.homeCfg.Herdr.AgentKind
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Herdr.AgentKind
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Herdr.AgentKind == defCfg.Herdr.AgentKind
-			},
-			saveInput: func(a *App, input string) error {
-				kind := strings.TrimSpace(input)
-				if err := a.saveSetting([]string{"herdr", "agent_kind"}, strconv.Quote(kind), func(c *home.Config) {
-					c.Herdr.AgentKind = kind
-				}); err != nil {
-					return err
-				}
-				if kind == "" {
-					a.settings.setNotice("Agent kind filter cleared (any agent allowed) · saved", false)
-				} else {
-					a.settings.setNotice(fmt.Sprintf("Agent kind filter set to %q · saved", kind), false)
-				}
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"herdr", "agent_kind"}, func(c *home.Config) {
-					c.Herdr.AgentKind = defCfg.Herdr.AgentKind
-				})
-			},
-		},
-		{
-			id:          "herdr.skill",
-			section:     "CODING AGENT (HERDR)",
-			title:       "Herdr skill name",
-			detail:      "Skill name invoked in the default prompt when handing off review feedback (e.g. 'triage').",
-			defaultText: "(none)",
-			kind:        settingKindString,
-			path:        []string{"herdr", "skill"},
-			getDisplay: func(a *App) string {
-				if a.homeCfg.Herdr.Skill == "" {
-					return "(none)"
-				}
-				return a.homeCfg.Herdr.Skill
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Herdr.Skill
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Herdr.Skill == defCfg.Herdr.Skill
-			},
-			saveInput: func(a *App, input string) error {
-				skill := strings.TrimSpace(input)
-				if err := a.saveSetting([]string{"herdr", "skill"}, strconv.Quote(skill), func(c *home.Config) {
-					c.Herdr.Skill = skill
-				}); err != nil {
-					return err
-				}
-				if skill == "" {
-					a.settings.setNotice("Herdr skill cleared · saved", false)
-				} else {
-					a.settings.setNotice(fmt.Sprintf("Herdr skill set to %q · saved", skill), false)
-				}
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"herdr", "skill"}, func(c *home.Config) {
-					c.Herdr.Skill = defCfg.Herdr.Skill
-				})
-			},
-		},
+		stringSetting(settingMeta{
+			id:      "herdr.agent_kind",
+			section: "CODING AGENT (HERDR)",
+			title:   "Agent kind filter",
+			detail:  "Restrict handoffs to one kind of agent (such as 'claude' or 'copilot'). Empty allows any agent.",
+			def:     "(any)",
+			path:    []string{"herdr", "agent_kind"},
+		}, field[string]{
+			get: func(c *home.Config) string { return c.Herdr.AgentKind },
+			set: func(c *home.Config, v string) { c.Herdr.AgentKind = v },
+		}, "(any)", "Agent kind filter cleared (any agent allowed)"),
+		stringSetting(settingMeta{
+			id:      "herdr.skill",
+			section: "CODING AGENT (HERDR)",
+			title:   "Herdr skill name",
+			detail:  "Skill name invoked in the default prompt when handing off review feedback (e.g. 'triage').",
+			def:     "(none)",
+			path:    []string{"herdr", "skill"},
+			label:   "Herdr skill",
+		}, field[string]{
+			get: func(c *home.Config) string { return c.Herdr.Skill },
+			set: func(c *home.Config, v string) { c.Herdr.Skill = v },
+		}, "(none)", "Herdr skill cleared"),
 		durationSetting(settingMeta{
 			id:      "herdr.wait_for_idle",
 			section: "CODING AGENT (HERDR)",
