@@ -770,3 +770,60 @@ func withConfig(app *App, cfg home.Config) *App {
 	clone.homeCfg = cfg
 	return &clone
 }
+
+// cursorOn puts the settings cursor on one setting by id.
+func cursorOn(t *testing.T, app *App, id string) {
+	t.Helper()
+	for i, d := range allSettings() {
+		if d.id == id {
+			app.settings.cursor = i
+			return
+		}
+	}
+	t.Fatalf("no setting called %q", id)
+}
+
+func TestEverySettingsPaneSetsItsLastLineOffFromTheBottomEdge(t *testing.T) {
+	// The notice sits at the foot of all three, and the bottom edge carries
+	// its own hints, so without a blank line between them the two read as one.
+	open := map[string]func(t *testing.T, app *App){
+		"the settings list": func(*testing.T, *App) {},
+		"the template modal": func(t *testing.T, app *App) {
+			cursorOn(t, app, "herdr.prompt")
+			send(t, app, press("enter"))
+			require.Equal(t, settingsModeTemplate, app.settings.mode)
+		},
+		"a collection sub-pane": func(t *testing.T, app *App) {
+			cursorOn(t, app, "discovery.roots")
+			send(t, app, press("enter"))
+			require.Equal(t, settingsModeSubPane, app.settings.mode)
+		},
+	}
+	for name, enter := range open {
+		t.Run(name, func(t *testing.T) {
+			for _, height := range []int{40, 24} {
+				app, _, _ := newTestApp(t, 100, height)
+				openSettingsPane(t, app)
+				enter(t, app)
+
+				box := overlayBox(t, app)
+				last := box[len(box)-1]
+				require.Contains(t, last, "╰", "the last line is the bottom edge, at height %d", height)
+				above := box[len(box)-2]
+				assert.Equal(t, "", strings.TrimSpace(strings.Trim(above, "│ ")),
+					"the line above the bottom edge is blank, at height %d", height)
+			}
+		})
+	}
+}
+
+func TestTheSettingsPaneKeepsItsExplanationWhenThereIsRoomForOne(t *testing.T) {
+	// The blank line above the edge is taken from the list, which scrolls, and
+	// not from the explanation, which does not exist anywhere else on screen.
+	app, _, _ := newTestApp(t, 120, 40)
+	openSettingsPane(t, app)
+	cursorOn(t, app, "watch.self_review")
+
+	assert.Contains(t, plain(app.render()), "Treat every unresolved review comment",
+		"the selected setting still explains itself")
+}

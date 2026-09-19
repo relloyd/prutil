@@ -31,8 +31,11 @@ const (
 	// happened, which can take a sentence and a hint.
 	settingsNoticeLines = 2
 	// settingsChrome is the lines every settings pane spends besides its rows
-	// and its notice: top edge, rule above notice, bottom edge.
-	settingsChrome = 3
+	// and its notice: top edge, rule above notice, the blank line that sets the
+	// notice off from the bottom edge, and that edge. Without the blank one the
+	// notice runs into the border, which carries its own hints, and the two
+	// read as one line.
+	settingsChrome = 4
 )
 
 // settingsMode is the interaction mode of the settings pane.
@@ -880,10 +883,16 @@ func (a *App) settingsLayout() settingsLayout {
 		}
 		return n
 	}
-	if fixed()+dispRows > room {
+	// What gets given up when it will not all fit, in order. settingsChrome
+	// counts the blank line above the bottom edge, but these two questions do
+	// not: the blank comes out of the window instead, so that a row the reader
+	// can scroll to is what pays for it rather than the explanation of the
+	// setting they are sitting on.
+	fits := func() bool { return fixed()-1+dispRows <= room }
+	if !fits() {
 		l.detail = false
 	}
-	if fixed()+dispRows > room {
+	if !fits() {
 		l.noticeLines = 1
 	}
 	l.window = max(min(dispRows, room-fixed()), 1)
@@ -891,6 +900,16 @@ func (a *App) settingsLayout() settingsLayout {
 	l.x = max((a.width-l.width)/2, 0)
 	l.y = max((a.height-l.height)/2, 0)
 	return l
+}
+
+// closeBox finishes a pane with the ending all three share: a blank row that
+// sets the last line off from the bottom edge, and the edge itself carrying the
+// pane's hints.
+func (a *App) closeBox(box []string, l settingsLayout, hints string) []string {
+	return append(box,
+		a.frameRow("", l.inner),
+		a.edge(l.width, "╰", "╯", hints, ""),
+	)
 }
 
 // renderSettings draws the pane over a finished screen.
@@ -979,7 +998,7 @@ func (a *App) templateBox(l settingsLayout) []string {
 		a.styles.Muted.Render(" · ") + a.styles.OverlayKey.Render("↑↓") + " " + a.styles.Muted.Render("scroll") +
 		a.styles.Muted.Render(" · ") + a.styles.OverlayKey.Render("esc") + " " + a.styles.Muted.Render("back")
 
-	return append(box, a.edge(l.width, "╰", "╯", hints, ""))
+	return a.closeBox(box, l, hints)
 }
 
 // subPaneBox renders the modal for collections (repos, review.repos, discovery.roots).
@@ -1087,7 +1106,7 @@ func (a *App) subPaneBox(l settingsLayout) []string {
 			a.styles.Muted.Render(" · ") + a.styles.OverlayKey.Render("esc") + " " + a.styles.Muted.Render("back")
 	}
 
-	return append(box, a.edge(l.width, "╰", "╯", hints, ""))
+	return a.closeBox(box, l, hints)
 }
 
 // settingsBox draws the pane container and its content lines.
@@ -1141,7 +1160,7 @@ func (a *App) settingsBox(l settingsLayout) []string {
 		}
 		box = append(box, a.frameRow(line, l.inner))
 	}
-	return append(box, a.edge(l.width, "╰", "╯", a.settingsHints(), ""))
+	return a.closeBox(box, l, a.settingsHints())
 }
 
 // settingLine renders an individual setting item row.
