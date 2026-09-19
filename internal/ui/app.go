@@ -698,15 +698,7 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			a.resetDetailNavigation()
 			return a, a.withSpinner(a.ensureChecks(a.selectedKey()))
 		}
-		if a.focus == paneDetail && a.page == detailOverview && a.section == detailWatch {
-			// Gated on the section still being there. clampScroll normalises a
-			// stale selection, but this key can arrive before it has run.
-			if pr, ok := a.selectedPR(); ok && a.hasWatchSection(pr) {
-				a.page = detailWatchPage
-				a.watchOffset = 0
-				a.clampScroll()
-			}
-		}
+		a.intoWatchLog()
 		return a, nil
 
 	case key.Matches(msg, a.keys.Back):
@@ -721,6 +713,12 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case key.Matches(msg, a.keys.Open):
+		// On the WATCH heading there is nothing of its own to open — the
+		// browser would get the pull request, which enter already does from
+		// the list — so it drills in, the way the same row answers →.
+		if a.intoWatchLog() {
+			return a, nil
+		}
 		return a, a.open()
 
 	case key.Matches(msg, a.keys.Copy):
@@ -1326,6 +1324,27 @@ func (a *App) normalizeDetailSelection() {
 		a.page = detailOverview
 		a.watchOffset = 0
 	}
+}
+
+// intoWatchLog drills from the detail overview into the watch log, and reports
+// whether there was anywhere to go. Both → and enter come through here: the
+// WATCH heading is the one selection with somewhere of its own to drill into,
+// and a check is the one with somewhere of its own to open, so each key
+// answers whichever the reader is sitting on.
+func (a *App) intoWatchLog() bool {
+	if a.focus != paneDetail || a.page != detailOverview || a.section != detailWatch {
+		return false
+	}
+	// Gated on the section still being there. clampScroll normalises a stale
+	// selection, but these keys can arrive before it has run.
+	pr, ok := a.selectedPR()
+	if !ok || !a.hasWatchSection(pr) {
+		return false
+	}
+	a.page = detailWatchPage
+	a.watchOffset = 0
+	a.clampScroll()
+	return true
 }
 
 // resetDetailNavigation returns the detail pane to its normal CHECKS view.
