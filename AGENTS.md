@@ -319,16 +319,39 @@ dotfiles-managed link stays a link.
 
 The `s` settings pane (`internal/ui/settings.go`) exposes all configuration options
 defined in `config.yaml`. All settings are registered in `internal/ui/settings_registry.go`
-through `settingDescriptor` definitions.
+as `settingDescriptor` values, almost all of them built by a constructor for their
+kind rather than written out.
+
+A setting gives up two things. A `settingMeta` says what it is called, which
+section it sits in, where it lives in the file and what to say when it changes.
+A `field[T]` says how to read the value from a `home.Config` and how to write it
+back. Everything else — the display, the comparison against the default, the
+step or toggle, the typed entry, the save and the reset — follows from those, so
+there is one copy of each rather than one per setting.
 
 To add a new setting:
 1. Add the field and YAML tag to the appropriate struct in `internal/home/config.go`,
    along with any defaults in `DefaultConfig()`.
-2. Add a `settingDescriptor` entry to `allSettings()` in `internal/ui/settings_registry.go`:
-   - Set `id`, `section`, `title`, `detail`, and `kind` (bool, enum, duration, int, string, template, map, list).
-   - Provide accessor/mutator functions (`isEnabled`/`toggle`, `getDisplay`/`getRaw`, `step`/`cycle`, `saveInput`, `reset`).
+2. Call the constructor for its kind from `allSettings()`: `boolSetting`,
+   `durationSetting`, `intSetting`, `stringSetting`, `templateSetting` or
+   `collectionSetting`. Give it a `settingMeta` and a `field[T]`, plus whatever
+   that kind needs — a minimum and a step for numbers, the placeholder for blank
+   text, the default for a template.
 3. If the setting uses a new composite structure or custom storage type, add the corresponding helper in
    `internal/home/settings_store.go` and `internal/home/yamledit.go`.
+
+Write a descriptor out in full only when its behaviour really is its own, and say
+why in a comment. Two are: `notifications.approved`, which applies for the session
+and says so when a save fails rather than refusing, and `herdr.fallback`, the only
+enum, which has nothing to share a constructor with.
+
+Save through the `App` helpers (`saveSetting`, `resetSetting` and the rest), never
+`a.store` directly. They write the file first and move `a.homeCfg` only once that
+has succeeded, because `a.homeCfg` is what the watcher polls and hands off by: a
+setting that is not in the file must not be one prutil is acting on.
+
+`TestEverySettingAnswersItsOwnControls` runs one case per registered setting, so a
+new one is covered by adding it.
 
 ## Things to avoid
 
