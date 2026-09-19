@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -647,4 +648,39 @@ func TestSettingsSubPaneRendering(t *testing.T) {
 	// Return to normal mode
 	send(t, app, press("esc"))
 	assert.Equal(t, settingsModeNormal, app.settings.mode)
+}
+
+func TestAFailedSaveLeavesTheRunningConfigurationAlone(t *testing.T) {
+	dir := t.TempDir()
+	// A root written as a flow mapping is a configuration prutil will not edit,
+	// so every save refuses. Any other refusal would do; what matters is that
+	// the write fails after the reader has asked for the change.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, home.ConfigFile), []byte("{watch: {base_interval: 2m}}\n"), 0o600))
+
+	cfg := fastWatch()
+	cfg.Watch.SelfReview = false
+	app := New(Config{Client: newFakeClient(nil, nil), Home: cfg, Store: home.OpenIn(dir), Notifier: &fakeNotifier{}})
+	send(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	err := app.saveSetting([]string{"watch", "base_interval"}, "9m", func(c *home.Config) {
+		c.Watch.BaseInterval = home.Duration(9 * time.Minute)
+	})
+
+	require.Error(t, err, "the file cannot be edited, so the save has to fail")
+	assert.Equal(t, cfg.Watch.BaseInterval, app.homeCfg.Watch.BaseInterval,
+		"a value that is not in the file is not the value prutil polls by")
+}
+
+func TestASucceedingSaveMovesTheRunningConfigurationWithIt(t *testing.T) {
+	app := New(Config{Client: newFakeClient(nil, nil), Home: fastWatch(), Store: home.OpenIn(t.TempDir()), Notifier: &fakeNotifier{}})
+	send(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	require.NoError(t, app.saveSetting([]string{"watch", "base_interval"}, "9m", func(c *home.Config) {
+		c.Watch.BaseInterval = home.Duration(9 * time.Minute)
+	}))
+
+	assert.Equal(t, home.Duration(9*time.Minute), app.homeCfg.Watch.BaseInterval)
+	saved, err := home.OpenIn(app.store.Dir()).LoadOrCreateConfig()
+	require.NoError(t, err)
+	assert.Equal(t, home.Duration(9*time.Minute), saved.Watch.BaseInterval, "and the file agrees")
 }

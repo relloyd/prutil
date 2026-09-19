@@ -480,14 +480,11 @@ func (a *App) handleTemplateEditorFinished(msg templateEditorFinishedMsg) tea.Cm
 			a.settings.setNotice("invalid template syntax: "+err.Error(), true)
 			return nil
 		}
-		a.homeCfg.Herdr.CheckPrompt = newContent
-		if a.store != nil {
-			if err := a.store.SaveBlockScalar([]string{"herdr", "check_prompt"}, newContent, func(c *home.Config) {
-				c.Herdr.CheckPrompt = newContent
-			}); err != nil {
-				a.settings.setNotice("could not save template: "+err.Error(), true)
-				return nil
-			}
+		if err := a.saveBlockScalar([]string{"herdr", "check_prompt"}, newContent, func(c *home.Config) {
+			c.Herdr.CheckPrompt = newContent
+		}); err != nil {
+			a.settings.setNotice("could not save template: "+err.Error(), true)
+			return nil
 		}
 		a.settings.setNotice("check prompt template updated · saved", false)
 	} else {
@@ -495,14 +492,11 @@ func (a *App) handleTemplateEditorFinished(msg templateEditorFinishedMsg) tea.Cm
 			a.settings.setNotice("invalid template syntax: "+err.Error(), true)
 			return nil
 		}
-		a.homeCfg.Herdr.Prompt = newContent
-		if a.store != nil {
-			if err := a.store.SaveBlockScalar([]string{"herdr", "prompt"}, newContent, func(c *home.Config) {
-				c.Herdr.Prompt = newContent
-			}); err != nil {
-				a.settings.setNotice("could not save template: "+err.Error(), true)
-				return nil
-			}
+		if err := a.saveBlockScalar([]string{"herdr", "prompt"}, newContent, func(c *home.Config) {
+			c.Herdr.Prompt = newContent
+		}); err != nil {
+			a.settings.setNotice("could not save template: "+err.Error(), true)
+			return nil
 		}
 		a.settings.setNotice("prompt template updated · saved", false)
 	}
@@ -608,11 +602,11 @@ func (a *App) handleSubPaneInputKey(msg tea.KeyPressMsg) tea.Cmd {
 			if val != "" {
 				roots := append([]string{}, a.homeCfg.Discovery.Roots...)
 				roots = append(roots, val)
-				a.homeCfg.Discovery.Roots = roots
-				if a.store != nil {
-					_ = a.store.SaveSequence([]string{"discovery", "roots"}, roots, func(c *home.Config) {
-						c.Discovery.Roots = roots
-					})
+				if err := a.saveSequence([]string{"discovery", "roots"}, roots, func(c *home.Config) {
+					c.Discovery.Roots = roots
+				}); err != nil {
+					a.settings.setNotice("could not save discovery roots: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Added discovery root %q · saved", val), false)
 			}
@@ -626,31 +620,25 @@ func (a *App) handleSubPaneInputKey(msg tea.KeyPressMsg) tea.Cmd {
 		if k != "" && v != "" {
 			switch sp.kind {
 			case subPaneRepos:
-				if a.homeCfg.Repos == nil {
-					a.homeCfg.Repos = map[string]string{}
-				}
-				a.homeCfg.Repos[k] = v
-				if a.store != nil {
-					_ = a.store.SaveMapEntry([]string{"repos"}, k, v, func(c *home.Config) {
-						if c.Repos == nil {
-							c.Repos = map[string]string{}
-						}
-						c.Repos[k] = v
-					})
+				if err := a.saveMapEntry([]string{"repos"}, k, v, func(c *home.Config) {
+					if c.Repos == nil {
+						c.Repos = map[string]string{}
+					}
+					c.Repos[k] = v
+				}); err != nil {
+					a.settings.setNotice("could not save the repository path: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Saved repo path %s -> %s · saved", k, v), false)
 			case subPaneReviewRepos:
-				if a.homeCfg.Review.Repos == nil {
-					a.homeCfg.Review.Repos = map[string]string{}
-				}
-				a.homeCfg.Review.Repos[k] = v
-				if a.store != nil {
-					_ = a.store.SaveMapEntry([]string{"review", "repos"}, k, v, func(c *home.Config) {
-						if c.Review.Repos == nil {
-							c.Review.Repos = map[string]string{}
-						}
-						c.Review.Repos[k] = v
-					})
+				if err := a.saveMapEntry([]string{"review", "repos"}, k, v, func(c *home.Config) {
+					if c.Review.Repos == nil {
+						c.Review.Repos = map[string]string{}
+					}
+					c.Review.Repos[k] = v
+				}); err != nil {
+					a.settings.setNotice("could not save the review trigger: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Saved review trigger for %s · saved", k), false)
 			}
@@ -703,33 +691,36 @@ func (a *App) deleteSubPaneEntry(entry string) tea.Cmd {
 	}
 	switch sp.kind {
 	case subPaneRepos:
-		delete(a.homeCfg.Repos, key)
-		if a.store != nil {
-			_ = a.store.DeleteMapEntry([]string{"repos"}, key, func(c *home.Config) {
-				delete(c.Repos, key)
-			})
+		if err := a.deleteMapEntry([]string{"repos"}, key, func(c *home.Config) {
+			delete(c.Repos, key)
+		}); err != nil {
+			a.settings.setNotice("could not remove the repository path: "+err.Error(), true)
+			return nil
 		}
 		a.settings.setNotice(fmt.Sprintf("Deleted repository path %q · saved", key), false)
 	case subPaneReviewRepos:
-		delete(a.homeCfg.Review.Repos, key)
-		if a.store != nil {
-			_ = a.store.DeleteMapEntry([]string{"review", "repos"}, key, func(c *home.Config) {
-				delete(c.Review.Repos, key)
-			})
+		if err := a.deleteMapEntry([]string{"review", "repos"}, key, func(c *home.Config) {
+			delete(c.Review.Repos, key)
+		}); err != nil {
+			a.settings.setNotice("could not remove the review trigger: "+err.Error(), true)
+			return nil
 		}
 		a.settings.setNotice(fmt.Sprintf("Deleted review trigger for %q · saved", key), false)
 	case subPaneDiscoveryRoots:
-		var roots []string
+		// Not a nil slice: ParseConfig reads "roots: []" back as an empty one, so
+		// nil here would never equal what the file says and the save would be
+		// refused for removing the last root. That refusal used to be discarded.
+		roots := []string{}
 		for _, r := range a.homeCfg.Discovery.Roots {
 			if r != entry {
 				roots = append(roots, r)
 			}
 		}
-		a.homeCfg.Discovery.Roots = roots
-		if a.store != nil {
-			_ = a.store.SaveSequence([]string{"discovery", "roots"}, roots, func(c *home.Config) {
-				c.Discovery.Roots = roots
-			})
+		if err := a.saveSequence([]string{"discovery", "roots"}, roots, func(c *home.Config) {
+			c.Discovery.Roots = roots
+		}); err != nil {
+			a.settings.setNotice("could not save discovery roots: "+err.Error(), true)
+			return nil
 		}
 		a.settings.setNotice(fmt.Sprintf("Deleted discovery root %q · saved", entry), false)
 	}

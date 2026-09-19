@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -124,11 +125,7 @@ func allSettings() []settingDescriptor {
 				return a.scheduleNotifications()
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Notifications.Set(home.NotifyApproved, defCfg.Notifications.Enabled(home.NotifyApproved))
-				if a.store != nil {
-					return a.store.SetNotification(home.NotifyApproved, defCfg.Notifications.Enabled(home.NotifyApproved))
-				}
-				return nil
+				return a.setNotification(home.NotifyApproved, defCfg.Notifications.Enabled(home.NotifyApproved))
 			},
 		},
 		{
@@ -156,15 +153,12 @@ func allSettings() []settingDescriptor {
 				if next < 15*time.Second {
 					next = 15 * time.Second
 				}
-				a.homeCfg.Notifications.Interval = home.Duration(next)
 				valStr := next.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"notifications", "interval"}, valStr, func(c *home.Config) {
-						c.Notifications.Interval = home.Duration(next)
-					}); err != nil {
-						a.settings.setNotice("could not save interval: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"notifications", "interval"}, valStr, func(c *home.Config) {
+					c.Notifications.Interval = home.Duration(next)
+				}); err != nil {
+					a.settings.setNotice("could not save interval: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Check poll interval set to %s · saved", valStr), false)
 				return a.scheduleNotifications()
@@ -177,26 +171,19 @@ func allSettings() []settingDescriptor {
 				if d < 15*time.Second {
 					return fmt.Errorf("minimum interval is 15s")
 				}
-				a.homeCfg.Notifications.Interval = home.Duration(d)
 				valStr := d.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"notifications", "interval"}, valStr, func(c *home.Config) {
-						c.Notifications.Interval = home.Duration(d)
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"notifications", "interval"}, valStr, func(c *home.Config) {
+					c.Notifications.Interval = home.Duration(d)
+				}); err != nil {
+					return err
 				}
 				a.settings.setNotice(fmt.Sprintf("Check poll interval set to %s · saved", valStr), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Notifications.Interval = defCfg.Notifications.Interval
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"notifications", "interval"}, func(c *home.Config) {
-						c.Notifications.Interval = defCfg.Notifications.Interval
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"notifications", "interval"}, func(c *home.Config) {
+					c.Notifications.Interval = defCfg.Notifications.Interval
+				})
 			},
 		},
 
@@ -215,22 +202,20 @@ func allSettings() []settingDescriptor {
 			},
 			toggle: func(a *App) tea.Cmd {
 				on := !a.homeCfg.Watch.SelfReview
-				a.homeCfg.Watch.SelfReview = on
-				if a.store != nil {
-					_ = a.store.SetWatchSelfReview(on)
+				// The error used to be discarded and the notice said "saved"
+				// either way, which is the one thing a settings pane must not
+				// say when it did not.
+				if err := a.setWatchSelfReview(on); err != nil {
+					a.settings.setNotice("could not save self-review feedback: "+err.Error(), true)
+					return nil
 				}
-				state := onOff(on)
-				a.settings.setNotice(fmt.Sprintf("Self-review feedback is %s · saved", state), false)
+				a.settings.setNotice(fmt.Sprintf("Self-review feedback is %s · saved", onOff(on)), false)
 				return a.rereadArmedReviews()
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Watch.SelfReview = false
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"watch", "self_review"}, func(c *home.Config) {
-						c.Watch.SelfReview = false
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"watch", "self_review"}, func(c *home.Config) {
+					c.Watch.SelfReview = false
+				})
 			},
 		},
 		{
@@ -258,15 +243,12 @@ func allSettings() []settingDescriptor {
 				if next < 15*time.Second {
 					next = 15 * time.Second
 				}
-				a.homeCfg.Watch.ActiveInterval = home.Duration(next)
 				valStr := next.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "active_interval"}, valStr, func(c *home.Config) {
-						c.Watch.ActiveInterval = home.Duration(next)
-					}); err != nil {
-						a.settings.setNotice("could not save interval: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"watch", "active_interval"}, valStr, func(c *home.Config) {
+					c.Watch.ActiveInterval = home.Duration(next)
+				}); err != nil {
+					a.settings.setNotice("could not save interval: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Active poll interval set to %s · saved", valStr), false)
 				return nil
@@ -279,26 +261,19 @@ func allSettings() []settingDescriptor {
 				if d < 15*time.Second {
 					return fmt.Errorf("minimum interval is 15s")
 				}
-				a.homeCfg.Watch.ActiveInterval = home.Duration(d)
 				valStr := d.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "active_interval"}, valStr, func(c *home.Config) {
-						c.Watch.ActiveInterval = home.Duration(d)
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"watch", "active_interval"}, valStr, func(c *home.Config) {
+					c.Watch.ActiveInterval = home.Duration(d)
+				}); err != nil {
+					return err
 				}
 				a.settings.setNotice(fmt.Sprintf("Active poll interval set to %s · saved", valStr), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Watch.ActiveInterval = defCfg.Watch.ActiveInterval
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"watch", "active_interval"}, func(c *home.Config) {
-						c.Watch.ActiveInterval = defCfg.Watch.ActiveInterval
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"watch", "active_interval"}, func(c *home.Config) {
+					c.Watch.ActiveInterval = defCfg.Watch.ActiveInterval
+				})
 			},
 		},
 		{
@@ -326,15 +301,12 @@ func allSettings() []settingDescriptor {
 				if next < 15*time.Second {
 					next = 15 * time.Second
 				}
-				a.homeCfg.Watch.BaseInterval = home.Duration(next)
 				valStr := next.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "base_interval"}, valStr, func(c *home.Config) {
-						c.Watch.BaseInterval = home.Duration(next)
-					}); err != nil {
-						a.settings.setNotice("could not save interval: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"watch", "base_interval"}, valStr, func(c *home.Config) {
+					c.Watch.BaseInterval = home.Duration(next)
+				}); err != nil {
+					a.settings.setNotice("could not save interval: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Base poll interval set to %s · saved", valStr), false)
 				return nil
@@ -347,26 +319,19 @@ func allSettings() []settingDescriptor {
 				if d < 15*time.Second {
 					return fmt.Errorf("minimum interval is 15s")
 				}
-				a.homeCfg.Watch.BaseInterval = home.Duration(d)
 				valStr := d.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "base_interval"}, valStr, func(c *home.Config) {
-						c.Watch.BaseInterval = home.Duration(d)
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"watch", "base_interval"}, valStr, func(c *home.Config) {
+					c.Watch.BaseInterval = home.Duration(d)
+				}); err != nil {
+					return err
 				}
 				a.settings.setNotice(fmt.Sprintf("Base poll interval set to %s · saved", valStr), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Watch.BaseInterval = defCfg.Watch.BaseInterval
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"watch", "base_interval"}, func(c *home.Config) {
-						c.Watch.BaseInterval = defCfg.Watch.BaseInterval
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"watch", "base_interval"}, func(c *home.Config) {
+					c.Watch.BaseInterval = defCfg.Watch.BaseInterval
+				})
 			},
 		},
 		{
@@ -394,15 +359,12 @@ func allSettings() []settingDescriptor {
 				if next < 15*time.Second {
 					next = 15 * time.Second
 				}
-				a.homeCfg.Watch.MaxInterval = home.Duration(next)
 				valStr := next.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "max_interval"}, valStr, func(c *home.Config) {
-						c.Watch.MaxInterval = home.Duration(next)
-					}); err != nil {
-						a.settings.setNotice("could not save max interval: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"watch", "max_interval"}, valStr, func(c *home.Config) {
+					c.Watch.MaxInterval = home.Duration(next)
+				}); err != nil {
+					a.settings.setNotice("could not save max interval: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Max poll backoff set to %s · saved", valStr), false)
 				return nil
@@ -415,26 +377,19 @@ func allSettings() []settingDescriptor {
 				if d < 15*time.Second {
 					return fmt.Errorf("minimum interval is 15s")
 				}
-				a.homeCfg.Watch.MaxInterval = home.Duration(d)
 				valStr := d.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "max_interval"}, valStr, func(c *home.Config) {
-						c.Watch.MaxInterval = home.Duration(d)
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"watch", "max_interval"}, valStr, func(c *home.Config) {
+					c.Watch.MaxInterval = home.Duration(d)
+				}); err != nil {
+					return err
 				}
 				a.settings.setNotice(fmt.Sprintf("Max poll backoff set to %s · saved", valStr), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Watch.MaxInterval = defCfg.Watch.MaxInterval
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"watch", "max_interval"}, func(c *home.Config) {
-						c.Watch.MaxInterval = defCfg.Watch.MaxInterval
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"watch", "max_interval"}, func(c *home.Config) {
+					c.Watch.MaxInterval = defCfg.Watch.MaxInterval
+				})
 			},
 		},
 		{
@@ -462,15 +417,12 @@ func allSettings() []settingDescriptor {
 				if next < 15*time.Second {
 					next = 15 * time.Second
 				}
-				a.homeCfg.Watch.NotifiedInterval = home.Duration(next)
 				valStr := next.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "notified_interval"}, valStr, func(c *home.Config) {
-						c.Watch.NotifiedInterval = home.Duration(next)
-					}); err != nil {
-						a.settings.setNotice("could not save interval: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"watch", "notified_interval"}, valStr, func(c *home.Config) {
+					c.Watch.NotifiedInterval = home.Duration(next)
+				}); err != nil {
+					a.settings.setNotice("could not save interval: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Post-handoff interval set to %s · saved", valStr), false)
 				return nil
@@ -483,26 +435,19 @@ func allSettings() []settingDescriptor {
 				if d < 15*time.Second {
 					return fmt.Errorf("minimum interval is 15s")
 				}
-				a.homeCfg.Watch.NotifiedInterval = home.Duration(d)
 				valStr := d.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "notified_interval"}, valStr, func(c *home.Config) {
-						c.Watch.NotifiedInterval = home.Duration(d)
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"watch", "notified_interval"}, valStr, func(c *home.Config) {
+					c.Watch.NotifiedInterval = home.Duration(d)
+				}); err != nil {
+					return err
 				}
 				a.settings.setNotice(fmt.Sprintf("Post-handoff interval set to %s · saved", valStr), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Watch.NotifiedInterval = defCfg.Watch.NotifiedInterval
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"watch", "notified_interval"}, func(c *home.Config) {
-						c.Watch.NotifiedInterval = defCfg.Watch.NotifiedInterval
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"watch", "notified_interval"}, func(c *home.Config) {
+					c.Watch.NotifiedInterval = defCfg.Watch.NotifiedInterval
+				})
 			},
 		},
 		{
@@ -530,15 +475,12 @@ func allSettings() []settingDescriptor {
 				if next < 15*time.Second {
 					next = 15 * time.Second
 				}
-				a.homeCfg.Watch.MaxNotifiedInterval = home.Duration(next)
 				valStr := next.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "max_notified_interval"}, valStr, func(c *home.Config) {
-						c.Watch.MaxNotifiedInterval = home.Duration(next)
-					}); err != nil {
-						a.settings.setNotice("could not save interval: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"watch", "max_notified_interval"}, valStr, func(c *home.Config) {
+					c.Watch.MaxNotifiedInterval = home.Duration(next)
+				}); err != nil {
+					a.settings.setNotice("could not save interval: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Max post-handoff cap set to %s · saved", valStr), false)
 				return nil
@@ -551,26 +493,19 @@ func allSettings() []settingDescriptor {
 				if d < 15*time.Second {
 					return fmt.Errorf("minimum interval is 15s")
 				}
-				a.homeCfg.Watch.MaxNotifiedInterval = home.Duration(d)
 				valStr := d.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "max_notified_interval"}, valStr, func(c *home.Config) {
-						c.Watch.MaxNotifiedInterval = home.Duration(d)
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"watch", "max_notified_interval"}, valStr, func(c *home.Config) {
+					c.Watch.MaxNotifiedInterval = home.Duration(d)
+				}); err != nil {
+					return err
 				}
 				a.settings.setNotice(fmt.Sprintf("Max post-handoff cap set to %s · saved", valStr), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Watch.MaxNotifiedInterval = defCfg.Watch.MaxNotifiedInterval
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"watch", "max_notified_interval"}, func(c *home.Config) {
-						c.Watch.MaxNotifiedInterval = defCfg.Watch.MaxNotifiedInterval
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"watch", "max_notified_interval"}, func(c *home.Config) {
+					c.Watch.MaxNotifiedInterval = defCfg.Watch.MaxNotifiedInterval
+				})
 			},
 		},
 		{
@@ -598,15 +533,12 @@ func allSettings() []settingDescriptor {
 				if next < 1*time.Second {
 					next = 1 * time.Second
 				}
-				a.homeCfg.Watch.IdleInterval = home.Duration(next)
 				valStr := next.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "idle_interval"}, valStr, func(c *home.Config) {
-						c.Watch.IdleInterval = home.Duration(next)
-					}); err != nil {
-						a.settings.setNotice("could not save interval: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"watch", "idle_interval"}, valStr, func(c *home.Config) {
+					c.Watch.IdleInterval = home.Duration(next)
+				}); err != nil {
+					a.settings.setNotice("could not save interval: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Agent idle interval set to %s · saved", valStr), false)
 				return nil
@@ -619,26 +551,19 @@ func allSettings() []settingDescriptor {
 				if d < 1*time.Second {
 					return fmt.Errorf("minimum interval is 1s")
 				}
-				a.homeCfg.Watch.IdleInterval = home.Duration(d)
 				valStr := d.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "idle_interval"}, valStr, func(c *home.Config) {
-						c.Watch.IdleInterval = home.Duration(d)
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"watch", "idle_interval"}, valStr, func(c *home.Config) {
+					c.Watch.IdleInterval = home.Duration(d)
+				}); err != nil {
+					return err
 				}
 				a.settings.setNotice(fmt.Sprintf("Agent idle interval set to %s · saved", valStr), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Watch.IdleInterval = defCfg.Watch.IdleInterval
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"watch", "idle_interval"}, func(c *home.Config) {
-						c.Watch.IdleInterval = defCfg.Watch.IdleInterval
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"watch", "idle_interval"}, func(c *home.Config) {
+					c.Watch.IdleInterval = defCfg.Watch.IdleInterval
+				})
 			},
 		},
 		{
@@ -665,15 +590,12 @@ func allSettings() []settingDescriptor {
 				if next < 1 {
 					next = 1
 				}
-				a.homeCfg.Watch.DormantAfter = next
 				valStr := strconv.Itoa(next)
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "dormant_after"}, valStr, func(c *home.Config) {
-						c.Watch.DormantAfter = next
-					}); err != nil {
-						a.settings.setNotice("could not save threshold: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"watch", "dormant_after"}, valStr, func(c *home.Config) {
+					c.Watch.DormantAfter = next
+				}); err != nil {
+					a.settings.setNotice("could not save threshold: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Dormant threshold set to %d polls · saved", next), false)
 				return nil
@@ -683,26 +605,19 @@ func allSettings() []settingDescriptor {
 				if err != nil || n < 1 {
 					return fmt.Errorf("must be a positive integer >= 1")
 				}
-				a.homeCfg.Watch.DormantAfter = n
 				valStr := strconv.Itoa(n)
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "dormant_after"}, valStr, func(c *home.Config) {
-						c.Watch.DormantAfter = n
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"watch", "dormant_after"}, valStr, func(c *home.Config) {
+					c.Watch.DormantAfter = n
+				}); err != nil {
+					return err
 				}
 				a.settings.setNotice(fmt.Sprintf("Dormant threshold set to %d polls · saved", n), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Watch.DormantAfter = defCfg.Watch.DormantAfter
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"watch", "dormant_after"}, func(c *home.Config) {
-						c.Watch.DormantAfter = defCfg.Watch.DormantAfter
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"watch", "dormant_after"}, func(c *home.Config) {
+					c.Watch.DormantAfter = defCfg.Watch.DormantAfter
+				})
 			},
 		},
 		{
@@ -729,15 +644,12 @@ func allSettings() []settingDescriptor {
 				if next < 1 {
 					next = 1
 				}
-				a.homeCfg.Watch.ForcePreciseEvery = next
 				valStr := strconv.Itoa(next)
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "force_precise_every"}, valStr, func(c *home.Config) {
-						c.Watch.ForcePreciseEvery = next
-					}); err != nil {
-						a.settings.setNotice("could not save interval: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"watch", "force_precise_every"}, valStr, func(c *home.Config) {
+					c.Watch.ForcePreciseEvery = next
+				}); err != nil {
+					a.settings.setNotice("could not save interval: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Force precise check set to every %d polls · saved", next), false)
 				return nil
@@ -747,26 +659,19 @@ func allSettings() []settingDescriptor {
 				if err != nil || n < 1 {
 					return fmt.Errorf("must be a positive integer >= 1")
 				}
-				a.homeCfg.Watch.ForcePreciseEvery = n
 				valStr := strconv.Itoa(n)
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "force_precise_every"}, valStr, func(c *home.Config) {
-						c.Watch.ForcePreciseEvery = n
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"watch", "force_precise_every"}, valStr, func(c *home.Config) {
+					c.Watch.ForcePreciseEvery = n
+				}); err != nil {
+					return err
 				}
 				a.settings.setNotice(fmt.Sprintf("Force precise check set to every %d polls · saved", n), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Watch.ForcePreciseEvery = defCfg.Watch.ForcePreciseEvery
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"watch", "force_precise_every"}, func(c *home.Config) {
-						c.Watch.ForcePreciseEvery = defCfg.Watch.ForcePreciseEvery
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"watch", "force_precise_every"}, func(c *home.Config) {
+					c.Watch.ForcePreciseEvery = defCfg.Watch.ForcePreciseEvery
+				})
 			},
 		},
 		{
@@ -792,13 +697,10 @@ func allSettings() []settingDescriptor {
 			},
 			saveInput: func(a *App, input string) error {
 				marker := strings.TrimSpace(input)
-				a.homeCfg.Watch.SelfTestMarker = &marker
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"watch", "self_test_marker"}, strconv.Quote(marker), func(c *home.Config) {
-						c.Watch.SelfTestMarker = &marker
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"watch", "self_test_marker"}, strconv.Quote(marker), func(c *home.Config) {
+					c.Watch.SelfTestMarker = &marker
+				}); err != nil {
+					return err
 				}
 				if marker == "" {
 					a.settings.setNotice("Self-test marker disabled · saved", false)
@@ -808,13 +710,9 @@ func allSettings() []settingDescriptor {
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Watch.SelfTestMarker = defCfg.Watch.SelfTestMarker
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"watch", "self_test_marker"}, func(c *home.Config) {
-						c.Watch.SelfTestMarker = defCfg.Watch.SelfTestMarker
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"watch", "self_test_marker"}, func(c *home.Config) {
+					c.Watch.SelfTestMarker = defCfg.Watch.SelfTestMarker
+				})
 			},
 		},
 
@@ -844,13 +742,10 @@ func allSettings() []settingDescriptor {
 			},
 			saveInput: func(a *App, input string) error {
 				comment := strings.TrimSpace(input)
-				a.homeCfg.Review.Comment = &comment
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"review", "comment"}, strconv.Quote(comment), func(c *home.Config) {
-						c.Review.Comment = &comment
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"review", "comment"}, strconv.Quote(comment), func(c *home.Config) {
+					c.Review.Comment = &comment
+				}); err != nil {
+					return err
 				}
 				if comment == "" {
 					a.settings.setNotice("Review comment trigger disabled · saved", false)
@@ -860,13 +755,9 @@ func allSettings() []settingDescriptor {
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Review.Comment = defCfg.Review.Comment
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"review", "comment"}, func(c *home.Config) {
-						c.Review.Comment = defCfg.Review.Comment
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"review", "comment"}, func(c *home.Config) {
+					c.Review.Comment = defCfg.Review.Comment
+				})
 			},
 		},
 		{
@@ -924,27 +815,20 @@ func allSettings() []settingDescriptor {
 					nextIdx += len(choices)
 				}
 				next := choices[nextIdx]
-				a.homeCfg.Herdr.Fallback = next
 				valStr := string(next)
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"herdr", "fallback"}, valStr, func(c *home.Config) {
-						c.Herdr.Fallback = next
-					}); err != nil {
-						a.settings.setNotice("could not save fallback: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"herdr", "fallback"}, valStr, func(c *home.Config) {
+					c.Herdr.Fallback = next
+				}); err != nil {
+					a.settings.setNotice("could not save fallback: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Fallback strategy set to %q · saved", next), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Herdr.Fallback = defCfg.Herdr.Fallback
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"herdr", "fallback"}, func(c *home.Config) {
-						c.Herdr.Fallback = defCfg.Herdr.Fallback
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"herdr", "fallback"}, func(c *home.Config) {
+					c.Herdr.Fallback = defCfg.Herdr.Fallback
+				})
 			},
 		},
 		{
@@ -969,13 +853,10 @@ func allSettings() []settingDescriptor {
 			},
 			saveInput: func(a *App, input string) error {
 				kind := strings.TrimSpace(input)
-				a.homeCfg.Herdr.AgentKind = kind
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"herdr", "agent_kind"}, strconv.Quote(kind), func(c *home.Config) {
-						c.Herdr.AgentKind = kind
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"herdr", "agent_kind"}, strconv.Quote(kind), func(c *home.Config) {
+					c.Herdr.AgentKind = kind
+				}); err != nil {
+					return err
 				}
 				if kind == "" {
 					a.settings.setNotice("Agent kind filter cleared (any agent allowed) · saved", false)
@@ -985,13 +866,9 @@ func allSettings() []settingDescriptor {
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Herdr.AgentKind = defCfg.Herdr.AgentKind
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"herdr", "agent_kind"}, func(c *home.Config) {
-						c.Herdr.AgentKind = defCfg.Herdr.AgentKind
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"herdr", "agent_kind"}, func(c *home.Config) {
+					c.Herdr.AgentKind = defCfg.Herdr.AgentKind
+				})
 			},
 		},
 		{
@@ -1016,13 +893,10 @@ func allSettings() []settingDescriptor {
 			},
 			saveInput: func(a *App, input string) error {
 				skill := strings.TrimSpace(input)
-				a.homeCfg.Herdr.Skill = skill
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"herdr", "skill"}, strconv.Quote(skill), func(c *home.Config) {
-						c.Herdr.Skill = skill
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"herdr", "skill"}, strconv.Quote(skill), func(c *home.Config) {
+					c.Herdr.Skill = skill
+				}); err != nil {
+					return err
 				}
 				if skill == "" {
 					a.settings.setNotice("Herdr skill cleared · saved", false)
@@ -1032,13 +906,9 @@ func allSettings() []settingDescriptor {
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Herdr.Skill = defCfg.Herdr.Skill
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"herdr", "skill"}, func(c *home.Config) {
-						c.Herdr.Skill = defCfg.Herdr.Skill
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"herdr", "skill"}, func(c *home.Config) {
+					c.Herdr.Skill = defCfg.Herdr.Skill
+				})
 			},
 		},
 		{
@@ -1066,15 +936,12 @@ func allSettings() []settingDescriptor {
 				if next < 0 {
 					next = 0
 				}
-				a.homeCfg.Herdr.WaitForIdle = home.Duration(next)
 				valStr := next.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"herdr", "wait_for_idle"}, valStr, func(c *home.Config) {
-						c.Herdr.WaitForIdle = home.Duration(next)
-					}); err != nil {
-						a.settings.setNotice("could not save timeout: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"herdr", "wait_for_idle"}, valStr, func(c *home.Config) {
+					c.Herdr.WaitForIdle = home.Duration(next)
+				}); err != nil {
+					a.settings.setNotice("could not save timeout: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Wait for idle timeout set to %s · saved", valStr), false)
 				return nil
@@ -1084,26 +951,19 @@ func allSettings() []settingDescriptor {
 				if err != nil {
 					return fmt.Errorf("not a duration: %w", err)
 				}
-				a.homeCfg.Herdr.WaitForIdle = home.Duration(d)
 				valStr := d.String()
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"herdr", "wait_for_idle"}, valStr, func(c *home.Config) {
-						c.Herdr.WaitForIdle = home.Duration(d)
-					}); err != nil {
-						return err
-					}
+				if err := a.saveSetting([]string{"herdr", "wait_for_idle"}, valStr, func(c *home.Config) {
+					c.Herdr.WaitForIdle = home.Duration(d)
+				}); err != nil {
+					return err
 				}
 				a.settings.setNotice(fmt.Sprintf("Wait for idle timeout set to %s · saved", valStr), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Herdr.WaitForIdle = defCfg.Herdr.WaitForIdle
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"herdr", "wait_for_idle"}, func(c *home.Config) {
-						c.Herdr.WaitForIdle = defCfg.Herdr.WaitForIdle
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"herdr", "wait_for_idle"}, func(c *home.Config) {
+					c.Herdr.WaitForIdle = defCfg.Herdr.WaitForIdle
+				})
 			},
 		},
 		{
@@ -1131,30 +991,23 @@ func allSettings() []settingDescriptor {
 			},
 			toggle: func(a *App) tea.Cmd {
 				next := !a.homeCfg.Herdr.DryRun
-				a.homeCfg.Herdr.DryRun = next
 				state := "off"
 				if next {
 					state = "on"
 				}
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"herdr", "dry_run"}, strconv.FormatBool(next), func(c *home.Config) {
-						c.Herdr.DryRun = next
-					}); err != nil {
-						a.settings.setNotice("could not save dry run: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"herdr", "dry_run"}, strconv.FormatBool(next), func(c *home.Config) {
+					c.Herdr.DryRun = next
+				}); err != nil {
+					a.settings.setNotice("could not save dry run: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Dry run mode is %s · saved", state), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Herdr.DryRun = defCfg.Herdr.DryRun
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"herdr", "dry_run"}, func(c *home.Config) {
-						c.Herdr.DryRun = defCfg.Herdr.DryRun
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"herdr", "dry_run"}, func(c *home.Config) {
+					c.Herdr.DryRun = defCfg.Herdr.DryRun
+				})
 			},
 		},
 		{
@@ -1182,30 +1035,23 @@ func allSettings() []settingDescriptor {
 			},
 			toggle: func(a *App) tea.Cmd {
 				next := !a.homeCfg.Herdr.Toast
-				a.homeCfg.Herdr.Toast = next
 				state := "off"
 				if next {
 					state = "on"
 				}
-				if a.store != nil {
-					if err := a.store.SaveSetting([]string{"herdr", "toast"}, strconv.FormatBool(next), func(c *home.Config) {
-						c.Herdr.Toast = next
-					}); err != nil {
-						a.settings.setNotice("could not save toast setting: "+err.Error(), true)
-						return nil
-					}
+				if err := a.saveSetting([]string{"herdr", "toast"}, strconv.FormatBool(next), func(c *home.Config) {
+					c.Herdr.Toast = next
+				}); err != nil {
+					a.settings.setNotice("could not save toast setting: "+err.Error(), true)
+					return nil
 				}
 				a.settings.setNotice(fmt.Sprintf("Herdr toast notifications %s · saved", state), false)
 				return nil
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Herdr.Toast = defCfg.Herdr.Toast
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"herdr", "toast"}, func(c *home.Config) {
-						c.Herdr.Toast = defCfg.Herdr.Toast
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"herdr", "toast"}, func(c *home.Config) {
+					c.Herdr.Toast = defCfg.Herdr.Toast
+				})
 			},
 		},
 		{
@@ -1229,13 +1075,9 @@ func allSettings() []settingDescriptor {
 				return a.homeCfg.Herdr.Prompt == home.DefaultPrompt
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Herdr.Prompt = home.DefaultPrompt
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"herdr", "prompt"}, func(c *home.Config) {
-						c.Herdr.Prompt = home.DefaultPrompt
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"herdr", "prompt"}, func(c *home.Config) {
+					c.Herdr.Prompt = home.DefaultPrompt
+				})
 			},
 		},
 		{
@@ -1259,13 +1101,9 @@ func allSettings() []settingDescriptor {
 				return a.homeCfg.Herdr.CheckPrompt == home.DefaultCheckPrompt
 			},
 			reset: func(a *App) error {
-				a.homeCfg.Herdr.CheckPrompt = home.DefaultCheckPrompt
-				if a.store != nil {
-					return a.store.ResetSetting([]string{"herdr", "check_prompt"}, func(c *home.Config) {
-						c.Herdr.CheckPrompt = home.DefaultCheckPrompt
-					})
-				}
-				return nil
+				return a.resetSetting([]string{"herdr", "check_prompt"}, func(c *home.Config) {
+					c.Herdr.CheckPrompt = home.DefaultCheckPrompt
+				})
 			},
 		},
 
@@ -1325,4 +1163,77 @@ func onOff(b bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// setNotification turns one desktop notification on or off, in the file first
+// and then in the running configuration. The store owns the change it makes to
+// the events map, so unlike the others this one names it here too.
+func (a *App) setNotification(event home.NotificationEvent, on bool) error {
+	return a.applySetting(func(c *home.Config) {
+		if c.Notifications.Events == nil {
+			c.Notifications.Events = map[home.NotificationEvent]bool{}
+		} else {
+			c.Notifications.Events = maps.Clone(c.Notifications.Events)
+		}
+		c.Notifications.Set(event, on)
+	}, func() error { return a.store.SetNotification(event, on) })
+}
+
+// setWatchSelfReview turns self-review feedback on or off.
+func (a *App) setWatchSelfReview(on bool) error {
+	return a.applySetting(func(c *home.Config) { c.Watch.SelfReview = on },
+		func() error { return a.store.SetWatchSelfReview(on) })
+}
+
+// saveSetting writes one setting into config.yaml and, once that has succeeded,
+// applies the same change to the configuration prutil is running on.
+//
+// The order is the whole point. apply is the change expressed as a function, so
+// the store can use it to say what the file ought to parse back to and this can
+// use it to move the running configuration to the same place. Every descriptor
+// used to assign to a.homeCfg first and save afterwards, which left a failed
+// save showing a value that is not in the file — and, because a.homeCfg is what
+// polls and hands off, acting on it until prutil was restarted.
+func (a *App) saveSetting(path []string, value string, apply func(c *home.Config)) error {
+	return a.applySetting(apply, func() error { return a.store.SaveSetting(path, value, apply) })
+}
+
+// saveBlockScalar is saveSetting for a multi-line value.
+func (a *App) saveBlockScalar(path []string, text string, apply func(c *home.Config)) error {
+	return a.applySetting(apply, func() error { return a.store.SaveBlockScalar(path, text, apply) })
+}
+
+// resetSetting takes a setting out of config.yaml, so that its default applies
+// again, and moves the running configuration with it.
+func (a *App) resetSetting(path []string, apply func(c *home.Config)) error {
+	return a.applySetting(apply, func() error { return a.store.ResetSetting(path, apply) })
+}
+
+// saveMapEntry and deleteMapEntry are saveSetting for one entry of a mapping.
+func (a *App) saveMapEntry(path []string, key, value string, apply func(c *home.Config)) error {
+	return a.applySetting(apply, func() error { return a.store.SaveMapEntry(path, key, value, apply) })
+}
+
+func (a *App) deleteMapEntry(path []string, key string, apply func(c *home.Config)) error {
+	return a.applySetting(apply, func() error { return a.store.DeleteMapEntry(path, key, apply) })
+}
+
+// saveSequence is saveSetting for a list.
+func (a *App) saveSequence(path []string, items []string, apply func(c *home.Config)) error {
+	return a.applySetting(apply, func() error { return a.store.SaveSequence(path, items, apply) })
+}
+
+// applySetting runs a write and applies apply to the running configuration only
+// afterwards. With nowhere to write, the running configuration is all there is,
+// so it applies straight away.
+func (a *App) applySetting(apply func(c *home.Config), write func() error) error {
+	if a.store == nil {
+		apply(&a.homeCfg)
+		return nil
+	}
+	if err := write(); err != nil {
+		return err
+	}
+	apply(&a.homeCfg)
+	return nil
 }
