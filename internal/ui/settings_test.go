@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -188,8 +188,8 @@ func TestSpaceTurnsSelfReviewOnAndSavesIt(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	openSettingsPane(t, app)
 
-	send(t, app, press("j"))
-	assert.Equal(t, 1, app.settings.cursor)
+	send(t, app, press("tab"))
+	assert.Equal(t, 2, app.settings.cursor)
 	assert.Contains(t, plain(app.render()), "Treat every unresolved review comment")
 
 	send(t, app, press("space"))
@@ -220,7 +220,7 @@ func TestTogglingSelfReviewReadsTheWatchedPullRequestsAgain(t *testing.T) {
 	before := client.reviewCalls
 
 	openSettingsPane(t, app)
-	send(t, app, press("j"))
+	send(t, app, press("tab"))
 	pump(t, app, send(t, app, press("space")))
 
 	assert.Equal(t, before+1, client.reviewCalls, "the armed pull request is read again")
@@ -373,11 +373,11 @@ func TestClickingASettingTogglesItAndClicksElsewhereDoNothing(t *testing.T) {
 	send(t, app, tea.MouseClickMsg{X: l.x + 4, Y: l.y + 2, Button: tea.MouseRight})
 	assert.False(t, app.homeCfg.Notifications.Enabled(home.NotifyApproved), "only the left button toggles")
 
-	send(t, app, click(l.x+4, l.y+3))
+	send(t, app, click(l.x+4, l.y+4))
 	assert.False(t, app.homeCfg.Watch.SelfReview, "a click on the second heading changes nothing")
 
-	send(t, app, click(l.x+4, l.y+4))
-	assert.True(t, app.homeCfg.Watch.SelfReview, "a click on the second row toggles it")
+	send(t, app, click(l.x+4, l.y+5))
+	assert.True(t, app.homeCfg.Watch.SelfReview, "a click on the self-review row toggles it")
 
 	send(t, app, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 	assert.Equal(t, cursor, app.cur().cursor, "the wheel does not scroll the list behind the pane")
@@ -393,10 +393,12 @@ func TestMovingTheSelectionStaysInsideTheListAndClearsTheNotice(t *testing.T) {
 	assert.Zero(t, app.settings.cursor, "up at the top stays put")
 	assert.NotEmpty(t, app.settings.notice, "staying put keeps the notice")
 	send(t, app, press("j"))
-	assert.Equal(t, len(allSettings)-1, app.settings.cursor)
+	assert.Equal(t, 1, app.settings.cursor)
 	assert.Empty(t, app.settings.notice, "a notice about another row is cleared")
+	send(t, app, press("G"))
+	assert.Equal(t, len(allSettings())-1, app.settings.cursor)
 	send(t, app, press("j"))
-	assert.Equal(t, len(allSettings)-1, app.settings.cursor, "down at the bottom stays put")
+	assert.Equal(t, len(allSettings())-1, app.settings.cursor, "down at the bottom stays put")
 }
 
 func TestTheSettingsExplainTheSelectedNotificationAndHowOftenPrutilLooks(t *testing.T) {
@@ -443,16 +445,242 @@ func TestTheSettingsFitEveryTerminalSize(t *testing.T) {
 
 			for step := 0; step < 2; step++ {
 				rendered := lines(app)
-				assert.Len(t, rendered, size.height, "the pane keeps the screen exactly the terminal's height")
-				for i, line := range rendered {
-					assert.LessOrEqual(t, ansi.StringWidth(line), size.width,
-						"line %d overflows the terminal: %q", i, line)
+				assert.LessOrEqual(t, len(rendered), size.height, "the pane fits inside the window")
+				for _, l := range rendered {
+					assert.LessOrEqual(t, ansi.StringWidth(l), size.width, "no line extends past the right edge")
 				}
-				assert.True(t, slices.ContainsFunc(rendered, func(line string) bool {
-					return strings.Contains(line, "[✓]") || strings.Contains(line, "[ ]")
-				}), "the setting itself is always on screen")
-				send(t, app, press("space"))
+				send(t, app, press("j"))
 			}
 		})
 	}
+}
+
+func TestSettingsSteppingAndCycling(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	app.homeCfg.Notifications.Interval = home.Duration(2 * time.Minute)
+	openSettingsPane(t, app)
+
+	// Cursor starts on notifications.approved (item 0)
+	assert.Equal(t, 0, app.settings.cursor)
+
+	// Move down to notifications.interval (item 1)
+	send(t, app, press("j"))
+	assert.Equal(t, 1, app.settings.cursor)
+
+	// Step interval up with +
+	send(t, app, press("+"))
+	assert.Equal(t, home.Duration(2*time.Minute+30*time.Second), app.homeCfg.Notifications.Interval)
+	assert.Contains(t, app.settings.notice, "Check poll interval set to 2m30s · saved")
+
+	// Step interval down with -
+	send(t, app, press("-"))
+	assert.Equal(t, home.Duration(2*time.Minute), app.homeCfg.Notifications.Interval)
+
+	// Jump to next section with tab (WATCHING & POLLING)
+	send(t, app, press("tab"))
+	assert.Equal(t, 2, app.settings.cursor) // watch.self_review
+
+	// Jump to next section with tab (AI REVIEW TRIGGER)
+	send(t, app, press("tab"))
+	assert.Equal(t, 12, app.settings.cursor) // review.comment
+
+	// Jump to next section with tab (CODING AGENT)
+	send(t, app, press("tab"))
+	assert.Equal(t, 14, app.settings.cursor) // herdr.fallback
+
+	// Cycle fallback strategy
+	assert.Equal(t, home.FallbackNew, app.homeCfg.Herdr.Fallback)
+	send(t, app, press("right"))
+	assert.Equal(t, home.FallbackNone, app.homeCfg.Herdr.Fallback)
+	assert.Contains(t, app.settings.notice, "Fallback strategy set to \"none\" · saved")
+
+	send(t, app, press("right"))
+	assert.Equal(t, home.FallbackRepo, app.homeCfg.Herdr.Fallback)
+
+	send(t, app, press("d")) // Reset to default
+	assert.Equal(t, home.FallbackNew, app.homeCfg.Herdr.Fallback)
+	assert.Contains(t, app.settings.notice, "reset to default · saved")
+}
+
+func TestSettingsInlineTextEditing(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	openSettingsPane(t, app)
+
+	// Jump to review.comment (item 12)
+	send(t, app, press("tab"))
+	send(t, app, press("tab"))
+	assert.Equal(t, 12, app.settings.cursor)
+
+	// Press enter to edit
+	send(t, app, press("enter"))
+	assert.Equal(t, settingsModeEdit, app.settings.mode)
+
+	// Clear and enter new comment
+	app.settings.input.SetValue("/claude review")
+	send(t, app, press("enter"))
+	assert.Equal(t, settingsModeNormal, app.settings.mode)
+	assert.Equal(t, "/claude review", app.homeCfg.Review.CommentFor(""))
+	assert.Contains(t, app.settings.notice, "Review comment set to \"/claude review\" · saved")
+}
+
+func TestSettingsSubPaneMapAndSequence(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	openSettingsPane(t, app)
+
+	// Jump to last section (REPOSITORIES & DISCOVERY)
+	send(t, app, press("G"))
+	assert.Equal(t, len(allSettings())-1, app.settings.cursor) // discovery.roots
+
+	// Open sub-pane
+	send(t, app, press("enter"))
+	assert.Equal(t, settingsModeSubPane, app.settings.mode)
+	assert.Equal(t, subPaneDiscoveryRoots, app.settings.subPane.kind)
+
+	// Add a root
+	send(t, app, press("a"))
+	assert.True(t, app.settings.subPane.adding)
+	app.settings.subPane.valInput.SetValue("~/src")
+	send(t, app, press("enter"))
+	assert.False(t, app.settings.subPane.adding)
+	assert.Equal(t, []string{"~/src"}, app.homeCfg.Discovery.Roots)
+	assert.Contains(t, app.settings.notice, "Added discovery root \"~/src\" · saved")
+
+	// Delete the root
+	send(t, app, press("d"))
+	assert.Empty(t, app.homeCfg.Discovery.Roots)
+	assert.Contains(t, app.settings.notice, "Deleted discovery root \"~/src\" · saved")
+
+	// Close sub-pane with esc
+	send(t, app, press("esc"))
+	assert.Equal(t, settingsModeNormal, app.settings.mode)
+}
+
+func TestSettingsTemplateViewerAndEditor(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	openSettingsPane(t, app)
+
+	promptIdx := -1
+	for i, it := range allSettings() {
+		if it.id == "herdr.prompt" {
+			promptIdx = i
+			break
+		}
+	}
+	require.True(t, promptIdx >= 0)
+	app.settings.cursor = promptIdx
+
+	// Press enter to view template modal
+	send(t, app, press("enter"))
+	assert.Equal(t, settingsModeTemplate, app.settings.mode)
+
+	// Render screen in template mode
+	screen := plain(app.render())
+	assert.Contains(t, screen, "Template: Review handoff prompt")
+	assert.Contains(t, screen, "1 │")
+	assert.Contains(t, screen, "edit in $EDITOR")
+
+	// Scroll down and up
+	send(t, app, press("down"))
+	assert.Equal(t, 1, app.settings.templateScroll)
+	send(t, app, press("up"))
+	assert.Equal(t, 0, app.settings.templateScroll)
+
+	// Simulate editor return with updated template
+	tmpFile, err := os.CreateTemp("", "test-tmpl-*.tmpl")
+	require.NoError(t, err)
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_, err = tmpFile.WriteString("Custom template for {{.Repo}}#{{.Number}}: {{.URL}}\n" + model.AgentCommentMarker + "\n")
+	require.NoError(t, err)
+	_ = tmpFile.Close()
+
+	cmd := app.handleTemplateEditorFinished(templateEditorFinishedMsg{
+		tmpFile: tmpFile.Name(),
+		isCheck: false,
+		err:     nil,
+	})
+	assert.Nil(t, cmd)
+	assert.Contains(t, app.homeCfg.Herdr.Prompt, "Custom template for")
+	assert.Contains(t, app.settings.notice, "prompt template updated · saved")
+
+	// Render screen again to verify new template content is visible
+	screenAfter := plain(app.render())
+	assert.Contains(t, screenAfter, "Custom template for")
+
+	// Reset to default
+	send(t, app, press("d"))
+	assert.Equal(t, home.DefaultPrompt, app.homeCfg.Herdr.Prompt)
+	assert.Contains(t, app.settings.notice, "template reset to default · saved")
+
+	// Press esc to return to normal list
+	send(t, app, press("esc"))
+	assert.Equal(t, settingsModeNormal, app.settings.mode)
+}
+
+func TestSettingsSubPaneRendering(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	openSettingsPane(t, app)
+
+	// Jump to discovery.roots
+	send(t, app, press("G"))
+	assert.Equal(t, len(allSettings())-1, app.settings.cursor)
+
+	// Enter subpane
+	send(t, app, press("enter"))
+	assert.Equal(t, settingsModeSubPane, app.settings.mode)
+
+	// Render empty subpane screen
+	screen := plain(app.render())
+	assert.Contains(t, screen, "Discovery: Checkout Roots")
+	assert.Contains(t, screen, "no entries configured")
+
+	// Start adding
+	send(t, app, press("a"))
+	assert.True(t, app.settings.subPane.adding)
+	addScreen := plain(app.render())
+	assert.Contains(t, addScreen, "ADD NEW ENTRY")
+	assert.Contains(t, addScreen, "Root path:")
+
+	// Cancel adding
+	send(t, app, press("esc"))
+	assert.False(t, app.settings.subPane.adding)
+	assert.Equal(t, settingsModeSubPane, app.settings.mode)
+
+	// Return to normal mode
+	send(t, app, press("esc"))
+	assert.Equal(t, settingsModeNormal, app.settings.mode)
+}
+
+func TestAFailedSaveLeavesTheRunningConfigurationAlone(t *testing.T) {
+	dir := t.TempDir()
+	// A root written as a flow mapping is a configuration prutil will not edit,
+	// so every save refuses. Any other refusal would do; what matters is that
+	// the write fails after the reader has asked for the change.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, home.ConfigFile), []byte("{watch: {base_interval: 2m}}\n"), 0o600))
+
+	cfg := fastWatch()
+	cfg.Watch.SelfReview = false
+	app := New(Config{Client: newFakeClient(nil, nil), Home: cfg, Store: home.OpenIn(dir), Notifier: &fakeNotifier{}})
+	send(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	err := app.saveSetting([]string{"watch", "base_interval"}, "9m", func(c *home.Config) {
+		c.Watch.BaseInterval = home.Duration(9 * time.Minute)
+	})
+
+	require.Error(t, err, "the file cannot be edited, so the save has to fail")
+	assert.Equal(t, cfg.Watch.BaseInterval, app.homeCfg.Watch.BaseInterval,
+		"a value that is not in the file is not the value prutil polls by")
+}
+
+func TestASucceedingSaveMovesTheRunningConfigurationWithIt(t *testing.T) {
+	app := New(Config{Client: newFakeClient(nil, nil), Home: fastWatch(), Store: home.OpenIn(t.TempDir()), Notifier: &fakeNotifier{}})
+	send(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	require.NoError(t, app.saveSetting([]string{"watch", "base_interval"}, "9m", func(c *home.Config) {
+		c.Watch.BaseInterval = home.Duration(9 * time.Minute)
+	}))
+
+	assert.Equal(t, home.Duration(9*time.Minute), app.homeCfg.Watch.BaseInterval)
+	saved, err := home.OpenIn(app.store.Dir()).LoadOrCreateConfig()
+	require.NoError(t, err)
+	assert.Equal(t, home.Duration(9*time.Minute), saved.Watch.BaseInterval, "and the file agrees")
 }

@@ -104,7 +104,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `R` | trigger an AI review on the selected open pull request by posting the configured comment |
 | `N` | check the selected open pull request for new review feedback and notify an existing agent |
 | `tab` | switch between your open and your recently closed pull requests |
-| `s` or `,` | open settings: choose which pull request changes raise a desktop notification |
+| `s` or `,` | open settings: configure notifications, polling intervals, review triggers, and coding agent settings |
 | `?` | open the shortcut overlay: type to filter, `enter` to run the highlighted shortcut, `esc` or `?` to close |
 | `q` or `ctrl+c` | quit |
 
@@ -134,13 +134,23 @@ terminal you are not looking at. It raises one today:
 | --- | --- |
 | Pull request approved | GitHub's review decision turns to approved, or, in a repository without review rules, the pull request gets its first approval |
 
-It is on by default. Press `s` (or `,`) to open the settings, where `space`
-turns a notification on or off, `t` sends a test notification, and `esc`
-closes the pane. A change is saved to `config.yaml` as soon as you make it:
-prutil changes that one value in place and leaves the rest of the file, your
-comments included, exactly as it was. A configuration that does not parse, or
-that is written in a shape prutil does not edit (such as a flow mapping), is
-left alone, and the pane says which setting to change by hand.
+It is on by default. Press `s` (or `,`) to open the settings pane, where you can
+view and edit all prutil configuration options. In the pane:
+- `space` toggles boolean settings on or off.
+- `+` / `-` steps poll intervals and durations.
+- `←` / `→` cycles enum options (such as agent fallback strategies).
+- `enter` enters inline editing for strings and custom numbers, launches `$EDITOR`
+  for prompt templates, or opens sub-panes for repository mappings and discovery roots.
+- `d` resets the selected setting to its default value.
+- `tab` / `shift+tab` jumps between settings sections.
+- `t` sends a test desktop notification.
+- `esc` closes the pane.
+
+A change is saved to `config.yaml` as soon as you make it: prutil changes that
+one value in place and leaves the rest of the file, your comments included,
+exactly as it was. A configuration that does not parse, or that is written in a
+shape prutil does not edit (such as a flow mapping), is left alone, and the pane
+reports why.
 
 While any notification is on, prutil reads every open pull request every two
 minutes (`notifications.interval`), using the watcher's cheap query: one

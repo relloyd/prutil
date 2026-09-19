@@ -307,12 +307,28 @@ interface and a nil `*home.Store` inside one. The second is the trap: it passes
 an ordinary nil check and then dereferences a nil receiver.
 
 Apart from the first-run template, the settings pane is the only thing that
-writes `config.yaml`, and `Store.SetNotification` changes one value by editing the text in place
-(`setScalar` in `internal/home/yamledit.go`), then reads the result back and
-refuses to write anything that differs by more than that value. Do not replace
-it with a decode and re-encode: yaml.v3 drops blank lines and moves comments,
-in a file the reader wrote by hand. The file is resolved through symbolic links
-before it is replaced, so a dotfiles-managed link stays a link.
+writes `config.yaml`. `Store` methods change values by editing the text in place
+(`setScalar`, `setBlockScalar`, `setMapEntry`, `setSequence`, and `deleteKey` in
+`internal/home/yamledit.go`), then read the result back and verify that nothing
+else in the configuration changed. Do not replace it with a decode and re-encode:
+yaml.v3 drops blank lines and moves comments, in a file the reader wrote by hand.
+The file is resolved through symbolic links before it is replaced, so a
+dotfiles-managed link stays a link.
+
+## Settings and the settings pane
+
+The `s` settings pane (`internal/ui/settings.go`) exposes all configuration options
+defined in `config.yaml`. All settings are registered in `internal/ui/settings_registry.go`
+through `settingDescriptor` definitions.
+
+To add a new setting:
+1. Add the field and YAML tag to the appropriate struct in `internal/home/config.go`,
+   along with any defaults in `DefaultConfig()`.
+2. Add a `settingDescriptor` entry to `allSettings()` in `internal/ui/settings_registry.go`:
+   - Set `id`, `section`, `title`, `detail`, and `kind` (bool, enum, duration, int, string, template, map, list).
+   - Provide accessor/mutator functions (`isEnabled`/`toggle`, `getDisplay`/`getRaw`, `step`/`cycle`, `saveInput`, `reset`).
+3. If the setting uses a new composite structure or custom storage type, add the corresponding helper in
+   `internal/home/settings_store.go` and `internal/home/yamledit.go`.
 
 ## Things to avoid
 

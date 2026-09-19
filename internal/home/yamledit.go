@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -45,12 +46,9 @@ func setScalar(src []byte, path []string, value string) ([]byte, error) {
 	if doc.Kind == 0 {
 		return t.appendLines(t.render(path, value, 0)), nil
 	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return nil, errors.New("the configuration is not a set of keys")
-	}
-	root := doc.Content[0]
-	if root.Kind != yaml.MappingNode || root.Style&yaml.FlowStyle != 0 {
-		return nil, errors.New("the configuration is not a set of keys written one per line")
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
 	}
 	t.unit = indentUnit(root)
 
@@ -86,6 +84,26 @@ func setScalar(src []byte, path []string, value string) ([]byte, error) {
 		}
 	}
 	return nil, errors.New("unreachable")
+}
+
+// blockRoot is the document's root mapping, which is the only shape prutil
+// edits. A flow mapping written on one line, a sequence or a bare scalar is
+// somebody else's idea of a configuration file, and walking it as though it
+// held keys one per line appends nonsense that only the read-back check in
+// applySave would catch — as a refusal the reader cannot act on.
+//
+// Every entry point goes through here so that they cannot disagree about what
+// they will edit, which they did: setScalar checked both the kind and the
+// style, setBlockScalar only the kind, and the rest neither.
+func blockRoot(doc *yaml.Node) (*yaml.Node, error) {
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil, errors.New("the configuration is not a set of keys")
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode || root.Style&yaml.FlowStyle != 0 {
+		return nil, errors.New("the configuration is not a set of keys written one per line")
+	}
+	return root, nil
 }
 
 // plainKey is the shape of a key setScalar will write without quoting.
@@ -246,6 +264,24 @@ func (t *yamlText) lastLine(n *yaml.Node) (int, bool) {
 	return 0, false
 }
 
+func (t *yamlText) lastBlockScalarLine(key, val *yaml.Node) int {
+	last := val.Line
+	baseIndent := key.Column - 1
+	for i := val.Line; i < len(t.lines); i++ {
+		trimmed := strings.TrimSpace(t.lines[i])
+		if trimmed == "" {
+			continue
+		}
+		indent := len(t.lines[i]) - len(strings.TrimLeft(t.lines[i], " "))
+		if indent > baseIndent {
+			last = i + 1
+		} else {
+			break
+		}
+	}
+	return last
+}
+
 // replace writes value over the scalar val, the value of key.
 func (t *yamlText) replace(key, val *yaml.Node, value string) error {
 	if val.Kind != yaml.ScalarNode || val.Anchor != "" {
@@ -374,4 +410,417 @@ func (t *yamlText) offset(line, column int) (int, int, error) {
 		at += size
 	}
 	return line - 1, at, nil
+}
+
+// renderBlock writes path with value as a block scalar (|-).
+func (t *yamlText) renderBlock(path []string, value string, indent int) []string {
+	out := make([]string, 0, len(path)+1)
+	for i, key := range path {
+		line := strings.Repeat(" ", indent+i*t.unit) + key + ":"
+		if i == len(path)-1 {
+			// The indentation indicator is what makes a template that starts
+			// with a space or a tab survive the round trip. A bare |- takes the
+			// block's indentation from its first non-empty line, so a first
+			// line indented further than the rest puts every later line
+			// outside the block, and the file stops parsing. Saying the
+			// indentation outright leaves the content's own leading whitespace
+			// as content.
+			line += fmt.Sprintf(" |%d-", t.unit)
+		}
+		out = append(out, t.ending(line))
+	}
+	contentIndent := indent + len(path)*t.unit
+	for _, l := range strings.Split(value, "\n") {
+		line := ""
+		if strings.TrimSpace(l) != "" {
+			line = strings.Repeat(" ", contentIndent) + l
+		}
+		out = append(out, t.ending(line))
+	}
+	return out
+}
+
+// replaceBlock writes a block scalar over key and val.
+func (t *yamlText) replaceBlock(key, val *yaml.Node, value string) {
+	startLine := key.Line - 1
+	endLine := key.Line
+	if val.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+		endLine = t.lastBlockScalarLine(key, val)
+	} else if last, ok := t.lastLine(val); ok {
+		endLine = last
+	}
+	indent := key.Column - 1
+	lines := t.renderBlock([]string{key.Value}, value, indent)
+	t.lines = slices.Replace(t.lines, startLine, endLine, lines...)
+}
+
+// setBlockScalar sets a multiline string at path using YAML literal block scalar style (|-).
+func setBlockScalar(src []byte, path []string, value string) ([]byte, error) {
+	if len(path) == 0 {
+		return nil, errors.New("no setting named")
+	}
+	for _, key := range path {
+		if !plainKey.MatchString(key) {
+			return nil, fmt.Errorf("%q is not a key prutil writes", key)
+		}
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(src, &doc); err != nil {
+		return nil, err
+	}
+	if len(doc.Content) == 0 {
+		t := newYAMLText(src)
+		return t.appendLines(t.renderBlock(path, value, 0)), nil
+	}
+
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
+	}
+
+	t := newYAMLText(src)
+	t.unit = indentUnit(root)
+	parent, holder := root, (*yaml.Node)(nil)
+	for i, name := range path {
+		last := i == len(path)-1
+		key, val := lookup(parent, name)
+		switch {
+		case key == nil:
+			lines := t.renderBlock(path[i:], value, parent.Column-1)
+			if holder == nil {
+				return t.appendLines(lines), nil
+			}
+			return t.insert(t.endOf(parent, holder), lines), nil
+
+		case last:
+			t.replaceBlock(key, val, value)
+			return t.bytes(), nil
+
+		case val.Kind == yaml.MappingNode && val.Style&yaml.FlowStyle == 0 && val.Anchor == "":
+			parent, holder = val, key
+
+		case isEmpty(val):
+			if err := t.clear(key, val); err != nil {
+				return nil, fmt.Errorf("%s: %w", dotted(path[:i+1]), err)
+			}
+			return t.insert(key.Line, t.renderBlock(path[i+1:], value, key.Column-1+t.unit)), nil
+
+		default:
+			return nil, fmt.Errorf("%s is not written as one key per line", dotted(path[:i+1]))
+		}
+	}
+	return nil, errors.New("unreachable")
+}
+
+// setMapEntry adds or updates a key-value entry in the mapping at path.
+func setMapEntry(src []byte, path []string, mapKey, mapVal string) ([]byte, error) {
+	if len(path) == 0 {
+		return nil, errors.New("no setting named")
+	}
+	for _, key := range path {
+		if !plainKey.MatchString(key) {
+			return nil, fmt.Errorf("%q is not a key prutil writes", key)
+		}
+	}
+	if strings.TrimSpace(mapKey) == "" {
+		return nil, errors.New("map key cannot be empty")
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(src, &doc); err != nil {
+		return nil, fmt.Errorf("could not read the configuration: %w", err)
+	}
+	t := newYAMLText(src)
+
+	if doc.Kind == 0 {
+		lines := t.render(path, "", 0)
+		entryLine := strings.Repeat(" ", t.unit) + formatMapKey(mapKey) + ": " + formatMapVal(mapVal)
+		lines = append(lines, t.ending(entryLine))
+		return t.appendLines(lines), nil
+	}
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
+	}
+	t.unit = indentUnit(root)
+
+	parent, holder := root, (*yaml.Node)(nil)
+	for i, name := range path {
+		key, val := lookup(parent, name)
+		last := i == len(path)-1
+		switch {
+		case key == nil:
+			lines := t.render(path[i:], "", parent.Column-1)
+			entryLine := strings.Repeat(" ", parent.Column-1+len(path[i:])*t.unit) + formatMapKey(mapKey) + ": " + formatMapVal(mapVal)
+			lines = append(lines, t.ending(entryLine))
+			if holder == nil {
+				return t.appendLines(lines), nil
+			}
+			return t.insert(t.endOf(parent, holder), lines), nil
+
+		case last:
+			if val.Kind == yaml.MappingNode && val.Style&yaml.FlowStyle == 0 {
+				entryKey, entryVal := lookup(val, mapKey)
+				if entryKey != nil {
+					if err := t.replace(entryKey, entryVal, formatMapVal(mapVal)); err != nil {
+						return nil, err
+					}
+					return t.bytes(), nil
+				}
+				line := strings.Repeat(" ", val.Column-1) + formatMapKey(mapKey) + ": " + formatMapVal(mapVal)
+				return t.insert(t.endOf(val, key), []string{t.ending(line)}), nil
+			}
+			if isEmpty(val) {
+				if err := t.clear(key, val); err != nil {
+					return nil, err
+				}
+				line := strings.Repeat(" ", key.Column-1+t.unit) + formatMapKey(mapKey) + ": " + formatMapVal(mapVal)
+				return t.insert(key.Line, []string{t.ending(line)}), nil
+			}
+			return nil, fmt.Errorf("%s is not a mapping", dotted(path))
+
+		case val.Kind == yaml.MappingNode && val.Style&yaml.FlowStyle == 0 && val.Anchor == "":
+			parent, holder = val, key
+
+		default:
+			return nil, fmt.Errorf("%s is not written as one key per line", dotted(path[:i+1]))
+		}
+	}
+	return nil, errors.New("unreachable")
+}
+
+// deleteMapEntry removes an entry from the mapping at path.
+func deleteMapEntry(src []byte, path []string, mapKey string) ([]byte, error) {
+	if len(path) == 0 {
+		return nil, errors.New("no setting named")
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(src, &doc); err != nil {
+		return nil, fmt.Errorf("could not read the configuration: %w", err)
+	}
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
+	}
+	t := newYAMLText(src)
+	t.unit = indentUnit(root)
+
+	parent := root
+	for i, name := range path {
+		key, val := lookup(parent, name)
+		if key == nil || val == nil {
+			return src, nil
+		}
+		last := i == len(path)-1
+		if last {
+			if val.Kind != yaml.MappingNode {
+				return src, nil
+			}
+			entryKey, entryVal := lookup(val, mapKey)
+			if entryKey == nil {
+				return src, nil
+			}
+			t.lines = slices.Delete(t.lines, t.headCommentLine(entryKey), t.endOfEntry(entryKey, entryVal))
+			return t.bytes(), nil
+		}
+		if val.Kind == yaml.MappingNode {
+			parent = val
+		} else {
+			return src, nil
+		}
+	}
+	return src, nil
+}
+
+// setSequence sets a list of items at path.
+func setSequence(src []byte, path []string, items []string) ([]byte, error) {
+	if len(path) == 0 {
+		return nil, errors.New("no setting named")
+	}
+	for _, key := range path {
+		if !plainKey.MatchString(key) {
+			return nil, fmt.Errorf("%q is not a key prutil writes", key)
+		}
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(src, &doc); err != nil {
+		return nil, fmt.Errorf("could not read the configuration: %w", err)
+	}
+	t := newYAMLText(src)
+
+	renderSeq := func(indent int, keyName string) []string {
+		if len(items) == 0 {
+			return []string{t.ending(strings.Repeat(" ", indent) + keyName + ": []")}
+		}
+		lines := []string{t.ending(strings.Repeat(" ", indent) + keyName + ":")}
+		for _, item := range items {
+			lines = append(lines, t.ending(strings.Repeat(" ", indent+t.unit)+"- "+formatMapVal(item)))
+		}
+		return lines
+	}
+
+	if doc.Kind == 0 {
+		lines := make([]string, 0, len(path)+len(items))
+		for i, k := range path[:len(path)-1] {
+			lines = append(lines, t.ending(strings.Repeat(" ", i*t.unit)+k+":"))
+		}
+		lines = append(lines, renderSeq((len(path)-1)*t.unit, path[len(path)-1])...)
+		return t.appendLines(lines), nil
+	}
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
+	}
+	t.unit = indentUnit(root)
+
+	parent, holder := root, (*yaml.Node)(nil)
+	for i, name := range path {
+		key, val := lookup(parent, name)
+		last := i == len(path)-1
+		switch {
+		case key == nil:
+			lines := make([]string, 0, len(path[i:])+len(items))
+			for j, k := range path[i : len(path)-1] {
+				lines = append(lines, t.ending(strings.Repeat(" ", parent.Column-1+j*t.unit)+k+":"))
+			}
+			lines = append(lines, renderSeq(parent.Column-1+(len(path[i:])-1)*t.unit, path[len(path)-1])...)
+			if holder == nil {
+				return t.appendLines(lines), nil
+			}
+			return t.insert(t.endOf(parent, holder), lines), nil
+
+		case last:
+			startLine := key.Line - 1
+			endLine := key.Line
+			if last, ok := t.lastLine(val); ok {
+				endLine = last
+			}
+			newLines := renderSeq(key.Column-1, key.Value)
+			t.lines = slices.Replace(t.lines, startLine, endLine, newLines...)
+			return t.bytes(), nil
+
+		case val.Kind == yaml.MappingNode && val.Style&yaml.FlowStyle == 0 && val.Anchor == "":
+			parent, holder = val, key
+
+		default:
+			return nil, fmt.Errorf("%s is not written as one key per line", dotted(path[:i+1]))
+		}
+	}
+	return nil, errors.New("unreachable")
+}
+
+// deleteKey removes the key and value at path.
+func deleteKey(src []byte, path []string) ([]byte, error) {
+	if len(path) == 0 {
+		return nil, errors.New("no setting named")
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(src, &doc); err != nil {
+		return nil, fmt.Errorf("could not read the configuration: %w", err)
+	}
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
+	}
+	t := newYAMLText(src)
+
+	parent := root
+	for i, name := range path {
+		key, val := lookup(parent, name)
+		if key == nil || val == nil {
+			return src, nil
+		}
+		last := i == len(path)-1
+		if last {
+			t.lines = slices.Delete(t.lines, t.headCommentLine(key), t.endOfEntry(key, val))
+			return t.bytes(), nil
+		}
+		if val.Kind == yaml.MappingNode {
+			parent = val
+		} else {
+			return src, nil
+		}
+	}
+	return src, nil
+}
+
+// endOfEntry is the line index one past the last line a key and its value
+// occupy, which is what deleting the whole entry needs.
+//
+// lastLine will not vouch for a block scalar — token refuses the style — so
+// without the second case a multi-line prompt loses its "prompt: |2-" line and
+// keeps its body, indented under a mapping that no longer has a key for it.
+// That does not parse, which is how the reset ends up refusing every template.
+func (t *yamlText) endOfEntry(key, val *yaml.Node) int {
+	if val.Kind == yaml.ScalarNode && val.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+		return t.lastBlockScalarLine(key, val)
+	}
+	if last, ok := t.lastLine(val); ok {
+		return last
+	}
+	return key.Line
+}
+
+// headCommentLine is the line index the key's entry starts at once the comment
+// introducing it is counted in, so that deleting the key takes its
+// documentation with it rather than leaving it to read as the next key's.
+//
+// Only an unbroken run of comments at the key's own indentation counts. A blank
+// line ends the run: a comment set off from the key by one is as likely to
+// belong to the section as to the key, and leaving it is the smaller mistake.
+func (t *yamlText) headCommentLine(key *yaml.Node) int {
+	start := key.Line - 1
+	if key.HeadComment == "" {
+		return start
+	}
+	indent := key.Column - 1
+	for i := start - 1; i >= 0; i-- {
+		line := strings.TrimSuffix(t.lines[i], "\r")
+		trimmed := strings.TrimLeft(line, " ")
+		if !strings.HasPrefix(trimmed, "#") || len(line)-len(trimmed) != indent {
+			break
+		}
+		start = i
+	}
+	return start
+}
+
+// plainScalar is a value that means itself written bare: no leading character
+// YAML reads as syntax, nothing inside it that ends a scalar, and not one of
+// the words YAML resolves to something other than a string.
+//
+// It is an allowlist because the opposite was tried and leaked: a list of
+// characters to quote has to name every one of *&![]{}|>%@`,#'" and the
+// indicator rules for each, and the two that are worst are the two that get
+// missed. `*star` and `&amp` are still valid YAML — an alias and an anchor —
+// so they parse, and the value read back is not the value written.
+var plainScalar = regexp.MustCompile(`^[A-Za-z0-9_./~+=-][A-Za-z0-9_./~+= @-]*$`)
+
+// yamlWords are the scalars that read back as something other than the string
+// they look like. YAML 1.1 readers, which this one follows for booleans, take
+// all of these.
+var yamlWords = map[string]bool{
+	"y": true, "yes": true, "n": true, "no": true, "true": true, "false": true,
+	"on": true, "off": true, "null": true, "nil": true, "~": true,
+}
+
+func formatMapKey(k string) string {
+	if plainKey.MatchString(k) {
+		return k
+	}
+	return strconv.Quote(k)
+}
+
+func formatMapVal(v string) string {
+	if !plainScalar.MatchString(v) || yamlWords[strings.ToLower(v)] {
+		return strconv.Quote(v)
+	}
+	// A bare scalar that reads as a number comes back as one, so anything that
+	// parses as a number is quoted to stay the string it was given as.
+	if _, err := strconv.ParseFloat(v, 64); err == nil {
+		return strconv.Quote(v)
+	}
+	return v
 }
