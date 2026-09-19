@@ -98,7 +98,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `y` or `c` | copy the selected pull request's URL, or the selected check's, to the clipboard |
 | `r` | refresh from GitHub |
 | `a` | auto-refresh: reload every 30s, five times over. press again to add five more |
-| `w` | watch the selected pull request, or stop watching it |
+| `w` | watch the selected open pull request, or stop watching it |
 | `W` | hand the selected pull request's open review feedback to a coding agent now, creating one when needed |
 | `F` | investigate the selected pull request's failed checks now |
 | `R` | trigger an AI review on the selected open pull request by posting the configured comment |
@@ -189,7 +189,26 @@ request for the list plus the checks it warms.
 
 `w` marks a pull request as watched. The row grows a `◉`, the header counts how
 many are marked, and the mark survives quitting: it is kept in prutil's own
-directory, not in the terminal.
+directory, not in the terminal. Marking one is available in the open list only,
+because polling addresses a pull request by the node id that list came with;
+taking a mark off works from any view.
+
+The header's tally reads `◉ 3 ◎ 1 watched · next poll 45s`. The filled count is
+how many watched pull requests prutil is still asking GitHub about; the hollow
+one, shown only when it is not zero, is how many are still armed but not being
+asked about — either they have gone dormant (see below) or they are not in the
+list prutil is holding, so there is nothing to address a poll to. Together they
+add up to everything `w` has marked, and a row carries the same glyph as the
+half of the tally it belongs to. `next poll` is how long until the soonest of
+the active ones is read again.
+
+A watched pull request stops being watched on its own once prutil sees it
+merged or closed in the recently closed view, and says which ones it retired.
+That is the only thing besides `w` that ever disarms, and it waits to be shown
+a finished pull request rather than inferring one: the open list is narrowed by
+`-query` and `-limit`, so a pull request can drop out of it and still be open.
+Until that view is next loaded a finished pull request stays armed, counted in
+the hollow half of the tally; nothing polls it, so it costs no requests.
 
 From then on prutil watches that pull request for review feedback, and when
 some appears it gives it to a coding agent through

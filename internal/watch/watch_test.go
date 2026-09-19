@@ -158,6 +158,28 @@ func TestPollingStopsAfterLongEnoughAtTheCapWithNothingMoving(t *testing.T) {
 	tier, ok := e.Tier(key)
 	require.True(t, ok)
 	assert.Equal(t, watch.TierDormant, tier, "the pull request is still armed, only quiet")
+
+	assert.Equal(t, 1, e.Watching(), "it is still held")
+	assert.Equal(t, 0, e.Polling(), "but nothing is being asked about it")
+}
+
+func TestPollingCountsOnlyThePullRequestsStillBeingAskedAbout(t *testing.T) {
+	e := engine(t)
+	e.Sync([]model.Key{key, other}, start)
+	require.Equal(t, 2, e.Polling(), "both start out asked about")
+
+	// Settle one of the two into dormancy by feeding it the same reading until
+	// it gives up. The other is never read, so it stays at its base interval.
+	reading := snap(start, model.StatusSuccess)
+	now := start
+	for range 20 {
+		e.Observe([]model.Snapshot{reading}, now)
+		now = now.Add(time.Hour)
+	}
+
+	require.Equal(t, watch.TierDormant, tierOf(t, e, key))
+	assert.Equal(t, 2, e.Watching(), "the quiet one is still armed")
+	assert.Equal(t, 1, e.Polling(), "only the moving one is still costing a request")
 }
 
 func TestAnyChangeAtAllPutsAPullRequestBackToItsBaseInterval(t *testing.T) {

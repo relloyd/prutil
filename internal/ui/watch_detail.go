@@ -19,9 +19,14 @@ import (
 // line each for state, cadence and next check. What they must not differ on is
 // which facts there are and whether there are any, which is what this gathers.
 type watchFacts struct {
-	key    model.Key
-	armed  bool
-	status watch.Status
+	key model.Key
+	// armed is the reader's own mark, which is what the row's glyph and the
+	// header's tally both count. scheduled is whether the engine holds it and
+	// so whether status means anything: a pull request can be armed with
+	// nothing polling it, which is the hollow half of the tally.
+	armed     bool
+	scheduled bool
+	status    watch.Status
 	// operation is the work in flight, and open the review threads still
 	// waiting. Only one of them is shown: work in flight is the newer news.
 	operation string
@@ -37,11 +42,12 @@ type watchFacts struct {
 // anything reports through it on every key press.
 func (a *App) watchFactsOf(pr model.PullRequest) watchFacts {
 	key := pr.Key()
-	status, armed := a.engine.Status(key)
+	status, scheduled := a.engine.Status(key)
 	got := a.runtimeOf(key)
 	return watchFacts{
 		key:       key,
-		armed:     armed,
+		armed:     a.armed(key),
+		scheduled: scheduled,
 		status:    status,
 		operation: got.operation,
 		open:      got.feedback,
@@ -136,6 +142,9 @@ func (a *App) compactState(f watchFacts) watchRow {
 	if !f.armed {
 		return watchRow{text: "not watching · manual handoff activity", style: a.styles.Meta}
 	}
+	if !f.scheduled {
+		return watchRow{text: "watching · not polled: not in the list prutil holds", style: a.styles.Watch}
+	}
 
 	state := f.status.Tier.String()
 	switch f.status.Tier {
@@ -190,9 +199,15 @@ func (a *App) watchPageRows(pr model.PullRequest) []watchRow {
 		{blank: true},
 	}
 
-	if !f.armed {
+	switch {
+	case !f.armed:
 		rows = append(rows, watchRow{text: "state: not watching", style: a.styles.Meta})
-	} else {
+	case !f.scheduled:
+		rows = append(rows,
+			watchRow{text: "state: watching", style: a.styles.Watch},
+			watchRow{text: "cadence: not polled · not in the list prutil holds", style: a.styles.Meta},
+		)
+	default:
 		rows = append(rows,
 			watchRow{text: "state: " + f.status.Tier.String(), style: a.styles.Watch},
 			watchRow{text: "cadence: every " + model.HumanDuration(f.status.Interval), style: a.styles.Meta},

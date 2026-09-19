@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -611,8 +612,238 @@ func TestTheHeaderCountsWhatIsWatchedAndWhenItWillLookAgain(t *testing.T) {
 	poll(t, app)
 
 	header := headerLine(app)
-	assert.Contains(t, header, watchGlyph+" 1")
-	assert.Contains(t, header, "next ")
+	assert.Contains(t, header, watchGlyph+" 1 watched", "the count says what it counts")
+	assert.NotContains(t, header, dormantGlyph, "nothing has gone quiet, so the hollow half is left off")
+	assert.Contains(t, header, "next poll ")
+}
+
+func TestTheHeaderCountsAQuietPullRequestApartFromOneItIsStillAskingAbout(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+
+	send(t, app, press("w"))
+	for range 8 {
+		advance(app, time.Minute)
+		poll(t, app)
+	}
+	require.Contains(t, plain(app.render()), dormantGlyph+" #42", "the row has gone hollow")
+
+	header := headerLine(app)
+	assert.Contains(t, header, watchGlyph+" 0 "+dormantGlyph+" 1 watched",
+		"the header agrees with the row rather than claiming a poll that is not happening")
+	assert.NotContains(t, header, "next poll ", "there is nothing left to poll")
+}
+
+// merged is the watched sample pull request as the closed list returns it once
+// somebody has merged it.
+func merged(key model.Key) model.PullRequest {
+	return model.PullRequest{
+		Repo: key.Repo, Number: key.Number,
+		Title:    "Retry uploads on 5xx",
+		State:    model.PRStateMerged,
+		ClosedAt: testNow, MergedAt: testNow,
+	}
+}
+
+func TestWatchingStopsOnceThePullRequestTurnsUpMergedInTheClosedList(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	require.True(t, app.state.Armed(key.String()))
+
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: append(sampleClosedPRs(), merged(key))})
+
+	assert.False(t, app.state.Armed(key.String()), "a merged pull request answers for nothing")
+	assert.Equal(t, 0, app.state.ArmedCount())
+	assert.Equal(t, 0, app.engine.Watching(), "and the engine has let it go")
+
+	// The point of disarming is that it outlives the session, so the file has
+	// to have been written, not just the in-memory state changed.
+	saved, err := app.store.LoadState()
+	require.NoError(t, err)
+	assert.Equal(t, 0, saved.ArmedCount(), "the state file no longer carries it")
+}
+
+func TestWatchingSurvivesAClosedListThatSimplyDoesNotMentionThePullRequest(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	require.True(t, app.state.Armed(key.String()))
+
+	// The closed list is narrowed by the configured query and limit, so a pull
+	// request missing from it has not been shown to be finished. Only a row
+	// saying so disarms.
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: sampleClosedPRs()})
+
+	assert.True(t, app.state.Armed(key.String()), "absence is not evidence that it is finished")
+}
+
+func TestRetiringAWatchedPullRequestTakesItsRecordOutOfTheStateFile(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	// A handoff is the ordinary life of a watched pull request, and the
+	// notified threads it leaves behind are what Compact keeps an entry for.
+	app.state.RecordHandoff(key.String(), map[string]string{"T1": "C1"}, testNow)
+	require.NoError(t, app.saveState())
+
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: append(sampleClosedPRs(), merged(key))})
+
+	saved, err := app.store.LoadState()
+	require.NoError(t, err)
+	assert.Equal(t, 0, saved.ArmedCount())
+	assert.Empty(t, saved.PRs,
+		"the record leaves the file rather than lingering as armed:false for good")
+}
+
+func TestAFinishedPullRequestLeavesNoRecordEvenIfItWasUnwatchedFirst(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	app.state.RecordHandoff(key.String(), map[string]string{"T1": "C1"}, testNow)
+	// The reader loses interest before it merges. Retirement skips anything
+	// not armed, so without a sweep of its own the notified threads keep this
+	// record in the file for good — the pull request is finished and prutil
+	// has been shown that it is, but nothing ever collects it.
+	send(t, app, press("w"))
+	require.NoError(t, app.saveState())
+	require.NotEmpty(t, app.state.Get(key.String()).NotifiedThreads,
+		"an unwatch on its own keeps them, which is what makes this worth testing")
+
+	cmd := send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: append(sampleClosedPRs(), merged(key))})
+
+	saved, err := app.store.LoadState()
+	require.NoError(t, err)
+	assert.Empty(t, saved.PRs, "a finished pull request answers for nothing, watched or not")
+
+	// There was no watch to stop, so there is nothing to announce either.
+	if cmd != nil {
+		assert.NotContains(t, fmt.Sprint(cmd()), "stopped watching",
+			"the reader is not told a watch ended that they had already ended")
+	}
+}
+
+func TestManuallyUnwatchingKeepsWhatHasAlreadyBeenHandedOver(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	app.state.RecordHandoff(key.String(), map[string]string{"T1": "C1"}, testNow)
+
+	// Unlike retirement, a second press of w is not evidence that the pull
+	// request is finished: forgetting the threads here would hand every one of
+	// them over again the next time it is watched.
+	send(t, app, press("w"))
+
+	assert.Equal(t, map[string]string{"T1": "C1"},
+		app.state.Get(key.String()).NotifiedThreads, "the dedup survives an unwatch")
+}
+
+func TestWatchingCannotBeArmedFromAViewOtherThanTheOpenList(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	app.active = viewClosed
+	app.views[viewClosed].prs = sampleClosedPRs()
+	key := app.cur().prs[0].Key()
+
+	cmd := send(t, app, press("w"))
+
+	require.NotNil(t, cmd)
+	assert.Equal(t, statusMsg("watching is available only for open pull requests"), cmd())
+	assert.False(t, app.state.Armed(key.String()), "nothing polls a row from the closed list")
+	assert.Equal(t, 0, app.state.ArmedCount(), "so the tally counts no watch it cannot keep")
+}
+
+func TestWatchingCanStillBeTurnedOffFromTheClosedView(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	require.True(t, app.state.Armed(key.String()))
+
+	// A mark made in the open list has to come off wherever the reader finds
+	// it again, or the guard on arming would trap it instead.
+	app.active = viewClosed
+	app.views[viewClosed].prs = []model.PullRequest{merged(key)}
+	send(t, app, press("w"))
+
+	assert.False(t, app.state.Armed(key.String()), "disarming answers from every view")
+}
+
+func TestAReviewReadLandingAfterTheDisarmHandsNothingOver(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	require.True(t, app.state.Armed(key.String()))
+
+	// The closed view names it merged, so disarmFinished retires it. The read
+	// the watcher had already asked for is still in flight: nothing can recall
+	// a command Bubble Tea is holding.
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: append(sampleClosedPRs(), merged(key))})
+	require.False(t, app.state.Armed(key.String()))
+
+	send(t, app, watchReviewMsg{key: key, review: sampleThreads()})
+
+	assert.Empty(t, dispatcher.requests(),
+		"a pull request prutil has just said it stopped watching is not an agent's work")
+	assert.False(t, app.runtimeOf(key).handing, "and nothing claims otherwise on screen")
+}
+
+func TestFailedChecksLandingAfterTheDisarmHandNothingOver(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: append(sampleClosedPRs(), merged(key))})
+	require.False(t, app.state.Armed(key.String()))
+
+	// SetArmed cleared LastCheckHandoffHead, so the repeat brake is gone: the
+	// armed check is the only thing standing between this reply and an agent.
+	send(t, app, checksMsg{
+		gen: app.gen, key: key, checkHandoff: true, headOID: "abc",
+		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
+	})
+
+	assert.Empty(t, dispatcher.requests(), "a merged pull request's failures are nobody's to fix")
+	assert.False(t, app.runtimeOf(key).handing)
+}
+
+func TestAWatchedRowIsHollowWhenNothingIsScheduledToPollIt(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	require.Contains(t, plain(app.render()), watchGlyph+" #42", "it starts out being polled")
+
+	// Whatever the reason the engine is not holding it — merged, or a row the
+	// list came back with no node id to address — the mark should not claim a
+	// poll that is not scheduled.
+	app.engine.Forget(key)
+
+	assert.Contains(t, plain(app.render()), dormantGlyph+" #42")
+}
+
+func TestTheDetailAgreesWithTheHollowGlyphAboutBeingWatched(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	app.engine.Forget(key)
+
+	// The row draws the hollow glyph and the header counts it, so the pane
+	// saying "not watching" would be the third surface disagreeing with the
+	// other two about one pull request. It is still watched; what it is not is
+	// scheduled, and that is the part worth saying.
+	screen := plain(app.render())
+	require.Contains(t, screen, dormantGlyph+" #42", "the row still marks it")
+	assert.NotContains(t, screen, "not watching",
+		"the mark the reader made is not undone by an empty schedule")
+	assert.Contains(t, screen, "not polled", "but the pane says why nothing is due")
 }
 
 func TestTheDetailExplainsTheCurrentWatchScheduleAndActivity(t *testing.T) {

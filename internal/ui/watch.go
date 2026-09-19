@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -41,6 +42,46 @@ func (a *App) armed(key model.Key) bool {
 	return a.state.Armed(key.String())
 }
 
+// clearWatch drops what a watch leaves behind on a pull request and records why
+// it stopped. Both ways of disarming end here, so neither can grow a step the
+// other lacks.
+//
+// It leaves the armed flag itself alone, because the two callers reach it
+// differently: toggleWatch has already flipped the flag and lets syncWatch
+// reconcile the engine, while disarmFinished clears the flag and forgets the
+// engine's copy directly. handing and reviewing are left alone too — a handoff
+// or a read still in flight reports its own end, and clearing the flag here
+// would strand the spinner it answers to.
+func (a *App) clearWatch(key model.Key, why string) {
+	entry := a.mutate(key)
+	entry.feedback, entry.hasFeedback = 0, false
+	a.setWatchOperation(key, "")
+	a.recordWatchActivity(key, why)
+}
+
+// forgetHandoffs drops what a pull request remembers about feedback already
+// sent to an agent, and reports whether there was anything to drop.
+//
+// Compact keeps any entry still holding notified threads, so without this a
+// pull request that ever reached a handoff — the ordinary life of a watched
+// one — would keep a record in the state file for good. The threads are only
+// worth keeping to recognise feedback already sent, and GitHub does not reuse a
+// pull request number, so a finished one will never be asked about again.
+//
+// Only retirement may call it, which is why it is not part of clearWatch. A
+// second press of w is the reader changing their mind about an open pull
+// request, and forgetting there would hand every thread over again the next
+// time they watched it.
+func (a *App) forgetHandoffs(key model.Key) bool {
+	got := a.state.Get(key.String())
+	if len(got.NotifiedThreads) == 0 && got.LastHandoff.IsZero() {
+		return false
+	}
+	entry := a.state.Mutate(key.String())
+	entry.NotifiedThreads, entry.LastHandoff = nil, time.Time{}
+	return true
+}
+
 // toggleWatch arms or disarms the selected pull request. Arming is per pull
 // request on purpose: a review whose remaining comments are never going to be
 // resolved should cost nothing to leave on screen.
@@ -54,6 +95,14 @@ func (a *App) toggleWatch() tea.Cmd {
 	}
 
 	key := pr.Key()
+	// Arming addresses a pull request by the node id the open list came with,
+	// and the failed-check handoff below answers only for an open one, so a row
+	// from another view could be marked and then never polled: a watch the
+	// tally counts, that costs nothing and answers for nothing. Disarming stays
+	// available from every view, so a mark already made can always be taken off.
+	if !a.armed(key) && a.active != viewOpen {
+		return status("watching is available only for open pull requests")
+	}
 	armed := a.state.ToggleArmed(key.String())
 	if err := a.saveState(); err != nil {
 		return status(err.Error())
@@ -61,10 +110,7 @@ func (a *App) toggleWatch() tea.Cmd {
 
 	tick := a.syncWatch()
 	if !armed {
-		entry := a.mutate(key)
-		entry.feedback, entry.hasFeedback = 0, false
-		a.setWatchOperation(key, "")
-		a.recordWatchActivity(key, "stopped watching")
+		a.clearWatch(key, "stopped watching")
 		return tea.Batch(tick, status("stopped watching "+key.String()))
 	}
 	a.recordWatchActivity(key, "started watching")
@@ -111,6 +157,16 @@ func (a *App) checkHandoff(force, allowProvision bool, headOID ...string) tea.Cm
 func (a *App) applyFailedChecks(key model.Key, headOID string, checks []model.Check, force, allowProvision bool) tea.Cmd {
 	entry := a.mutate(key)
 	entry.handing = false
+	// The read this answers was dispatched while the pull request was watched,
+	// and disarmFinished can retire it before the reply lands. Handing it over
+	// now would give an agent work on a pull request prutil has just said it
+	// stopped watching, and SetArmed has cleared LastCheckHandoffHead, so the
+	// repeat brake below is gone exactly when it would be needed. force is the
+	// reader's own key press, which answers whatever is armed.
+	if !force && !a.armed(key) {
+		a.setWatchOperation(key, "")
+		return nil
+	}
 	failed := make([]model.Check, 0, len(checks))
 	pending := false
 	for _, check := range checks {
@@ -350,6 +406,13 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	now := a.now()
 	a.mutate(msg.key).reviewing = false
 	a.setWatchOperation(msg.key, "")
+	// As in applyFailedChecks: the watcher's read can land after
+	// disarmFinished retired the pull request, and acting on it would hand a
+	// merged one to an agent moments after saying it was no longer watched.
+	// Manual discovery is the reader's own request, so it still answers.
+	if !msg.manual && !a.armed(msg.key) {
+		return nil
+	}
 	if msg.err != nil {
 		a.engine.Defer([]model.Key{msg.key}, a.watchRetry(), now)
 		a.recordWatchActivity(msg.key, "could not read review feedback: "+msg.err.Error())
@@ -724,15 +787,82 @@ func (a *App) saveState() error {
 // watchSeg is the marker shown against a watched pull request on a list row.
 // It is hollow for a pull request prutil has stopped asking about, so that a
 // glance says which of the marks are still costing anything.
+//
+// Not being in the engine at all counts as hollow too, and not only as
+// dormant: syncWatch can schedule a pull request only when the open list holds
+// it with a node id to address it by, so one it cannot is just as unpolled as
+// one that has gone quiet. Filled would claim otherwise, and would disagree
+// with the header's tally, which counts the same two cases together.
 func (a *App) watchSeg(pr model.PullRequest) seg {
 	if !a.armed(pr.Key()) {
 		return seg{}
 	}
 	glyph := watchGlyph
-	if tier, ok := a.engine.Tier(pr.Key()); ok && tier == watch.TierDormant {
+	if tier, ok := a.engine.Tier(pr.Key()); !ok || tier == watch.TierDormant {
 		glyph = dormantGlyph
 	}
 	return seg{text: glyph, style: a.styles.Watch}
+}
+
+// disarmFinished stops watching every pull request in prs that has merged or
+// closed, and reports what it turned off.
+//
+// It is the only thing that ever disarms without the reader pressing w, and it
+// waits for positive evidence: a row GitHub has returned whose state is no
+// longer open. Absence from the open list would be the wrong signal, because
+// that list is narrowed by the configured query and limit, so a pull request
+// can drop out of it while still being open and still worth watching.
+//
+// Without this an armed entry outlives its pull request. Nothing polls it —
+// syncWatch only ever schedules what the open list holds — and Compact keeps
+// anything armed, so it would sit in the state file for good, counted in the
+// header and answering for nothing.
+func (a *App) disarmFinished(prs []model.PullRequest) tea.Cmd {
+	if a.store == nil {
+		return nil
+	}
+
+	var done []string
+	swept := false
+	for _, pr := range prs {
+		key := pr.Key()
+		if pr.State == model.PRStateOpen {
+			continue
+		}
+		if !a.armed(key) {
+			// No watch to stop, so nothing to tell the reader about. It can
+			// still hold threads from a handoff made before they unwatched it,
+			// and those would keep the record in the file for good: this loop
+			// is the only thing that collects them, and it used to skip
+			// anything unarmed before it got this far.
+			swept = a.forgetHandoffs(key) || swept
+			continue
+		}
+		a.state.SetArmed(key.String(), false)
+		a.forgetHandoffs(key)
+		a.engine.Forget(key)
+		a.clearWatch(key, "stopped watching: "+pr.State.String())
+		done = append(done, key.String())
+	}
+	if len(done) == 0 {
+		// A sweep on its own still has to reach the file, or Compact never
+		// gets the chance to drop what it just cleared. It stays silent: the
+		// reader ended these watches themselves and has nothing to be told.
+		if swept {
+			if err := a.saveState(); err != nil {
+				return status(err.Error())
+			}
+		}
+		return nil
+	}
+
+	if err := a.saveState(); err != nil {
+		return status(err.Error())
+	}
+	slices.Sort(done)
+	return tea.Batch(a.scheduleWatch(), status(fmt.Sprintf(
+		"stopped watching %d finished %s: %s",
+		len(done), plural(len(done), "pull request"), strings.Join(done, ", "))))
 }
 
 // feedbackSeg reports how much review feedback is still waiting on a watched
@@ -750,15 +880,28 @@ func (a *App) feedbackSeg(pr model.PullRequest) seg {
 
 // watchNote is what the header says about watching, or the empty string when
 // nothing is armed.
+//
+// It splits the armed set the way the list rows do, because the two glyphs
+// mean different things and a single filled count claimed more polling than
+// was happening. Filled is what the engine is still asking about; hollow is
+// the rest, which is the dormant ones plus any armed pull request the current
+// list does not hold, since syncWatch can only schedule what it can address.
+// The unit is spelled out: a bare number in a header is a number without a
+// question.
 func (a *App) watchNote() string {
-	count := a.state.ArmedCount()
-	if count == 0 {
+	armed := a.state.ArmedCount()
+	if armed == 0 {
 		return ""
 	}
 
-	note := fmt.Sprintf(" · %s %d", watchGlyph, count)
+	polling := a.engine.Polling()
+	note := fmt.Sprintf(" · %s %d", watchGlyph, polling)
+	if idle := armed - polling; idle > 0 {
+		note += fmt.Sprintf(" %s %d", dormantGlyph, idle)
+	}
+	note += " watched"
 	if next, ok := a.engine.NextDue(); ok {
-		note += " · next " + model.HumanDuration(max(next.Sub(a.now()), time.Second))
+		note += " · next poll " + model.HumanDuration(max(next.Sub(a.now()), time.Second))
 	}
 	return note
 }
