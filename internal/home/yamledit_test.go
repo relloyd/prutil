@@ -195,7 +195,11 @@ func TestSetBlockScalarReplacesMultilineBlockScalar(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "new line 1\nnew line 2", cfg.Herdr.Prompt)
 	assert.Equal(t, "triage", cfg.Herdr.Skill)
-	assert.Contains(t, string(got), "  prompt: |-\n    new line 1\n    new line 2\n")
+	// The indentation indicator is written out rather than left to be inferred
+	// from the first line, which is what keeps a template that begins with a
+	// space or a tab readable again. See
+	// TestSetBlockScalarKeepsATemplateWhoseFirstLineIsIndented.
+	assert.Contains(t, string(got), "  prompt: |2-\n    new line 1\n    new line 2\n")
 }
 
 func TestSetMapEntryAddsAndUpdatesMappingEntries(t *testing.T) {
@@ -242,4 +246,68 @@ func TestDeleteKeyRemovesKeyFromYAML(t *testing.T) {
 	assert.Equal(t, DefaultConfig().Watch.ActiveInterval, cfg.Watch.ActiveInterval)
 	assert.NotContains(t, string(got), "active_interval")
 	assert.Contains(t, string(got), "base_interval: 2m")
+}
+
+func TestDeleteKeyRemovesABlockScalarWholeRatherThanItsFirstLine(t *testing.T) {
+	src := "herdr:\n  prompt: |-\n    Review this pull request\n    carefully please.\n  dry_run: false\n"
+
+	got, err := deleteKey([]byte(src), []string{"herdr", "prompt"})
+	require.NoError(t, err)
+
+	// Taking the "prompt: |-" line alone leaves its body behind, indented
+	// under a mapping that no longer has a key for it, which does not parse.
+	cfg, err := ParseConfig(got)
+	require.NoError(t, err, "what is left has to be a configuration file")
+	assert.Equal(t, DefaultConfig().Herdr.Prompt, cfg.Herdr.Prompt, "the prompt is back to its default")
+	assert.NotContains(t, string(got), "carefully please", "and the body went with the key")
+	assert.Contains(t, string(got), "dry_run: false", "while the key after it stayed")
+}
+
+func TestDeleteKeyTakesTheCommentThatIntroducedTheKey(t *testing.T) {
+	src := "watch:\n  # How long to wait when nothing is happening.\n  idle_interval: 5m\n  base_interval: 1m\n"
+
+	got, err := deleteKey([]byte(src), []string{"watch", "idle_interval"})
+	require.NoError(t, err)
+
+	// Left behind, the comment reads as documentation for base_interval.
+	assert.NotContains(t, string(got), "How long to wait",
+		"a comment introducing a deleted key goes with it")
+	assert.Contains(t, string(got), "base_interval: 1m")
+}
+
+func TestSetBlockScalarKeepsATemplateWhoseFirstLineIsIndented(t *testing.T) {
+	for _, text := range []string{
+		"  Please review:\nBe brief.",
+		"\tPlease review.\nBe brief.",
+		"Review this.\n  Then this.",
+	} {
+		got, err := setBlockScalar([]byte("herdr:\n  dry_run: false\n"), []string{"herdr", "prompt"}, text)
+		require.NoError(t, err, "writing %q", text)
+
+		// A bare |- takes its indentation from the first non-empty line, so a
+		// template that starts indented moves every later line out of the block.
+		cfg, err := ParseConfig(got)
+		require.NoError(t, err, "parsing back %q, wrote:\n%s", text, got)
+		assert.Equal(t, text, cfg.Herdr.Prompt, "round trip of %q", text)
+	}
+}
+
+func TestSequenceItemsAreQuotedWhenYAMLWouldReadThemAsSomethingElse(t *testing.T) {
+	for _, item := range []string{"*star", "&amp", "[bracket", "!bang", "@at", "`tick", "%pct", "#hash", "owner/repo", "~/src"} {
+		got, err := setSequence([]byte("discovery:\n  roots: []\n"), []string{"discovery", "roots"}, []string{item})
+		require.NoError(t, err, "writing %q", item)
+
+		cfg, err := ParseConfig(got)
+		require.NoError(t, err, "parsing back %q, wrote:\n%s", item, got)
+		assert.Equal(t, []string{item}, cfg.Discovery.Roots, "round trip of %q", item)
+	}
+}
+
+func TestMapEntriesAreQuotedWhenYAMLWouldReadThemAsSomethingElse(t *testing.T) {
+	got, err := setMapEntry([]byte("review:\n  repos: {}\n"), []string{"review", "repos"}, "owner/repo", "*star")
+	require.NoError(t, err)
+
+	cfg, err := ParseConfig(got)
+	require.NoError(t, err, "wrote:\n%s", got)
+	assert.Equal(t, "*star", cfg.Review.Repos["owner/repo"])
 }

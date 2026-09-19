@@ -46,12 +46,9 @@ func setScalar(src []byte, path []string, value string) ([]byte, error) {
 	if doc.Kind == 0 {
 		return t.appendLines(t.render(path, value, 0)), nil
 	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return nil, errors.New("the configuration is not a set of keys")
-	}
-	root := doc.Content[0]
-	if root.Kind != yaml.MappingNode || root.Style&yaml.FlowStyle != 0 {
-		return nil, errors.New("the configuration is not a set of keys written one per line")
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
 	}
 	t.unit = indentUnit(root)
 
@@ -87,6 +84,26 @@ func setScalar(src []byte, path []string, value string) ([]byte, error) {
 		}
 	}
 	return nil, errors.New("unreachable")
+}
+
+// blockRoot is the document's root mapping, which is the only shape prutil
+// edits. A flow mapping written on one line, a sequence or a bare scalar is
+// somebody else's idea of a configuration file, and walking it as though it
+// held keys one per line appends nonsense that only the read-back check in
+// applySave would catch — as a refusal the reader cannot act on.
+//
+// Every entry point goes through here so that they cannot disagree about what
+// they will edit, which they did: setScalar checked both the kind and the
+// style, setBlockScalar only the kind, and the rest neither.
+func blockRoot(doc *yaml.Node) (*yaml.Node, error) {
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil, errors.New("the configuration is not a set of keys")
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode || root.Style&yaml.FlowStyle != 0 {
+		return nil, errors.New("the configuration is not a set of keys written one per line")
+	}
+	return root, nil
 }
 
 // plainKey is the shape of a key setScalar will write without quoting.
@@ -401,7 +418,14 @@ func (t *yamlText) renderBlock(path []string, value string, indent int) []string
 	for i, key := range path {
 		line := strings.Repeat(" ", indent+i*t.unit) + key + ":"
 		if i == len(path)-1 {
-			line += " |-"
+			// The indentation indicator is what makes a template that starts
+			// with a space or a tab survive the round trip. A bare |- takes the
+			// block's indentation from its first non-empty line, so a first
+			// line indented further than the rest puts every later line
+			// outside the block, and the file stops parsing. Saying the
+			// indentation outright leaves the content's own leading whitespace
+			// as content.
+			line += fmt.Sprintf(" |%d-", t.unit)
 		}
 		out = append(out, t.ending(line))
 	}
@@ -450,9 +474,9 @@ func setBlockScalar(src []byte, path []string, value string) ([]byte, error) {
 		return t.appendLines(t.renderBlock(path, value, 0)), nil
 	}
 
-	root := doc.Content[0]
-	if root.Kind != yaml.MappingNode {
-		return nil, errors.New("document is not a YAML mapping")
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
 	}
 
 	t := newYAMLText(src)
@@ -515,10 +539,10 @@ func setMapEntry(src []byte, path []string, mapKey, mapVal string) ([]byte, erro
 		lines = append(lines, t.ending(entryLine))
 		return t.appendLines(lines), nil
 	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return nil, errors.New("the configuration is not a set of keys")
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
 	}
-	root := doc.Content[0]
 	t.unit = indentUnit(root)
 
 	parent, holder := root, (*yaml.Node)(nil)
@@ -575,11 +599,11 @@ func deleteMapEntry(src []byte, path []string, mapKey string) ([]byte, error) {
 	if err := yaml.Unmarshal(src, &doc); err != nil {
 		return nil, fmt.Errorf("could not read the configuration: %w", err)
 	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return src, nil
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
 	}
 	t := newYAMLText(src)
-	root := doc.Content[0]
 	t.unit = indentUnit(root)
 
 	parent := root
@@ -597,12 +621,7 @@ func deleteMapEntry(src []byte, path []string, mapKey string) ([]byte, error) {
 			if entryKey == nil {
 				return src, nil
 			}
-			startLine := entryKey.Line - 1
-			endLine := entryKey.Line
-			if last, ok := t.lastLine(entryVal); ok {
-				endLine = last
-			}
-			t.lines = slices.Delete(t.lines, startLine, endLine)
+			t.lines = slices.Delete(t.lines, t.headCommentLine(entryKey), t.endOfEntry(entryKey, entryVal))
 			return t.bytes(), nil
 		}
 		if val.Kind == yaml.MappingNode {
@@ -650,10 +669,10 @@ func setSequence(src []byte, path []string, items []string) ([]byte, error) {
 		lines = append(lines, renderSeq((len(path)-1)*t.unit, path[len(path)-1])...)
 		return t.appendLines(lines), nil
 	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return nil, errors.New("the configuration is not a set of keys")
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
 	}
-	root := doc.Content[0]
 	t.unit = indentUnit(root)
 
 	parent, holder := root, (*yaml.Node)(nil)
@@ -701,11 +720,11 @@ func deleteKey(src []byte, path []string) ([]byte, error) {
 	if err := yaml.Unmarshal(src, &doc); err != nil {
 		return nil, fmt.Errorf("could not read the configuration: %w", err)
 	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return src, nil
+	root, err := blockRoot(&doc)
+	if err != nil {
+		return nil, err
 	}
 	t := newYAMLText(src)
-	root := doc.Content[0]
 
 	parent := root
 	for i, name := range path {
@@ -715,12 +734,7 @@ func deleteKey(src []byte, path []string) ([]byte, error) {
 		}
 		last := i == len(path)-1
 		if last {
-			startLine := key.Line - 1
-			endLine := key.Line
-			if last, ok := t.lastLine(val); ok {
-				endLine = last
-			}
-			t.lines = slices.Delete(t.lines, startLine, endLine)
+			t.lines = slices.Delete(t.lines, t.headCommentLine(key), t.endOfEntry(key, val))
 			return t.bytes(), nil
 		}
 		if val.Kind == yaml.MappingNode {
@@ -732,6 +746,66 @@ func deleteKey(src []byte, path []string) ([]byte, error) {
 	return src, nil
 }
 
+// endOfEntry is the line index one past the last line a key and its value
+// occupy, which is what deleting the whole entry needs.
+//
+// lastLine will not vouch for a block scalar — token refuses the style — so
+// without the second case a multi-line prompt loses its "prompt: |2-" line and
+// keeps its body, indented under a mapping that no longer has a key for it.
+// That does not parse, which is how the reset ends up refusing every template.
+func (t *yamlText) endOfEntry(key, val *yaml.Node) int {
+	if val.Kind == yaml.ScalarNode && val.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+		return t.lastBlockScalarLine(key, val)
+	}
+	if last, ok := t.lastLine(val); ok {
+		return last
+	}
+	return key.Line
+}
+
+// headCommentLine is the line index the key's entry starts at once the comment
+// introducing it is counted in, so that deleting the key takes its
+// documentation with it rather than leaving it to read as the next key's.
+//
+// Only an unbroken run of comments at the key's own indentation counts. A blank
+// line ends the run: a comment set off from the key by one is as likely to
+// belong to the section as to the key, and leaving it is the smaller mistake.
+func (t *yamlText) headCommentLine(key *yaml.Node) int {
+	start := key.Line - 1
+	if key.HeadComment == "" {
+		return start
+	}
+	indent := key.Column - 1
+	for i := start - 1; i >= 0; i-- {
+		line := strings.TrimSuffix(t.lines[i], "\r")
+		trimmed := strings.TrimLeft(line, " ")
+		if !strings.HasPrefix(trimmed, "#") || len(line)-len(trimmed) != indent {
+			break
+		}
+		start = i
+	}
+	return start
+}
+
+// plainScalar is a value that means itself written bare: no leading character
+// YAML reads as syntax, nothing inside it that ends a scalar, and not one of
+// the words YAML resolves to something other than a string.
+//
+// It is an allowlist because the opposite was tried and leaked: a list of
+// characters to quote has to name every one of *&![]{}|>%@`,#'" and the
+// indicator rules for each, and the two that are worst are the two that get
+// missed. `*star` and `&amp` are still valid YAML — an alias and an anchor —
+// so they parse, and the value read back is not the value written.
+var plainScalar = regexp.MustCompile(`^[A-Za-z0-9_./~+=-][A-Za-z0-9_./~+= @-]*$`)
+
+// yamlWords are the scalars that read back as something other than the string
+// they look like. YAML 1.1 readers, which this one follows for booleans, take
+// all of these.
+var yamlWords = map[string]bool{
+	"y": true, "yes": true, "n": true, "no": true, "true": true, "false": true,
+	"on": true, "off": true, "null": true, "nil": true, "~": true,
+}
+
 func formatMapKey(k string) string {
 	if plainKey.MatchString(k) {
 		return k
@@ -740,7 +814,12 @@ func formatMapKey(k string) string {
 }
 
 func formatMapVal(v string) string {
-	if strings.ContainsAny(v, " :#{}\n\r\t\"'") || v == "" {
+	if !plainScalar.MatchString(v) || yamlWords[strings.ToLower(v)] {
+		return strconv.Quote(v)
+	}
+	// A bare scalar that reads as a number comes back as one, so anything that
+	// parses as a number is quoted to stay the string it was given as.
+	if _, err := strconv.ParseFloat(v, 64); err == nil {
 		return strconv.Quote(v)
 	}
 	return v
