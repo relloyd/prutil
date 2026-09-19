@@ -207,7 +207,7 @@ func (k keyMap) helpSections(mouse bool) []helpSection {
 		}},
 		{title: "Pull requests", entries: []helpEntry{
 			{binding: k.Open, title: "open in browser",
-				detail: "Open the selected pull request, or the selected check, in your browser."},
+				detail: "Open the selected pull request, or the selected check, in your browser. On the WATCH heading it drills into the watch log instead, the same as →."},
 			{binding: k.Copy, title: "copy URL",
 				detail: "Copy the selected pull request's URL, or the selected check's, to the clipboard."},
 			{binding: k.NextTab, title: "switch open / closed",

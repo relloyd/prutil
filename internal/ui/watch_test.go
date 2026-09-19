@@ -1261,3 +1261,37 @@ func TestClearingAnOperationThatWasNeverSetRemembersNothing(t *testing.T) {
 		assert.Empty(t, app.runtimeOf(pr.Key()).operation)
 	}
 }
+
+func TestEnterOnTheWatchHeadingDrillsInRatherThanOpeningTheBrowser(t *testing.T) {
+	app, _, opener := newTestApp(t, 120, 40)
+
+	send(t, app, press("w"))
+	send(t, app, press("l"))
+	send(t, app, press("k"))
+	require.Equal(t, detailWatch, app.section, "the chip is on the WATCH heading")
+
+	// The heading has no page of its own on GitHub, so the browser would get
+	// the pull request, which enter already does from the list. Drilling in is
+	// the only thing here that enter can mean.
+	cmd := send(t, app, press("enter"))
+
+	assert.Equal(t, detailWatchPage, app.page, "enter drills in, the same as →")
+	assert.Nil(t, cmd, "and raises nothing to open")
+	assert.Empty(t, opener.opened(), "so the browser stays where it was")
+	assert.Contains(t, plain(app.render()), "ACTIVITY")
+}
+
+func TestEnterStillOpensTheBrowserFromTheChecksSection(t *testing.T) {
+	app, _, opener := newTestApp(t, 120, 40)
+
+	send(t, app, press("l"))
+	require.Equal(t, paneDetail, app.focus)
+	require.Equal(t, detailChecks, app.section, "the chip starts on CHECKS")
+
+	cmd := send(t, app, press("enter"))
+	require.NotNil(t, cmd)
+	cmd()
+
+	assert.Equal(t, detailOverview, app.page, "CHECKS has nothing to drill into")
+	require.Len(t, opener.opened(), 1, "so enter opens the selected check")
+}

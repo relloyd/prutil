@@ -94,7 +94,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `g` / `G` or `home` / `end` | jump to the first or last item |
 | `l` or `→` | focus detail from the list, or drill into the selected detail section |
 | `h`, `←` or `esc` | go back one level |
-| `enter` | open the selected pull request, or the selected check, in your browser |
+| `enter` | open the selected pull request, or the selected check, in your browser; on the WATCH heading, drill in as `l` does |
 | `y` or `c` | copy the selected pull request's URL, or the selected check's, to the clipboard |
 | `r` | refresh from GitHub |
 | `a` | auto-refresh: reload every 30s, five times over. press again to add five more |
@@ -110,8 +110,8 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 
 Below 80 columns the two panes collapse into one: the list fills the terminal,
 clicking a row selects it, `l` swaps to detail, and `h` swaps back. When WATCH
-is available, select it above CHECKS and press `l` again to see its full
-schedule, activity and handoff details.
+is available, select it above CHECKS and press `l` or `enter` again to see its
+full schedule, activity and handoff details.
 
 The footer has one line, so it lists the actions and leaves moving about to the
 arrow keys. `?` opens an overlay listing every shortcut with a sentence on what
