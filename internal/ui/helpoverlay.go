@@ -32,8 +32,11 @@ const (
 	// for. Below it the strip goes, so the list keeps the room.
 	overlayMinRows = 3
 	// overlayChrome is the lines every overlay spends around its list: the
-	// top edge, the filter, the rule beneath it and the bottom edge.
-	overlayChrome = 4
+	// top edge, the filter, the rule beneath it, the blank line that sets the
+	// last row off from the bottom edge, and that edge itself. Without the
+	// blank one the text runs straight into the border, which carries its own
+	// hints, and the two read as one line.
+	overlayChrome = 5
 )
 
 // helpOverlay is the ? shortcut list. It holds what the filter found and where
@@ -406,6 +409,7 @@ func (a *App) helpBox(l helpLayout) []string {
 			box = append(box, row(a.styles.Muted.Render(text)))
 		}
 	}
+	box = append(box, row(""))
 	return append(box, a.edge(l.width, "╰", "╯", a.helpHints(), ""))
 }
 

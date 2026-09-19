@@ -370,3 +370,43 @@ func TestTheShortcutOverlayFitsEveryTerminalSize(t *testing.T) {
 		}
 	}
 }
+
+// overlayBox returns the overlay's own lines, frame included, from a rendered
+// screen.
+func overlayBox(t *testing.T, app *App) []string {
+	t.Helper()
+	var box []string
+	for _, line := range strings.Split(plain(app.render()), "\n") {
+		if strings.ContainsAny(line, "╭╮╰╯│") {
+			box = append(box, strings.TrimRight(line, " "))
+		}
+	}
+	require.NotEmpty(t, box, "the overlay has to be on screen")
+	return box
+}
+
+func TestTheOverlaySetsItsLastLineOffFromTheBottomEdge(t *testing.T) {
+	// A width where the selected shortcut's explanation fills the detail
+	// strip, which is when the text used to run straight into the bottom edge.
+	// That edge carries its own hints, so the two read as one line.
+	for _, size := range []struct {
+		name          string
+		width, height int
+	}{
+		{"with the detail strip", 62, 26},
+		{"too short for the detail strip", 70, 12},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			app, _, _ := newTestApp(t, size.width, size.height)
+			send(t, app, press("?"))
+
+			box := overlayBox(t, app)
+			last := box[len(box)-1]
+			require.Contains(t, last, "╰", "the last line is the bottom edge")
+
+			above := box[len(box)-2]
+			assert.Equal(t, "", strings.TrimSpace(strings.Trim(above, "│ ")),
+				"the line above the bottom edge is blank, so the two do not read as one")
+		})
+	}
+}
