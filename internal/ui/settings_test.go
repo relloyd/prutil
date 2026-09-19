@@ -684,3 +684,98 @@ func TestASucceedingSaveMovesTheRunningConfigurationWithIt(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, home.Duration(9*time.Minute), saved.Watch.BaseInterval, "and the file agrees")
 }
+
+// settingsApp is an app on a default configuration with a real store behind it,
+// which is what the registry's own closures need: they save as they go.
+func settingsApp(t *testing.T) *App {
+	t.Helper()
+	app := New(Config{
+		Client:   newFakeClient(nil, nil),
+		Home:     home.DefaultConfig(),
+		Store:    home.OpenIn(t.TempDir()),
+		Notifier: &fakeNotifier{},
+	})
+	send(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
+	return app
+}
+
+// TestEverySettingAnswersItsOwnControls holds the registry to the behaviour it
+// has, one case per setting, so that changing how descriptors are built cannot
+// quietly change what any of them does.
+//
+// The properties are the ones every kind shares: a fresh configuration reads as
+// the default, whatever getRaw offers is something saveInput accepts, a change
+// is visible and a reset undoes it, and at every point the configuration prutil
+// is running on says the same as the file on disk. That last one is the
+// property the pane had been getting wrong.
+func TestEverySettingAnswersItsOwnControls(t *testing.T) {
+	for _, d := range allSettings() {
+		t.Run(d.id, func(t *testing.T) {
+			app := settingsApp(t)
+
+			require.NotEmpty(t, d.title, "a row needs something to call itself")
+			require.NotEmpty(t, d.section, "and a section to sit in")
+			// watch.self_review carries isEnabled and no getDisplay, unlike the
+			// other three booleans. Captured as it is rather than asserted away.
+			require.True(t, d.getDisplay != nil || d.isEnabled != nil, "and something to show")
+
+			if d.getDisplay != nil {
+				assert.NotPanics(t, func() { _ = d.getDisplay(app) })
+			}
+			if d.isDefault != nil {
+				assert.True(t, d.isDefault(app), "a default configuration is the default")
+			}
+
+			// Whatever the row offers for editing has to be something it will
+			// take back, unchanged.
+			if d.saveInput != nil && d.getRaw != nil && d.getDisplay != nil {
+				before := d.getDisplay(app)
+				require.NoError(t, d.saveInput(app, d.getRaw(app)), "its own value is valid input")
+				assert.Equal(t, before, d.getDisplay(app), "and saving it changes nothing")
+			}
+
+			changed := true
+			switch {
+			case d.toggle != nil:
+				d.toggle(app)
+			case d.step != nil:
+				d.step(app, 1)
+			case d.cycle != nil:
+				d.cycle(app, 1)
+			default:
+				changed = false
+			}
+
+			if changed && d.isDefault != nil {
+				assert.False(t, d.isDefault(app), "the control moved it off the default")
+			}
+			if d.reset != nil {
+				require.NoError(t, d.reset(app))
+				if d.isDefault != nil {
+					assert.True(t, d.isDefault(app), "and the reset put it back")
+				}
+			}
+
+			// The file is the other half of every one of those operations.
+			saved, err := home.OpenIn(app.store.Dir()).LoadOrCreateConfig()
+			require.NoError(t, err)
+			onDisk := withConfig(app, saved)
+			if d.getDisplay != nil {
+				assert.Equal(t, d.getDisplay(app), d.getDisplay(onDisk),
+					"what prutil is running on is what the file says")
+			}
+			if d.isEnabled != nil {
+				assert.Equal(t, d.isEnabled(app), d.isEnabled(onDisk),
+					"what prutil is running on is what the file says")
+			}
+		})
+	}
+}
+
+// withConfig returns the app reading a different configuration, so a descriptor
+// can be asked what it would show for the file's version of the same setting.
+func withConfig(app *App, cfg home.Config) *App {
+	clone := *app
+	clone.homeCfg = cfg
+	return &clone
+}
