@@ -678,6 +678,41 @@ func TestWatchingSurvivesAClosedListThatSimplyDoesNotMentionThePullRequest(t *te
 	assert.True(t, app.state.Armed(key.String()), "absence is not evidence that it is finished")
 }
 
+func TestRetiringAWatchedPullRequestTakesItsRecordOutOfTheStateFile(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	// A handoff is the ordinary life of a watched pull request, and the
+	// notified threads it leaves behind are what Compact keeps an entry for.
+	app.state.RecordHandoff(key.String(), map[string]string{"T1": "C1"}, testNow)
+	require.NoError(t, app.saveState())
+
+	send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: append(sampleClosedPRs(), merged(key))})
+
+	saved, err := app.store.LoadState()
+	require.NoError(t, err)
+	assert.Equal(t, 0, saved.ArmedCount())
+	assert.Empty(t, saved.PRs,
+		"the record leaves the file rather than lingering as armed:false for good")
+}
+
+func TestManuallyUnwatchingKeepsWhatHasAlreadyBeenHandedOver(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	app.state.RecordHandoff(key.String(), map[string]string{"T1": "C1"}, testNow)
+
+	// Unlike retirement, a second press of w is not evidence that the pull
+	// request is finished: forgetting the threads here would hand every one of
+	// them over again the next time it is watched.
+	send(t, app, press("w"))
+
+	assert.Equal(t, map[string]string{"T1": "C1"},
+		app.state.Get(key.String()).NotifiedThreads, "the dedup survives an unwatch")
+}
+
 func TestWatchingCannotBeArmedFromAViewOtherThanTheOpenList(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	app.active = viewClosed
@@ -762,6 +797,24 @@ func TestAWatchedRowIsHollowWhenNothingIsScheduledToPollIt(t *testing.T) {
 	app.engine.Forget(key)
 
 	assert.Contains(t, plain(app.render()), dormantGlyph+" #42")
+}
+
+func TestTheDetailAgreesWithTheHollowGlyphAboutBeingWatched(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	app.engine.Forget(key)
+
+	// The row draws the hollow glyph and the header counts it, so the pane
+	// saying "not watching" would be the third surface disagreeing with the
+	// other two about one pull request. It is still watched; what it is not is
+	// scheduled, and that is the part worth saying.
+	screen := plain(app.render())
+	require.Contains(t, screen, dormantGlyph+" #42", "the row still marks it")
+	assert.NotContains(t, screen, "not watching",
+		"the mark the reader made is not undone by an empty schedule")
+	assert.Contains(t, screen, "not polled", "but the pane says why nothing is due")
 }
 
 func TestTheDetailExplainsTheCurrentWatchScheduleAndActivity(t *testing.T) {

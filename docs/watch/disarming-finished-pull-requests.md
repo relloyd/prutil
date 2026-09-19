@@ -25,9 +25,20 @@ overstates, and a state file that only ever grows.
 `watchAfterLoad` now hands the closed view to `disarmFinished`. Any row whose
 `State` is not `PRStateOpen` and that is still armed gets disarmed, forgotten by
 the engine, cleared of its runtime feedback, and noted in its watch activity;
-the reader is told which ones were retired. The save runs the entry through
-`Compact`, so the record leaves the file rather than lingering as
-`"armed": false`.
+the reader is told which ones were retired.
+
+Retirement also drops the entry's notified threads and last handoff time.
+`Compact` keeps any entry still holding notified threads, so without that the
+record would survive every save for each pull request that ever reached a
+handoff — the ordinary life of a watched one, and precisely the growth this is
+meant to stop. Clearing them is safe here and only here: those threads exist to
+recognise feedback already sent, GitHub does not reuse a pull request number,
+and nothing will ask about a finished one again. A second press of `w` is not
+the same thing and must keep them, or every thread would be handed over again
+the next time that pull request is watched.
+
+With both, the save runs the entry through `Compact` and the record leaves the
+file rather than lingering as `"armed": false`.
 
 The trigger is deliberately positive evidence — a row GitHub returned saying
 merged or closed. Absence from the open list is the obvious second signal and

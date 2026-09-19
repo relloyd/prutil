@@ -17,13 +17,18 @@ status.
   these; that claim itself is unverified. Treat the reasoning as a lead, not as
   fact, and confirm before acting.
 
-Four findings from the original fourteen are already done and are not repeated
-here: the three missing guards (`d29cc92`) and the duplicated disarm branch,
-which `clearWatch` now holds (`14c870f`).
+Eight of the original fourteen are done. Four are not written up at all: the
+three missing guards (`d29cc92`) and the duplicated disarm branch that
+`clearWatch` now holds (`14c870f`). The other four are findings 1, 2, 3 and 9
+below, kept in place with the diagnosis intact, struck through in the heading
+and closed with what was actually done — the reasoning is what a later reader
+needs if one of them has to be revisited.
+
+That leaves findings 4 through 8, and part of 10.
 
 ## Substantial
 
-### 1. The state file still grows, and the design doc says it does not
+### 1. ~~The state file still grows, and the design doc says it does not~~ — DONE
 
 **Status: mechanism verified.** `State.Compact` (`internal/home/state.go:122`)
 deletes an entry only when `!entry.Armed && len(entry.NotifiedThreads) == 0`.
@@ -43,10 +48,13 @@ loop is safe because GitHub never reuses pull request numbers, which the design
 doc itself argues elsewhere. That reasoning looks sound but has not been
 checked against what else reads `NotifiedThreads`.
 
-**Not yet decided:** whether to clear the two fields on disarm, or to teach
-`Compact` that an unarmed entry whose pull request is known finished can go.
+**Done.** `disarmFinished` now clears `NotifiedThreads` and `LastHandoff` so
+`Compact` drops the entry. Deliberately not in the shared `clearWatch`: a manual
+unwatch must keep the threads, or re-watching would hand every one of them over
+again. `docs/watch/disarming-finished-pull-requests.md` was corrected to say so,
+and both cases are covered by tests.
 
-### 2. The detail pane contradicts the glyph it was meant to agree with
+### 2. ~~The detail pane contradicts the glyph it was meant to agree with~~ — DONE
 
 **Status: mechanism verified.** `watchFacts` takes its `armed` flag from the
 engine, not from the state: `internal/ui/watch_detail.go:40` reads
@@ -64,11 +72,12 @@ Ways to reach it: arm from the closed view (no longer possible after
 `d29cc92`), a pull request dropped from the open list by `-query`/`-limit`, or
 one returned with an empty `NodeID` so `syncWatch` skipped it.
 
-**Likely fix:** `armed` should come from `a.armed(key)`; the engine's `ok` flag
-is the separate question of whether anything is scheduled, which the pane can
-report as its own fact.
+**Done.** `watchFacts.armed` now reads `a.armed(key)`, and the engine's flag
+became a separate `scheduled` field. An armed-but-unscheduled pull request reads
+"watching · not polled: not in the list prutil holds" rather than
+"not watching".
 
-### 3. `watchAfterLoad` opts every future view into disarming
+### 3. ~~`watchAfterLoad` opts every future view into disarming~~ — DONE
 
 **Status: verified by reading.** `internal/ui/app.go:1049` routes on
 `v != viewOpen`, not `v == viewClosed`:
@@ -89,8 +98,9 @@ in before `viewCount`"), and AGENTS.md says adding one means "a constant before
 those rows happen to be open; a view that mixes states would disarm from a list
 nobody intended as evidence.
 
-The comment directly above says "The closed list is the one place…", so the
-condition and its own comment already disagree.
+**Done.** `watchAfterLoad` is now a `switch` naming each view, so a third one
+inherits neither behaviour by default. Its doc comment was rewritten at the same
+time, which also closes finding 9 below.
 
 ### 4. The disarm only fires if the reader visits the closed view
 
@@ -154,9 +164,9 @@ which is the mistake `watchNote` was just fixed for.
 **Suggested:** fold it into `Status`/`Polling`, or say in its doc comment that
 it exists for the tests.
 
-### 9. `watchAfterLoad`'s doc comment describes only one of its two branches
+### 9. ~~`watchAfterLoad`'s doc comment describes only one of its two branches~~ — DONE
 
-**Status: verified by reading.** `internal/ui/app.go:1045-1047` still reads
+**Done with finding 3.** It previously read: `internal/ui/app.go:1045-1047` still reads
 "reconciles the watcher with a freshly loaded open list. It is the only place
 the engine learns about node ids". The function's first statement is now the
 closed-view disarm. In a codebase where comments are the design record, a lead
@@ -178,10 +188,12 @@ Also uncovered:
 - `a.store == nil`, the early return deciding whether a store-less session
   silently keeps stale marks.
 
-## Suggested order
+## What is left
 
-1, 2 and 3 are the ones worth doing together: 1 is a correctness-and-honesty
-problem with a doc that currently misstates behaviour, 2 is a user-visible
-contradiction between three surfaces, 3 is a one-line change that stops a
-future view inheriting a behaviour nobody chose for it. 10 belongs with 1,
-since the test that would have caught it is the same test.
+Findings 4 through 8, and 10.
+
+Finding 4 is the standing decision about where the disarm should live, not a
+defect. Findings 5 through 8 are small and independent. Finding 10's first
+part — a test that would have caught finding 1 — is now covered by
+`TestRetiringAWatchedPullRequestTakesItsRecordOutOfTheStateFile`; the partial
+closed load and the nil store are still uncovered.

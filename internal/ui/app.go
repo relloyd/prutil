@@ -1042,17 +1042,27 @@ func (a *App) prefetch() []tea.Cmd {
 	return cmds
 }
 
-// watchAfterLoad reconciles the watcher with a freshly loaded open list. It is
-// the only place the engine learns about node ids, which is what lets one
-// request cover every armed pull request at once.
+// watchAfterLoad reconciles the watcher with a freshly loaded list, which means
+// something different for each of the two.
+//
+// The open list is the only place the engine learns about node ids, which is
+// what lets one request cover every armed pull request at once. The closed list
+// is the one place a merged or closed pull request is seen as itself rather
+// than simply missing, so it is where an armed entry that has outlived its pull
+// request is retired.
+//
+// Each view is named rather than one standing for everything the other is not:
+// a third view would otherwise be handed to disarmFinished by default, and a
+// list mixing open and finished rows would retire from evidence nobody meant as
+// evidence.
 func (a *App) watchAfterLoad(v view) tea.Cmd {
-	if v != viewOpen {
-		// The closed list is the one place a merged or closed pull request is
-		// seen as itself rather than simply missing, so it is where an armed
-		// entry that has outlived its pull request is retired.
+	switch v {
+	case viewClosed:
 		return a.disarmFinished(a.views[v].prs)
+	case viewOpen:
+		return a.syncWatch()
 	}
-	return a.syncWatch()
+	return nil
 }
 
 // withSpinner pairs a fetch with a spinner tick, restarting the animation when

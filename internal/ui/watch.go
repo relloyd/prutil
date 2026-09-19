@@ -806,6 +806,18 @@ func (a *App) disarmFinished(prs []model.PullRequest) tea.Cmd {
 			continue
 		}
 		a.state.SetArmed(key.String(), false)
+		// Compact keeps any entry still holding notified threads, so leaving
+		// them would file a permanent record for every pull request that ever
+		// reached a handoff — which is the ordinary life of a watched one, and
+		// the growth this retirement exists to stop. They are only worth
+		// keeping to recognise feedback already sent, and GitHub does not reuse
+		// a pull request number, so nothing can ask about this one again.
+		//
+		// A second press of w is not the same and must not come here: that is
+		// the reader changing their mind about an open pull request, and
+		// forgetting the threads would hand every one of them over again.
+		entry := a.state.Mutate(key.String())
+		entry.NotifiedThreads, entry.LastHandoff = nil, time.Time{}
 		a.engine.Forget(key)
 		a.clearWatch(key, "stopped watching: "+pr.State.String())
 		done = append(done, key.String())
