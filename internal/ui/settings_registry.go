@@ -70,10 +70,213 @@ type settingDescriptor struct {
 	reset func(a *App) error
 }
 
+// defCfg is what every setting compares itself against to say whether it is at
+// its default. Built once, because isDefault is asked on every frame.
+var defCfg = home.DefaultConfig()
+
+// field is read and write access to one value in the configuration.
+//
+// It is all a descriptor needs to know about where its setting lives: the
+// display, the comparison against the default, the save and the reset all
+// follow from being able to get the value and set it. Before this, each of
+// those was a closure of its own naming the same config field four or five
+// times over, which is how one of them came to be written in a different
+// order from the rest.
+type field[T comparable] struct {
+	get func(c *home.Config) T
+	set func(c *home.Config, v T)
+}
+
+// settingMeta is everything about a setting except where its value lives.
+type settingMeta struct {
+	id      string
+	section string
+	title   string
+	detail  string
+	def     string
+	path    []string
+	// label names the setting in the notice a change raises, when that is not
+	// the title. Several read better shortened: "Max poll backoff cap" is a
+	// heading, "Max poll backoff set to 30m" is a sentence.
+	label string
+	// verb is how a boolean words itself in a notice, when "is" does not fit.
+	verb string
+	// after runs once a change has been saved, for the settings something else
+	// depends on: rereading reviews, or rescheduling notifications.
+	after func(a *App) tea.Cmd
+}
+
+// verbOrIs is how a boolean setting reads in its notice. "is" suits a singular
+// label; a plural one such as "Herdr toast notifications" takes "are".
+func (m settingMeta) verbOrIs() string {
+	if m.verb != "" {
+		return m.verb
+	}
+	return "is"
+}
+
+func (m settingMeta) noticeLabel() string {
+	if m.label != "" {
+		return m.label
+	}
+	return m.title
+}
+
+// run is the after hook, or nothing when the setting has none.
+func (m settingMeta) run(a *App) tea.Cmd {
+	if m.after == nil {
+		return nil
+	}
+	return m.after(a)
+}
+
+// saved reports a change that reached the file, and failed one that did not.
+func (m settingMeta) saved(a *App, text string) {
+	a.settings.setNotice(text+" · saved", false)
+}
+
+func (m settingMeta) failed(a *App, err error) {
+	a.settings.setNotice("could not save "+strings.ToLower(m.noticeLabel())+": "+err.Error(), true)
+}
+
+// base is the half of a descriptor that says what a setting is rather than
+// what it does, which every kind fills in the same way.
+func (m settingMeta) base(kind settingKind) settingDescriptor {
+	return settingDescriptor{
+		id:          m.id,
+		section:     m.section,
+		title:       m.title,
+		detail:      m.detail,
+		defaultText: m.def,
+		kind:        kind,
+		path:        m.path,
+	}
+}
+
+// resetTo returns the reset every kind shares: take the key out of the file so
+// the built-in default applies again, and move the running configuration with
+// it.
+func resetTo[T comparable](m settingMeta, f field[T]) func(a *App) error {
+	return func(a *App) error {
+		return a.resetSetting(m.path, func(c *home.Config) { f.set(c, f.get(&defCfg)) })
+	}
+}
+
+// isDefaultOf reports whether a setting still holds the value it would have if
+// it were not in the file at all.
+func isDefaultOf[T comparable](f field[T]) func(a *App) bool {
+	return func(a *App) bool { return f.get(&a.homeCfg) == f.get(&defCfg) }
+}
+
+// durationSetting is a setting holding a length of time, stepped with + and -
+// or typed in exactly. min is the shortest it will accept, which is a courtesy
+// to GitHub rather than a limitation of the field.
+func durationSetting(m settingMeta, f field[home.Duration], min, step time.Duration) settingDescriptor {
+	save := func(a *App, d time.Duration) error {
+		if err := a.saveSetting(m.path, d.String(), func(c *home.Config) { f.set(c, home.Duration(d)) }); err != nil {
+			return err
+		}
+		m.saved(a, fmt.Sprintf("%s set to %s", m.noticeLabel(), d))
+		return nil
+	}
+	shown := func(a *App) string { return f.get(&a.homeCfg).String() }
+
+	d := m.base(settingKindDuration)
+	d.minDuration, d.stepDuration = min, step
+	d.getDisplay, d.getRaw = shown, shown
+	d.isDefault = isDefaultOf(f)
+	d.reset = resetTo(m, f)
+	d.step = func(a *App, delta int) tea.Cmd {
+		next := max(time.Duration(f.get(&a.homeCfg))+time.Duration(delta)*step, min)
+		if err := save(a, next); err != nil {
+			m.failed(a, err)
+			return nil
+		}
+		return m.run(a)
+	}
+	d.saveInput = func(a *App, input string) error {
+		v, err := time.ParseDuration(strings.TrimSpace(input))
+		if err != nil {
+			return fmt.Errorf("not a duration such as 30s or 1m: %w", err)
+		}
+		if v < min {
+			return fmt.Errorf("minimum interval is %s", min)
+		}
+		if err := save(a, v); err != nil {
+			return err
+		}
+		m.run(a)
+		return nil
+	}
+	return d
+}
+
+// boolSetting is a setting that is on or off, flipped with space or x.
+func boolSetting(m settingMeta, f field[bool]) settingDescriptor {
+	d := m.base(settingKindBool)
+	d.getDisplay = func(a *App) string { return onOff(f.get(&a.homeCfg)) }
+	d.getRaw = func(a *App) string { return strconv.FormatBool(f.get(&a.homeCfg)) }
+	d.isEnabled = func(a *App) bool { return f.get(&a.homeCfg) }
+	d.isDefault = isDefaultOf(f)
+	d.reset = resetTo(m, f)
+	d.toggle = func(a *App) tea.Cmd {
+		next := !f.get(&a.homeCfg)
+		if err := a.saveSetting(m.path, strconv.FormatBool(next), func(c *home.Config) { f.set(c, next) }); err != nil {
+			m.failed(a, err)
+			return nil
+		}
+		m.saved(a, fmt.Sprintf("%s %s %s", m.noticeLabel(), m.verbOrIs(), onOff(next)))
+		return m.run(a)
+	}
+	return d
+}
+
+// intSetting is a whole number, stepped with + and - or typed in exactly.
+// format is how the number reads on the row, such as "%d polls", and the notice
+// reuses it so the two cannot drift apart.
+func intSetting(m settingMeta, f field[int], min, step int, format string) settingDescriptor {
+	show := func(n int) string { return fmt.Sprintf(format, n) }
+	save := func(a *App, n int) error {
+		if err := a.saveSetting(m.path, strconv.Itoa(n), func(c *home.Config) { f.set(c, n) }); err != nil {
+			return err
+		}
+		m.saved(a, fmt.Sprintf("%s set to %s", m.noticeLabel(), show(n)))
+		return nil
+	}
+
+	d := m.base(settingKindInt)
+	d.minInt, d.stepInt = min, step
+	d.getDisplay = func(a *App) string { return show(f.get(&a.homeCfg)) }
+	d.getRaw = func(a *App) string { return strconv.Itoa(f.get(&a.homeCfg)) }
+	d.isDefault = isDefaultOf(f)
+	d.reset = resetTo(m, f)
+	d.step = func(a *App, delta int) tea.Cmd {
+		if err := save(a, max(f.get(&a.homeCfg)+delta*step, min)); err != nil {
+			m.failed(a, err)
+			return nil
+		}
+		return m.run(a)
+	}
+	d.saveInput = func(a *App, input string) error {
+		n, err := strconv.Atoi(strings.TrimSpace(input))
+		if err != nil {
+			return fmt.Errorf("not a whole number: %w", err)
+		}
+		if n < min {
+			return fmt.Errorf("minimum is %d", min)
+		}
+		if err := save(a, n); err != nil {
+			return err
+		}
+		m.run(a)
+		return nil
+	}
+	return d
+}
+
 // allSettings returns the complete registry of settings displayed in the pane,
 // grouped by their section headers.
 func allSettings() []settingDescriptor {
-	defCfg := home.DefaultConfig()
 
 	return []settingDescriptor{
 		// ---------------------------------------------------------------------
@@ -128,552 +331,127 @@ func allSettings() []settingDescriptor {
 				return a.setNotification(home.NotifyApproved, defCfg.Notifications.Enabled(home.NotifyApproved))
 			},
 		},
-		{
-			id:           "notifications.interval",
-			section:      "DESKTOP NOTIFICATIONS",
-			title:        "Check poll interval",
-			detail:       "How often prutil checks your open pull requests in the background while any notification is enabled.",
-			defaultText:  "2m",
-			kind:         settingKindDuration,
-			minDuration:  15 * time.Second,
-			stepDuration: 30 * time.Second,
-			path:         []string{"notifications", "interval"},
-			getDisplay: func(a *App) string {
-				return a.homeCfg.Notifications.Interval.String()
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Notifications.Interval.String()
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Notifications.Interval == defCfg.Notifications.Interval
-			},
-			step: func(a *App, delta int) tea.Cmd {
-				cur := time.Duration(a.homeCfg.Notifications.Interval)
-				next := cur + time.Duration(delta)*30*time.Second
-				if next < 15*time.Second {
-					next = 15 * time.Second
-				}
-				valStr := next.String()
-				if err := a.saveSetting([]string{"notifications", "interval"}, valStr, func(c *home.Config) {
-					c.Notifications.Interval = home.Duration(next)
-				}); err != nil {
-					a.settings.setNotice("could not save interval: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Check poll interval set to %s · saved", valStr), false)
-				return a.scheduleNotifications()
-			},
-			saveInput: func(a *App, input string) error {
-				d, err := time.ParseDuration(strings.TrimSpace(input))
-				if err != nil {
-					return fmt.Errorf("not a duration such as 2m or 45s: %w", err)
-				}
-				if d < 15*time.Second {
-					return fmt.Errorf("minimum interval is 15s")
-				}
-				valStr := d.String()
-				if err := a.saveSetting([]string{"notifications", "interval"}, valStr, func(c *home.Config) {
-					c.Notifications.Interval = home.Duration(d)
-				}); err != nil {
-					return err
-				}
-				a.settings.setNotice(fmt.Sprintf("Check poll interval set to %s · saved", valStr), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"notifications", "interval"}, func(c *home.Config) {
-					c.Notifications.Interval = defCfg.Notifications.Interval
-				})
-			},
-		},
+		durationSetting(settingMeta{
+			id:      "notifications.interval",
+			section: "DESKTOP NOTIFICATIONS",
+			title:   "Check poll interval",
+			detail:  "How often prutil checks your open pull requests in the background while any notification is enabled.",
+			def:     "2m",
+			path:    []string{"notifications", "interval"},
+			after:   func(a *App) tea.Cmd { return a.scheduleNotifications() },
+		}, field[home.Duration]{
+			get: func(c *home.Config) home.Duration { return c.Notifications.Interval },
+			set: func(c *home.Config, v home.Duration) { c.Notifications.Interval = v },
+		}, 15*time.Second, 30*time.Second),
 
 		// ---------------------------------------------------------------------
 		// WATCHING & POLLING
 		// ---------------------------------------------------------------------
-		{
+		boolSetting(settingMeta{
 			id:      "watch.self_review",
 			section: "WATCHING & POLLING",
 			title:   "Self-review feedback",
 			detail: "Treat every unresolved review comment written from your account as actionable feedback for " +
 				"coding agents, apart from the replies your agents left behind.",
-			kind: settingKindBool,
-			isEnabled: func(a *App) bool {
-				return a.homeCfg.Watch.SelfReview
-			},
-			toggle: func(a *App) tea.Cmd {
-				on := !a.homeCfg.Watch.SelfReview
-				// The error used to be discarded and the notice said "saved"
-				// either way, which is the one thing a settings pane must not
-				// say when it did not.
-				if err := a.setWatchSelfReview(on); err != nil {
-					a.settings.setNotice("could not save self-review feedback: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Self-review feedback is %s · saved", onOff(on)), false)
-				return a.rereadArmedReviews()
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"watch", "self_review"}, func(c *home.Config) {
-					c.Watch.SelfReview = false
-				})
-			},
-		},
-		{
-			id:           "watch.active_interval",
-			section:      "WATCHING & POLLING",
-			title:        "Active poll interval",
-			detail:       "How often an armed pull request is polled while checks or workflows are actively running.",
-			defaultText:  "30s",
-			kind:         settingKindDuration,
-			minDuration:  15 * time.Second,
-			stepDuration: 15 * time.Second,
-			path:         []string{"watch", "active_interval"},
-			getDisplay: func(a *App) string {
-				return a.homeCfg.Watch.ActiveInterval.String()
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Watch.ActiveInterval.String()
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Watch.ActiveInterval == defCfg.Watch.ActiveInterval
-			},
-			step: func(a *App, delta int) tea.Cmd {
-				cur := time.Duration(a.homeCfg.Watch.ActiveInterval)
-				next := cur + time.Duration(delta)*15*time.Second
-				if next < 15*time.Second {
-					next = 15 * time.Second
-				}
-				valStr := next.String()
-				if err := a.saveSetting([]string{"watch", "active_interval"}, valStr, func(c *home.Config) {
-					c.Watch.ActiveInterval = home.Duration(next)
-				}); err != nil {
-					a.settings.setNotice("could not save interval: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Active poll interval set to %s · saved", valStr), false)
-				return nil
-			},
-			saveInput: func(a *App, input string) error {
-				d, err := time.ParseDuration(strings.TrimSpace(input))
-				if err != nil {
-					return fmt.Errorf("not a duration such as 30s or 1m: %w", err)
-				}
-				if d < 15*time.Second {
-					return fmt.Errorf("minimum interval is 15s")
-				}
-				valStr := d.String()
-				if err := a.saveSetting([]string{"watch", "active_interval"}, valStr, func(c *home.Config) {
-					c.Watch.ActiveInterval = home.Duration(d)
-				}); err != nil {
-					return err
-				}
-				a.settings.setNotice(fmt.Sprintf("Active poll interval set to %s · saved", valStr), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"watch", "active_interval"}, func(c *home.Config) {
-					c.Watch.ActiveInterval = defCfg.Watch.ActiveInterval
-				})
-			},
-		},
-		{
-			id:           "watch.base_interval",
-			section:      "WATCHING & POLLING",
-			title:        "Base poll interval",
-			detail:       "Starting polling interval for an armed pull request once all checks have finished running.",
-			defaultText:  "2m",
-			kind:         settingKindDuration,
-			minDuration:  15 * time.Second,
-			stepDuration: 30 * time.Second,
-			path:         []string{"watch", "base_interval"},
-			getDisplay: func(a *App) string {
-				return a.homeCfg.Watch.BaseInterval.String()
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Watch.BaseInterval.String()
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Watch.BaseInterval == defCfg.Watch.BaseInterval
-			},
-			step: func(a *App, delta int) tea.Cmd {
-				cur := time.Duration(a.homeCfg.Watch.BaseInterval)
-				next := cur + time.Duration(delta)*30*time.Second
-				if next < 15*time.Second {
-					next = 15 * time.Second
-				}
-				valStr := next.String()
-				if err := a.saveSetting([]string{"watch", "base_interval"}, valStr, func(c *home.Config) {
-					c.Watch.BaseInterval = home.Duration(next)
-				}); err != nil {
-					a.settings.setNotice("could not save interval: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Base poll interval set to %s · saved", valStr), false)
-				return nil
-			},
-			saveInput: func(a *App, input string) error {
-				d, err := time.ParseDuration(strings.TrimSpace(input))
-				if err != nil {
-					return fmt.Errorf("not a duration such as 2m: %w", err)
-				}
-				if d < 15*time.Second {
-					return fmt.Errorf("minimum interval is 15s")
-				}
-				valStr := d.String()
-				if err := a.saveSetting([]string{"watch", "base_interval"}, valStr, func(c *home.Config) {
-					c.Watch.BaseInterval = home.Duration(d)
-				}); err != nil {
-					return err
-				}
-				a.settings.setNotice(fmt.Sprintf("Base poll interval set to %s · saved", valStr), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"watch", "base_interval"}, func(c *home.Config) {
-					c.Watch.BaseInterval = defCfg.Watch.BaseInterval
-				})
-			},
-		},
-		{
-			id:           "watch.max_interval",
-			section:      "WATCHING & POLLING",
-			title:        "Max poll backoff cap",
-			detail:       "Maximum polling backoff interval reached when an armed pull request remains unchanged.",
-			defaultText:  "30m",
-			kind:         settingKindDuration,
-			minDuration:  15 * time.Second,
-			stepDuration: 5 * time.Minute,
-			path:         []string{"watch", "max_interval"},
-			getDisplay: func(a *App) string {
-				return a.homeCfg.Watch.MaxInterval.String()
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Watch.MaxInterval.String()
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Watch.MaxInterval == defCfg.Watch.MaxInterval
-			},
-			step: func(a *App, delta int) tea.Cmd {
-				cur := time.Duration(a.homeCfg.Watch.MaxInterval)
-				next := cur + time.Duration(delta)*5*time.Minute
-				if next < 15*time.Second {
-					next = 15 * time.Second
-				}
-				valStr := next.String()
-				if err := a.saveSetting([]string{"watch", "max_interval"}, valStr, func(c *home.Config) {
-					c.Watch.MaxInterval = home.Duration(next)
-				}); err != nil {
-					a.settings.setNotice("could not save max interval: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Max poll backoff set to %s · saved", valStr), false)
-				return nil
-			},
-			saveInput: func(a *App, input string) error {
-				d, err := time.ParseDuration(strings.TrimSpace(input))
-				if err != nil {
-					return fmt.Errorf("not a duration such as 30m: %w", err)
-				}
-				if d < 15*time.Second {
-					return fmt.Errorf("minimum interval is 15s")
-				}
-				valStr := d.String()
-				if err := a.saveSetting([]string{"watch", "max_interval"}, valStr, func(c *home.Config) {
-					c.Watch.MaxInterval = home.Duration(d)
-				}); err != nil {
-					return err
-				}
-				a.settings.setNotice(fmt.Sprintf("Max poll backoff set to %s · saved", valStr), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"watch", "max_interval"}, func(c *home.Config) {
-					c.Watch.MaxInterval = defCfg.Watch.MaxInterval
-				})
-			},
-		},
-		{
-			id:           "watch.notified_interval",
-			section:      "WATCHING & POLLING",
-			title:        "Post-handoff interval",
-			detail:       "Initial polling interval after handing review feedback to a coding agent.",
-			defaultText:  "10m",
-			kind:         settingKindDuration,
-			minDuration:  15 * time.Second,
-			stepDuration: 1 * time.Minute,
-			path:         []string{"watch", "notified_interval"},
-			getDisplay: func(a *App) string {
-				return a.homeCfg.Watch.NotifiedInterval.String()
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Watch.NotifiedInterval.String()
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Watch.NotifiedInterval == defCfg.Watch.NotifiedInterval
-			},
-			step: func(a *App, delta int) tea.Cmd {
-				cur := time.Duration(a.homeCfg.Watch.NotifiedInterval)
-				next := cur + time.Duration(delta)*1*time.Minute
-				if next < 15*time.Second {
-					next = 15 * time.Second
-				}
-				valStr := next.String()
-				if err := a.saveSetting([]string{"watch", "notified_interval"}, valStr, func(c *home.Config) {
-					c.Watch.NotifiedInterval = home.Duration(next)
-				}); err != nil {
-					a.settings.setNotice("could not save interval: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Post-handoff interval set to %s · saved", valStr), false)
-				return nil
-			},
-			saveInput: func(a *App, input string) error {
-				d, err := time.ParseDuration(strings.TrimSpace(input))
-				if err != nil {
-					return fmt.Errorf("not a duration: %w", err)
-				}
-				if d < 15*time.Second {
-					return fmt.Errorf("minimum interval is 15s")
-				}
-				valStr := d.String()
-				if err := a.saveSetting([]string{"watch", "notified_interval"}, valStr, func(c *home.Config) {
-					c.Watch.NotifiedInterval = home.Duration(d)
-				}); err != nil {
-					return err
-				}
-				a.settings.setNotice(fmt.Sprintf("Post-handoff interval set to %s · saved", valStr), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"watch", "notified_interval"}, func(c *home.Config) {
-					c.Watch.NotifiedInterval = defCfg.Watch.NotifiedInterval
-				})
-			},
-		},
-		{
-			id:           "watch.max_notified_interval",
-			section:      "WATCHING & POLLING",
-			title:        "Max post-handoff cap",
-			detail:       "Maximum polling backoff cap after handing review feedback to a coding agent.",
-			defaultText:  "60m",
-			kind:         settingKindDuration,
-			minDuration:  15 * time.Second,
-			stepDuration: 5 * time.Minute,
-			path:         []string{"watch", "max_notified_interval"},
-			getDisplay: func(a *App) string {
-				return a.homeCfg.Watch.MaxNotifiedInterval.String()
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Watch.MaxNotifiedInterval.String()
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Watch.MaxNotifiedInterval == defCfg.Watch.MaxNotifiedInterval
-			},
-			step: func(a *App, delta int) tea.Cmd {
-				cur := time.Duration(a.homeCfg.Watch.MaxNotifiedInterval)
-				next := cur + time.Duration(delta)*5*time.Minute
-				if next < 15*time.Second {
-					next = 15 * time.Second
-				}
-				valStr := next.String()
-				if err := a.saveSetting([]string{"watch", "max_notified_interval"}, valStr, func(c *home.Config) {
-					c.Watch.MaxNotifiedInterval = home.Duration(next)
-				}); err != nil {
-					a.settings.setNotice("could not save interval: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Max post-handoff cap set to %s · saved", valStr), false)
-				return nil
-			},
-			saveInput: func(a *App, input string) error {
-				d, err := time.ParseDuration(strings.TrimSpace(input))
-				if err != nil {
-					return fmt.Errorf("not a duration: %w", err)
-				}
-				if d < 15*time.Second {
-					return fmt.Errorf("minimum interval is 15s")
-				}
-				valStr := d.String()
-				if err := a.saveSetting([]string{"watch", "max_notified_interval"}, valStr, func(c *home.Config) {
-					c.Watch.MaxNotifiedInterval = home.Duration(d)
-				}); err != nil {
-					return err
-				}
-				a.settings.setNotice(fmt.Sprintf("Max post-handoff cap set to %s · saved", valStr), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"watch", "max_notified_interval"}, func(c *home.Config) {
-					c.Watch.MaxNotifiedInterval = defCfg.Watch.MaxNotifiedInterval
-				})
-			},
-		},
-		{
-			id:           "watch.idle_interval",
-			section:      "WATCHING & POLLING",
-			title:        "Agent idle check interval",
-			detail:       "How often a target agent is polled over local socket while waiting for it to become idle.",
-			defaultText:  "10s",
-			kind:         settingKindDuration,
-			minDuration:  1 * time.Second,
-			stepDuration: 5 * time.Second,
-			path:         []string{"watch", "idle_interval"},
-			getDisplay: func(a *App) string {
-				return a.homeCfg.Watch.IdleInterval.String()
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Watch.IdleInterval.String()
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Watch.IdleInterval == defCfg.Watch.IdleInterval
-			},
-			step: func(a *App, delta int) tea.Cmd {
-				cur := time.Duration(a.homeCfg.Watch.IdleInterval)
-				next := cur + time.Duration(delta)*5*time.Second
-				if next < 1*time.Second {
-					next = 1 * time.Second
-				}
-				valStr := next.String()
-				if err := a.saveSetting([]string{"watch", "idle_interval"}, valStr, func(c *home.Config) {
-					c.Watch.IdleInterval = home.Duration(next)
-				}); err != nil {
-					a.settings.setNotice("could not save interval: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Agent idle interval set to %s · saved", valStr), false)
-				return nil
-			},
-			saveInput: func(a *App, input string) error {
-				d, err := time.ParseDuration(strings.TrimSpace(input))
-				if err != nil {
-					return fmt.Errorf("not a duration: %w", err)
-				}
-				if d < 1*time.Second {
-					return fmt.Errorf("minimum interval is 1s")
-				}
-				valStr := d.String()
-				if err := a.saveSetting([]string{"watch", "idle_interval"}, valStr, func(c *home.Config) {
-					c.Watch.IdleInterval = home.Duration(d)
-				}); err != nil {
-					return err
-				}
-				a.settings.setNotice(fmt.Sprintf("Agent idle interval set to %s · saved", valStr), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"watch", "idle_interval"}, func(c *home.Config) {
-					c.Watch.IdleInterval = defCfg.Watch.IdleInterval
-				})
-			},
-		},
-		{
-			id:          "watch.dormant_after",
-			section:     "WATCHING & POLLING",
-			title:       "Dormant poll threshold",
-			detail:      "How many consecutive polls at max interval with no changes before polling goes dormant.",
-			defaultText: "3 polls",
-			kind:        settingKindInt,
-			minInt:      1,
-			stepInt:     1,
-			path:        []string{"watch", "dormant_after"},
-			getDisplay: func(a *App) string {
-				return fmt.Sprintf("%d polls", a.homeCfg.Watch.DormantAfter)
-			},
-			getRaw: func(a *App) string {
-				return strconv.Itoa(a.homeCfg.Watch.DormantAfter)
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Watch.DormantAfter == defCfg.Watch.DormantAfter
-			},
-			step: func(a *App, delta int) tea.Cmd {
-				next := a.homeCfg.Watch.DormantAfter + delta
-				if next < 1 {
-					next = 1
-				}
-				valStr := strconv.Itoa(next)
-				if err := a.saveSetting([]string{"watch", "dormant_after"}, valStr, func(c *home.Config) {
-					c.Watch.DormantAfter = next
-				}); err != nil {
-					a.settings.setNotice("could not save threshold: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Dormant threshold set to %d polls · saved", next), false)
-				return nil
-			},
-			saveInput: func(a *App, input string) error {
-				n, err := strconv.Atoi(strings.TrimSpace(input))
-				if err != nil || n < 1 {
-					return fmt.Errorf("must be a positive integer >= 1")
-				}
-				valStr := strconv.Itoa(n)
-				if err := a.saveSetting([]string{"watch", "dormant_after"}, valStr, func(c *home.Config) {
-					c.Watch.DormantAfter = n
-				}); err != nil {
-					return err
-				}
-				a.settings.setNotice(fmt.Sprintf("Dormant threshold set to %d polls · saved", n), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"watch", "dormant_after"}, func(c *home.Config) {
-					c.Watch.DormantAfter = defCfg.Watch.DormantAfter
-				})
-			},
-		},
-		{
-			id:          "watch.force_precise_every",
-			section:     "WATCHING & POLLING",
-			title:       "Force precise check every",
-			detail:      "Poll count interval to run the precise review-thread query regardless of tripwire counters.",
-			defaultText: "5 polls",
-			kind:        settingKindInt,
-			minInt:      1,
-			stepInt:     1,
-			path:        []string{"watch", "force_precise_every"},
-			getDisplay: func(a *App) string {
-				return fmt.Sprintf("every %d polls", a.homeCfg.Watch.ForcePreciseEvery)
-			},
-			getRaw: func(a *App) string {
-				return strconv.Itoa(a.homeCfg.Watch.ForcePreciseEvery)
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Watch.ForcePreciseEvery == defCfg.Watch.ForcePreciseEvery
-			},
-			step: func(a *App, delta int) tea.Cmd {
-				next := a.homeCfg.Watch.ForcePreciseEvery + delta
-				if next < 1 {
-					next = 1
-				}
-				valStr := strconv.Itoa(next)
-				if err := a.saveSetting([]string{"watch", "force_precise_every"}, valStr, func(c *home.Config) {
-					c.Watch.ForcePreciseEvery = next
-				}); err != nil {
-					a.settings.setNotice("could not save interval: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Force precise check set to every %d polls · saved", next), false)
-				return nil
-			},
-			saveInput: func(a *App, input string) error {
-				n, err := strconv.Atoi(strings.TrimSpace(input))
-				if err != nil || n < 1 {
-					return fmt.Errorf("must be a positive integer >= 1")
-				}
-				valStr := strconv.Itoa(n)
-				if err := a.saveSetting([]string{"watch", "force_precise_every"}, valStr, func(c *home.Config) {
-					c.Watch.ForcePreciseEvery = n
-				}); err != nil {
-					return err
-				}
-				a.settings.setNotice(fmt.Sprintf("Force precise check set to every %d polls · saved", n), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"watch", "force_precise_every"}, func(c *home.Config) {
-					c.Watch.ForcePreciseEvery = defCfg.Watch.ForcePreciseEvery
-				})
-			},
-		},
+			def:   "off",
+			path:  []string{"watch", "self_review"},
+			after: func(a *App) tea.Cmd { return a.rereadArmedReviews() },
+		}, field[bool]{
+			get: func(c *home.Config) bool { return c.Watch.SelfReview },
+			set: func(c *home.Config, v bool) { c.Watch.SelfReview = v },
+		}),
+		durationSetting(settingMeta{
+			id:      "watch.active_interval",
+			section: "WATCHING & POLLING",
+			title:   "Active poll interval",
+			detail:  "How often an armed pull request is polled while checks or workflows are actively running.",
+			def:     "30s",
+			path:    []string{"watch", "active_interval"},
+		}, field[home.Duration]{
+			get: func(c *home.Config) home.Duration { return c.Watch.ActiveInterval },
+			set: func(c *home.Config, v home.Duration) { c.Watch.ActiveInterval = v },
+		}, 15*time.Second, 15*time.Second),
+		durationSetting(settingMeta{
+			id:      "watch.base_interval",
+			section: "WATCHING & POLLING",
+			title:   "Base poll interval",
+			detail:  "Starting polling interval for an armed pull request once all checks have finished running.",
+			def:     "2m",
+			path:    []string{"watch", "base_interval"},
+		}, field[home.Duration]{
+			get: func(c *home.Config) home.Duration { return c.Watch.BaseInterval },
+			set: func(c *home.Config, v home.Duration) { c.Watch.BaseInterval = v },
+		}, 15*time.Second, 30*time.Second),
+		durationSetting(settingMeta{
+			id:      "watch.max_interval",
+			section: "WATCHING & POLLING",
+			title:   "Max poll backoff cap",
+			detail:  "Maximum polling backoff interval reached when an armed pull request remains unchanged.",
+			def:     "30m",
+			path:    []string{"watch", "max_interval"},
+			label:   "Max poll backoff",
+		}, field[home.Duration]{
+			get: func(c *home.Config) home.Duration { return c.Watch.MaxInterval },
+			set: func(c *home.Config, v home.Duration) { c.Watch.MaxInterval = v },
+		}, 15*time.Second, 5*time.Minute),
+		durationSetting(settingMeta{
+			id:      "watch.notified_interval",
+			section: "WATCHING & POLLING",
+			title:   "Post-handoff interval",
+			detail:  "Initial polling interval after handing review feedback to a coding agent.",
+			def:     "10m",
+			path:    []string{"watch", "notified_interval"},
+		}, field[home.Duration]{
+			get: func(c *home.Config) home.Duration { return c.Watch.NotifiedInterval },
+			set: func(c *home.Config, v home.Duration) { c.Watch.NotifiedInterval = v },
+		}, 15*time.Second, 1*time.Minute),
+		durationSetting(settingMeta{
+			id:      "watch.max_notified_interval",
+			section: "WATCHING & POLLING",
+			title:   "Max post-handoff cap",
+			detail:  "Maximum polling backoff cap after handing review feedback to a coding agent.",
+			def:     "60m",
+			path:    []string{"watch", "max_notified_interval"},
+		}, field[home.Duration]{
+			get: func(c *home.Config) home.Duration { return c.Watch.MaxNotifiedInterval },
+			set: func(c *home.Config, v home.Duration) { c.Watch.MaxNotifiedInterval = v },
+		}, 15*time.Second, 5*time.Minute),
+		durationSetting(settingMeta{
+			id:      "watch.idle_interval",
+			section: "WATCHING & POLLING",
+			title:   "Agent idle check interval",
+			detail:  "How often a target agent is polled over local socket while waiting for it to become idle.",
+			def:     "10s",
+			path:    []string{"watch", "idle_interval"},
+			label:   "Agent idle interval",
+		}, field[home.Duration]{
+			get: func(c *home.Config) home.Duration { return c.Watch.IdleInterval },
+			set: func(c *home.Config, v home.Duration) { c.Watch.IdleInterval = v },
+		}, 1*time.Second, 5*time.Second),
+		intSetting(settingMeta{
+			id:      "watch.dormant_after",
+			section: "WATCHING & POLLING",
+			title:   "Dormant poll threshold",
+			detail:  "How many consecutive polls at max interval with no changes before polling goes dormant.",
+			def:     "3 polls",
+			path:    []string{"watch", "dormant_after"},
+			label:   "Dormant threshold",
+		}, field[int]{
+			get: func(c *home.Config) int { return c.Watch.DormantAfter },
+			set: func(c *home.Config, v int) { c.Watch.DormantAfter = v },
+		}, 1, 1, "%d polls"),
+		intSetting(settingMeta{
+			id:      "watch.force_precise_every",
+			section: "WATCHING & POLLING",
+			title:   "Force precise check every",
+			detail:  "Poll count interval to run the precise review-thread query regardless of tripwire counters.",
+			def:     "5 polls",
+			path:    []string{"watch", "force_precise_every"},
+			label:   "Force precise check",
+		}, field[int]{
+			get: func(c *home.Config) int { return c.Watch.ForcePreciseEvery },
+			set: func(c *home.Config, v int) { c.Watch.ForcePreciseEvery = v },
+		}, 1, 1, "every %d polls"),
 		{
 			id:          "watch.self_test_marker",
 			section:     "WATCHING & POLLING",
@@ -911,149 +689,41 @@ func allSettings() []settingDescriptor {
 				})
 			},
 		},
-		{
-			id:           "herdr.wait_for_idle",
-			section:      "CODING AGENT (HERDR)",
-			title:        "Wait for agent idle timeout",
-			detail:       "How long prutil waits for a working agent to settle before falling back to a notification.",
-			defaultText:  "15m",
-			kind:         settingKindDuration,
-			minDuration:  0,
-			stepDuration: 1 * time.Minute,
-			path:         []string{"herdr", "wait_for_idle"},
-			getDisplay: func(a *App) string {
-				return a.homeCfg.Herdr.WaitForIdle.String()
-			},
-			getRaw: func(a *App) string {
-				return a.homeCfg.Herdr.WaitForIdle.String()
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Herdr.WaitForIdle == defCfg.Herdr.WaitForIdle
-			},
-			step: func(a *App, delta int) tea.Cmd {
-				cur := time.Duration(a.homeCfg.Herdr.WaitForIdle)
-				next := cur + time.Duration(delta)*1*time.Minute
-				if next < 0 {
-					next = 0
-				}
-				valStr := next.String()
-				if err := a.saveSetting([]string{"herdr", "wait_for_idle"}, valStr, func(c *home.Config) {
-					c.Herdr.WaitForIdle = home.Duration(next)
-				}); err != nil {
-					a.settings.setNotice("could not save timeout: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Wait for idle timeout set to %s · saved", valStr), false)
-				return nil
-			},
-			saveInput: func(a *App, input string) error {
-				d, err := time.ParseDuration(strings.TrimSpace(input))
-				if err != nil {
-					return fmt.Errorf("not a duration: %w", err)
-				}
-				valStr := d.String()
-				if err := a.saveSetting([]string{"herdr", "wait_for_idle"}, valStr, func(c *home.Config) {
-					c.Herdr.WaitForIdle = home.Duration(d)
-				}); err != nil {
-					return err
-				}
-				a.settings.setNotice(fmt.Sprintf("Wait for idle timeout set to %s · saved", valStr), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"herdr", "wait_for_idle"}, func(c *home.Config) {
-					c.Herdr.WaitForIdle = defCfg.Herdr.WaitForIdle
-				})
-			},
-		},
-		{
-			id:          "herdr.dry_run",
-			section:     "CODING AGENT (HERDR)",
-			title:       "Dry run mode",
-			detail:      "Record handoffs in logs and notifications without actually sending them to the agent.",
-			defaultText: "off",
-			kind:        settingKindBool,
-			path:        []string{"herdr", "dry_run"},
-			getDisplay: func(a *App) string {
-				if a.homeCfg.Herdr.DryRun {
-					return "on"
-				}
-				return "off"
-			},
-			getRaw: func(a *App) string {
-				return strconv.FormatBool(a.homeCfg.Herdr.DryRun)
-			},
-			isEnabled: func(a *App) bool {
-				return a.homeCfg.Herdr.DryRun
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Herdr.DryRun == defCfg.Herdr.DryRun
-			},
-			toggle: func(a *App) tea.Cmd {
-				next := !a.homeCfg.Herdr.DryRun
-				state := "off"
-				if next {
-					state = "on"
-				}
-				if err := a.saveSetting([]string{"herdr", "dry_run"}, strconv.FormatBool(next), func(c *home.Config) {
-					c.Herdr.DryRun = next
-				}); err != nil {
-					a.settings.setNotice("could not save dry run: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Dry run mode is %s · saved", state), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"herdr", "dry_run"}, func(c *home.Config) {
-					c.Herdr.DryRun = defCfg.Herdr.DryRun
-				})
-			},
-		},
-		{
-			id:          "herdr.toast",
-			section:     "CODING AGENT (HERDR)",
-			title:       "Herdr toast notifications",
-			detail:      "Show herdr's desktop notification alongside each agent handoff.",
-			defaultText: "on",
-			kind:        settingKindBool,
-			path:        []string{"herdr", "toast"},
-			getDisplay: func(a *App) string {
-				if a.homeCfg.Herdr.Toast {
-					return "on"
-				}
-				return "off"
-			},
-			getRaw: func(a *App) string {
-				return strconv.FormatBool(a.homeCfg.Herdr.Toast)
-			},
-			isEnabled: func(a *App) bool {
-				return a.homeCfg.Herdr.Toast
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Herdr.Toast == defCfg.Herdr.Toast
-			},
-			toggle: func(a *App) tea.Cmd {
-				next := !a.homeCfg.Herdr.Toast
-				state := "off"
-				if next {
-					state = "on"
-				}
-				if err := a.saveSetting([]string{"herdr", "toast"}, strconv.FormatBool(next), func(c *home.Config) {
-					c.Herdr.Toast = next
-				}); err != nil {
-					a.settings.setNotice("could not save toast setting: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Herdr toast notifications %s · saved", state), false)
-				return nil
-			},
-			reset: func(a *App) error {
-				return a.resetSetting([]string{"herdr", "toast"}, func(c *home.Config) {
-					c.Herdr.Toast = defCfg.Herdr.Toast
-				})
-			},
-		},
+		durationSetting(settingMeta{
+			id:      "herdr.wait_for_idle",
+			section: "CODING AGENT (HERDR)",
+			title:   "Wait for agent idle timeout",
+			detail:  "How long prutil waits for a working agent to settle before falling back to a notification.",
+			def:     "15m",
+			path:    []string{"herdr", "wait_for_idle"},
+			label:   "Wait for idle timeout",
+		}, field[home.Duration]{
+			get: func(c *home.Config) home.Duration { return c.Herdr.WaitForIdle },
+			set: func(c *home.Config, v home.Duration) { c.Herdr.WaitForIdle = v },
+		}, 0, 1*time.Minute),
+		boolSetting(settingMeta{
+			id:      "herdr.dry_run",
+			section: "CODING AGENT (HERDR)",
+			title:   "Dry run mode",
+			detail:  "Record handoffs in logs and notifications without actually sending them to the agent.",
+			def:     "off",
+			path:    []string{"herdr", "dry_run"},
+		}, field[bool]{
+			get: func(c *home.Config) bool { return c.Herdr.DryRun },
+			set: func(c *home.Config, v bool) { c.Herdr.DryRun = v },
+		}),
+		boolSetting(settingMeta{
+			id:      "herdr.toast",
+			section: "CODING AGENT (HERDR)",
+			title:   "Herdr toast notifications",
+			detail:  "Show herdr's desktop notification alongside each agent handoff.",
+			def:     "on",
+			path:    []string{"herdr", "toast"},
+			verb:    "are",
+		}, field[bool]{
+			get: func(c *home.Config) bool { return c.Herdr.Toast },
+			set: func(c *home.Config, v bool) { c.Herdr.Toast = v },
+		}),
 		{
 			id:          "herdr.prompt",
 			section:     "CODING AGENT (HERDR)",
