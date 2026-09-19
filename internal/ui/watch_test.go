@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -695,6 +696,34 @@ func TestRetiringAWatchedPullRequestTakesItsRecordOutOfTheStateFile(t *testing.T
 	assert.Equal(t, 0, saved.ArmedCount())
 	assert.Empty(t, saved.PRs,
 		"the record leaves the file rather than lingering as armed:false for good")
+}
+
+func TestAFinishedPullRequestLeavesNoRecordEvenIfItWasUnwatchedFirst(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	app.state.RecordHandoff(key.String(), map[string]string{"T1": "C1"}, testNow)
+	// The reader loses interest before it merges. Retirement skips anything
+	// not armed, so without a sweep of its own the notified threads keep this
+	// record in the file for good — the pull request is finished and prutil
+	// has been shown that it is, but nothing ever collects it.
+	send(t, app, press("w"))
+	require.NoError(t, app.saveState())
+	require.NotEmpty(t, app.state.Get(key.String()).NotifiedThreads,
+		"an unwatch on its own keeps them, which is what makes this worth testing")
+
+	cmd := send(t, app, prsMsg{gen: app.gen, view: viewClosed, prs: append(sampleClosedPRs(), merged(key))})
+
+	saved, err := app.store.LoadState()
+	require.NoError(t, err)
+	assert.Empty(t, saved.PRs, "a finished pull request answers for nothing, watched or not")
+
+	// There was no watch to stop, so there is nothing to announce either.
+	if cmd != nil {
+		assert.NotContains(t, fmt.Sprint(cmd()), "stopped watching",
+			"the reader is not told a watch ended that they had already ended")
+	}
 }
 
 func TestManuallyUnwatchingKeepsWhatHasAlreadyBeenHandedOver(t *testing.T) {

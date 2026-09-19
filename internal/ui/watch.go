@@ -59,6 +59,29 @@ func (a *App) clearWatch(key model.Key, why string) {
 	a.recordWatchActivity(key, why)
 }
 
+// forgetHandoffs drops what a pull request remembers about feedback already
+// sent to an agent, and reports whether there was anything to drop.
+//
+// Compact keeps any entry still holding notified threads, so without this a
+// pull request that ever reached a handoff — the ordinary life of a watched
+// one — would keep a record in the state file for good. The threads are only
+// worth keeping to recognise feedback already sent, and GitHub does not reuse a
+// pull request number, so a finished one will never be asked about again.
+//
+// Only retirement may call it, which is why it is not part of clearWatch. A
+// second press of w is the reader changing their mind about an open pull
+// request, and forgetting there would hand every thread over again the next
+// time they watched it.
+func (a *App) forgetHandoffs(key model.Key) bool {
+	got := a.state.Get(key.String())
+	if len(got.NotifiedThreads) == 0 && got.LastHandoff.IsZero() {
+		return false
+	}
+	entry := a.state.Mutate(key.String())
+	entry.NotifiedThreads, entry.LastHandoff = nil, time.Time{}
+	return true
+}
+
 // toggleWatch arms or disarms the selected pull request. Arming is per pull
 // request on purpose: a review whose remaining comments are never going to be
 // resolved should cost nothing to leave on screen.
@@ -800,29 +823,36 @@ func (a *App) disarmFinished(prs []model.PullRequest) tea.Cmd {
 	}
 
 	var done []string
+	swept := false
 	for _, pr := range prs {
 		key := pr.Key()
-		if pr.State == model.PRStateOpen || !a.armed(key) {
+		if pr.State == model.PRStateOpen {
+			continue
+		}
+		if !a.armed(key) {
+			// No watch to stop, so nothing to tell the reader about. It can
+			// still hold threads from a handoff made before they unwatched it,
+			// and those would keep the record in the file for good: this loop
+			// is the only thing that collects them, and it used to skip
+			// anything unarmed before it got this far.
+			swept = a.forgetHandoffs(key) || swept
 			continue
 		}
 		a.state.SetArmed(key.String(), false)
-		// Compact keeps any entry still holding notified threads, so leaving
-		// them would file a permanent record for every pull request that ever
-		// reached a handoff — which is the ordinary life of a watched one, and
-		// the growth this retirement exists to stop. They are only worth
-		// keeping to recognise feedback already sent, and GitHub does not reuse
-		// a pull request number, so nothing can ask about this one again.
-		//
-		// A second press of w is not the same and must not come here: that is
-		// the reader changing their mind about an open pull request, and
-		// forgetting the threads would hand every one of them over again.
-		entry := a.state.Mutate(key.String())
-		entry.NotifiedThreads, entry.LastHandoff = nil, time.Time{}
+		a.forgetHandoffs(key)
 		a.engine.Forget(key)
 		a.clearWatch(key, "stopped watching: "+pr.State.String())
 		done = append(done, key.String())
 	}
 	if len(done) == 0 {
+		// A sweep on its own still has to reach the file, or Compact never
+		// gets the chance to drop what it just cleared. It stays silent: the
+		// reader ended these watches themselves and has nothing to be told.
+		if swept {
+			if err := a.saveState(); err != nil {
+				return status(err.Error())
+			}
+		}
 		return nil
 	}
 

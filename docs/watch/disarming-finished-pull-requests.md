@@ -37,8 +37,20 @@ and nothing will ask about a finished one again. A second press of `w` is not
 the same thing and must keep them, or every thread would be handed over again
 the next time that pull request is watched.
 
-With both, the save runs the entry through `Compact` and the record leaves the
-file rather than lingering as `"armed": false`.
+The same pass also sweeps a finished pull request that is *not* armed. The
+reader can unwatch one after a handoff and let it merge later, and the armed
+check would otherwise skip it for good: this loop is the only thing that
+collects those threads, so its own skip was what stranded them. Nothing is said
+about these — the reader ended that watch themselves, so there is no news in
+it — but the save still runs, or `Compact` never gets the chance.
+
+With all of that, the save runs each entry through `Compact` and the record
+leaves the file rather than lingering as `"armed": false`.
+
+Exactly one entry outlives its watch on purpose: a pull request unwatched after
+a handoff that is *still open*. Its notified threads have to survive, or
+watching it again would hand every one of them over a second time. That record
+is collected as soon as the closed view shows the pull request finished.
 
 The trigger is deliberately positive evidence — a row GitHub returned saying
 merged or closed. Absence from the open list is the obvious second signal and

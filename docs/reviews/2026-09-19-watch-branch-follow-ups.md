@@ -48,11 +48,21 @@ loop is safe because GitHub never reuses pull request numbers, which the design
 doc itself argues elsewhere. That reasoning looks sound but has not been
 checked against what else reads `NotifiedThreads`.
 
-**Done.** `disarmFinished` now clears `NotifiedThreads` and `LastHandoff` so
-`Compact` drops the entry. Deliberately not in the shared `clearWatch`: a manual
-unwatch must keep the threads, or re-watching would hand every one of them over
-again. `docs/watch/disarming-finished-pull-requests.md` was corrected to say so,
-and both cases are covered by tests.
+**Done.** `disarmFinished` now clears `NotifiedThreads` and `LastHandoff` via
+`forgetHandoffs`, so `Compact` drops the entry. Deliberately not in the shared
+`clearWatch`: a manual unwatch must keep the threads, or re-watching would hand
+every one of them over again.
+
+Probing the finished behaviour turned up a second leak the original finding did
+not name: `disarmFinished` skipped anything unarmed before it got that far, so a
+pull request unwatched after a handoff and merged afterwards kept its record for
+good — this loop is the only thing that collects those threads. The same pass now
+sweeps them, silently, since the reader ended that watch themselves.
+
+One entry outlives its watch by design: unwatched after a handoff and *still
+open*. It is collected once the closed view shows it finished.
+`docs/watch/disarming-finished-pull-requests.md` records all of it, and every
+case above has a test.
 
 ### 2. ~~The detail pane contradicts the glyph it was meant to agree with~~ — DONE
 
