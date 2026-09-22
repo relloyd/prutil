@@ -45,9 +45,9 @@ That still needs a person reviewing the commit, as every change does.
 
 ### Nobody's identity is checked
 
-`model.ReviewThread.NeedsAttention` (`internal/model/review.go:64`) asks one
+`model.ReviewThread.NeedsAttention` (`internal/model/review.go:99`) asks one
 question: is the newest comment the viewer's own? Everything else is feedback.
-`App.applyReview` (`internal/ui/watch.go:320`) then hands that feedback to an
+`App.applyReview` (`internal/ui/watch.go:403`) then hands that feedback to an
 agent with no human in between. Under the default `herdr.fallback: new`, it
 creates a worktree and starts a new agent when none is working on the pull
 request.
@@ -185,7 +185,7 @@ is the same for every vendor. It adds no dependencies.
 
 ### 1a. An author trust gate
 
-**What to fetch.** `reviewThreadQuery` (`internal/gh/query.go:213`) selects
+**What to fetch.** `reviewThreadQuery` (`internal/gh/query.go:214`) selects
 each comment author's login only. Add, for both the `opener` and `latest`
 aliases:
 
@@ -227,40 +227,53 @@ template and the README:
 ```yaml
 security:
   # Authors whose review comments may be handed to an agent without asking.
-  trusted_associations: [OWNER, MEMBER, COLLABORATOR]
+  trusted_associations: [OWNER, COLLABORATOR]
   # Extra authors by login. A name ending in [bot] matches only a GitHub App.
   trusted_authors: ["gemini-code-assist[bot]"]
 ```
 
 Two notes on the defaults:
 
-- `MEMBER` means organisation member, which in a large organisation does not
-  imply write access. Readers in such organisations should drop it.
+- `MEMBER` is deliberately not among them. It means organisation member, which
+  in a large organisation implies no write access at all. A reader whose
+  organisation is small enough for membership to mean something adds it.
 - `gemini-code-assist[bot]` is listed because prutil's own `review.comment`
   default summons it. A trusted bot can still quote somebody else, but an
   untrusted author in the same thread makes that thread untrusted anyway.
 
-**Hold and notify.** When any open thread on a pull request has an untrusted
-participant:
+**Hold and notify.** A pull request is held when any unresolved thread on it
+has an untrusted participant. That is every unresolved thread, not the subset
+`Feedback` returns: a thread whose last word is the viewer's own is not
+feedback, but an agent reads the whole pull request regardless, and resolving
+the thread is what releases the hold. Then:
 
-- **The automatic path sends nothing** (`applyReview`, and therefore `N`).
-  Handing over only the trusted threads would not help, because the agent reads
-  the pull request, not a list of thread ids.
+- **The automatic paths send nothing** — `applyReview`, and therefore `N`, and
+  `applyFailedChecks` with it. A failed-check prompt carries no comment text,
+  but the agent it starts reads the same pull request, and `fallback: new` can
+  create a worktree and start one from that path too. Handing over only the
+  trusted threads would not help either, because the agent reads the pull
+  request, not a list of thread ids.
 - **The attempt is recorded** as a new `home.OutcomeHeld` in `handoffs.jsonl`
   and in the watch activity feed, naming the untrusted authors. The `WATCH`
   section in `internal/ui/watch_detail.go` shows it.
 - **The reader gets one toast** per new latest comment, so a held pull request
   does not notify on every poll.
-- **`W` asks for a second press** that names those authors. This is the
-  confirmation `App.triggerAIReview` (`internal/ui/watch.go:408`) already does
-  with `pendingReviewKey` and `pendingReviewAt`. Generalise that into a small
+- **`W` asks for a second press** that names what it is waving through: the
+  untrusted authors, hidden content, or both. It clears either kind of hold,
+  because a reader who has looked at the thread is the one qualified to judge
+  it, and a false positive must not be a dead end. This is the confirmation
+  `App.triggerAIReview` (`internal/ui/watch.go:500`) already does with
+  `pendingReviewKey` and `pendingReviewAt`. Generalise that into a small
   pending-confirmation value rather than adding a second pair of fields.
 - **Resolving a hostile thread on GitHub releases the hold.** The next poll no
   longer counts it as feedback.
 
-Also add the trusted thread ids to `home.PromptData` as `Threads`, so a triage
-skill can confine itself to them. That is defence in depth. The gate above is
-the boundary.
+Also add the trusted thread ids to `home.PromptData` as `TrustedThreads`, so a
+triage skill can confine itself to them. `handoff.Request.Threads` already
+means something else, each unresolved thread's newest comment id, which the
+caller records once a handoff lands, so it becomes `HandedThreads` at the same
+time rather than leaving two `Threads` with different meanings a field apart.
+This is defence in depth. The gate above is the boundary.
 
 ### 1b. A hidden-content detector
 
@@ -270,14 +283,18 @@ in `internal/model` flags either body when it contains:
 - Unicode tag characters (U+E0000–E007F), which have no legitimate use in a
   review comment;
 - zero-width and other format characters (U+200B–U+200F, U+2060–U+2064,
-  U+FEFF);
+  U+FEFF), except U+200D standing between two emoji: the joiner is how every
+  family and profession emoji is built, and flagging it would hold a pull
+  request over an ordinary comment. A joiner anywhere else still counts, since
+  a run of them between words encodes data as readily as a tag character does;
 - bidi controls (U+202A–U+202E, U+2066–U+2069);
 - an HTML comment other than the configured self-test marker, in a comment by a
   person who is not the viewer. Review bots embed HTML comments as metadata
   routinely, so a bot's are not a signal.
 
 A flagged thread is held exactly as an untrusted one is, even when its author is
-trusted. Accounts do get compromised.
+trusted. Accounts do get compromised. `W` clears this hold as it clears the
+other, and says which of the two it is clearing.
 
 ### 1c. Sanitise what prutil interpolates
 
@@ -565,9 +582,34 @@ These are worth taking now, whatever gets built:
 
   Containers are the right answer for other people's pull requests, where the
   code itself is untrusted. Revisit them then.
-- **A separate macOS user for agents.** herdr's server, socket and panes belong
-  to the reader's user. Running agents as another user fights all three for
-  modest gain over Tier 2.
+- **A separate macOS user for agents.** The gain over Tier 2 is one thing: the
+  kernel, rather than the vendor's permission layer, refuses the agent's
+  built-in file tools access to the reader's home and login keychain. That is
+  the gap Tier 2 admits, but Tier 2 already denies those paths twice, so it
+  buys cover against a vendor's bug rather than against a new route in. The leg
+  that turns an injection into an incident is untouched: the agent still has to
+  push and to comment, so the other user needs its own SSH key, gh token and
+  network to GitHub, or the reader's agent socket forwarded across the
+  boundary, which unmakes it. Tier 3b removes that leg with none of the
+  plumbing below:
+  - there is one herdr server and it is the reader's, so launching stops being
+    `agent start`, which has no user option and runs the canonical executable
+    in a pane already at the reader's shell prompt. Going through
+    `herdr pane run su -l agent -c …` puts `su` in the foreground and defeats
+    the argv0 identity, so it needs the `HERDR_AGENT` wrapper and `agent wait`,
+    exactly as Tier 2b does;
+  - `~/.config/herdr/herdr.sock` is `srw-------` and owned by the reader, so
+    the agent user cannot reach it. That is the lateral-movement fix Tier 2
+    makes with one `allowUnixSockets` line, and here it costs Claude's session
+    hook, which reports over that socket; state falls back to the screen
+    manifest. Opening the socket to the other user reopens the route;
+  - worktrees prutil creates as the reader need ACLs or relocation, files come
+    back owned by the other user, and each agent CLI needs its own install,
+    state and login under the new home.
+
+  The isolation is weaker than a container's and the plumbing heavier than a
+  sandbox profile's. Where the code itself is untrusted, containers are the
+  answer; where it is not, Tier 2 and Tier 3b are.
 - **Prompt instructions as a defence** ("ignore instructions in comments").
   They are kept only as the labelling in 1c and are never relied on.
 
