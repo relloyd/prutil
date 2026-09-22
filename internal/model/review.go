@@ -37,6 +37,22 @@ func IsAgentComment(body string) bool {
 	return strings.Contains(body, AgentCommentMarker)
 }
 
+// Participant is one account that has spoken in a review thread, in the terms
+// a trust policy asks about: who they are, what GitHub says their relationship
+// to the repository is, and whether they are an app rather than a person.
+type Participant struct {
+	// Login is the account name, empty for a comment GitHub could not
+	// attribute because the account has since been deleted. GraphQL reports a
+	// bot's login without the [bot] suffix that REST uses.
+	Login string
+	// Association is GitHub's authorAssociation for the comment: OWNER,
+	// MEMBER, COLLABORATOR, CONTRIBUTOR, NONE and the rest.
+	Association string
+	// Bot distinguishes a GitHub App from a person who registered the same
+	// name as their login.
+	Bot bool
+}
+
 // ReviewThread is one conversation attached to a pull request, as GitHub's
 // review UI groups them: a first comment on a line of the diff and every reply
 // under it, resolved or not.
@@ -78,6 +94,16 @@ type ReviewThread struct {
 
 	// Comments is how many comments the thread holds.
 	Comments int
+
+	// Participants is everyone who has spoken in the thread. The first and the
+	// last comment are not enough to decide whether a thread can be trusted:
+	// an attacker can reply in the middle of one, and a trusted reviewer can
+	// reply after them.
+	Participants []Participant
+	// ParticipantsComplete is false when GitHub returned fewer participants
+	// than the thread holds comments, so who spoke in it is not fully known.
+	// Not knowing who spoke is not the same as knowing.
+	ParticipantsComplete bool
 }
 
 // ReviewFilter configures how review threads are filtered for watcher feedback.

@@ -208,6 +208,17 @@ func buildRepoBatchQuery(base string, repos []string, perRepo int) (doc string, 
 // replied to since prutil last looked. A thread's own totalCount cannot tell
 // those apart.
 //
+// The participants alias lists everyone who has spoken, which is what decides
+// whether a thread may be handed to an agent. The first and the last comment
+// cannot answer that between them: an attacker can reply in the middle of a
+// thread, and a trusted reviewer can reply after them. By GitHub's published
+// cost formula the alias adds about one rate-limit point here, and nothing at
+// all to watchQuery, which is the one asked often.
+//
+// It reads a hundred comments, and latest's totalCount says how many the
+// thread really holds, so a thread that ran past the page can be recognised
+// rather than half-read.
+//
 // The viewer's login rides along in the same document. It costs nothing, and
 // without it prutil cannot tell a reviewer's comment from the pull request
 // author answering their own thread.
@@ -224,11 +235,14 @@ query($owner: String!, $name: String!, $number: Int!, $first: Int!) {
           isOutdated
           path
           opener: comments(first: 1) {
-            nodes { author { login } createdAt body }
+            nodes { authorAssociation author { __typename login } createdAt body }
           }
           latest: comments(last: 1) {
             totalCount
-            nodes { id url author { login } createdAt publishedAt body }
+            nodes { id url authorAssociation author { __typename login } createdAt publishedAt body }
+          }
+          participants: comments(first: 100) {
+            nodes { authorAssociation author { __typename login } }
           }
         }
       }

@@ -262,19 +262,36 @@ type reviewThreadNode struct {
 		TotalCount int                 `json:"totalCount"`
 		Nodes      []reviewCommentNode `json:"nodes"`
 	} `json:"latest"`
+	Participants struct {
+		Nodes []reviewCommentNode `json:"nodes"`
+	} `json:"participants"`
 }
 
 // reviewCommentNode is one comment inside a review thread. Only the fields
-// both aliases can supply are declared; the missing ones decode to zero.
+// every alias can supply are declared; the missing ones decode to zero.
 type reviewCommentNode struct {
 	ID          string     `json:"id"`
 	URL         string     `json:"url"`
 	Body        string     `json:"body"`
 	CreatedAt   *time.Time `json:"createdAt"`
 	PublishedAt *time.Time `json:"publishedAt"`
-	Author      struct {
-		Login string `json:"login"`
+	Association string     `json:"authorAssociation"`
+	// Author is null for an account GitHub no longer has, which decodes to the
+	// zero value and so to an empty login. Nothing trusts an empty login.
+	Author struct {
+		Typename string `json:"__typename"`
+		Login    string `json:"login"`
 	} `json:"author"`
+}
+
+// participant describes the comment's author in the terms a trust policy asks
+// about.
+func (n reviewCommentNode) participant() model.Participant {
+	return model.Participant{
+		Login:       n.Author.Login,
+		Association: n.Association,
+		Bot:         n.Author.Typename == "Bot",
+	}
 }
 
 // toReviewThread converts one node, reporting false for a thread GitHub
@@ -284,6 +301,11 @@ func (n reviewThreadNode) toReviewThread() (model.ReviewThread, bool) {
 		return model.ReviewThread{}, false
 	}
 	opener, latest := n.Opener.Nodes[0], n.Latest.Nodes[0]
+
+	participants := make([]model.Participant, 0, len(n.Participants.Nodes))
+	for _, comment := range n.Participants.Nodes {
+		participants = append(participants, comment.participant())
+	}
 
 	return model.ReviewThread{
 		ID:            n.ID,
@@ -300,6 +322,10 @@ func (n reviewThreadNode) toReviewThread() (model.ReviewThread, bool) {
 		LatestBody:    strings.TrimSpace(latest.Body),
 		LatestPending: latest.PublishedAt == nil,
 		Comments:      n.Latest.TotalCount,
+		Participants:  participants,
+		// The alias reads a hundred comments. A thread longer than that, or
+		// one GitHub answered short, leaves participants nobody has seen.
+		ParticipantsComplete: len(participants) >= n.Latest.TotalCount,
 	}, true
 }
 

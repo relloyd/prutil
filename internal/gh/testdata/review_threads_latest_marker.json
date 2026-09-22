@@ -1,6 +1,8 @@
 {
   "data": {
-    "viewer": { "login": "relloyd" },
+    "viewer": {
+      "login": "relloyd"
+    },
     "repository": {
       "pullRequest": {
         "reviewThreads": {
@@ -14,9 +16,13 @@
               "opener": {
                 "nodes": [
                   {
-                    "author": { "login": "copilot-pull-request-reviewer" },
+                    "author": {
+                      "__typename": "Bot",
+                      "login": "copilot-pull-request-reviewer"
+                    },
                     "createdAt": "2026-09-01T09:00:00Z",
-                    "body": "Please handle this permission."
+                    "body": "Please handle this permission.",
+                    "authorAssociation": "NONE"
                   }
                 ]
               },
@@ -26,10 +32,32 @@
                   {
                     "id": "PRRC_MARKED_REPLY",
                     "url": "https://github.com/dojo-engineering/payments-infrastructure/pull/6907#discussion_r6907",
-                    "author": { "login": "relloyd" },
+                    "author": {
+                      "__typename": "User",
+                      "login": "relloyd"
+                    },
                     "createdAt": "2026-09-02T10:00:00Z",
                     "publishedAt": "2026-09-02T10:00:00Z",
-                    "body": "Acknowledged for watcher testing.\n\n<!-- prutil:test -->"
+                    "body": "Acknowledged for watcher testing.\n\n<!-- prutil:test -->",
+                    "authorAssociation": "OWNER"
+                  }
+                ]
+              },
+              "participants": {
+                "nodes": [
+                  {
+                    "authorAssociation": "NONE",
+                    "author": {
+                      "__typename": "Bot",
+                      "login": "copilot-pull-request-reviewer"
+                    }
+                  },
+                  {
+                    "authorAssociation": "OWNER",
+                    "author": {
+                      "__typename": "User",
+                      "login": "relloyd"
+                    }
                   }
                 ]
               }
