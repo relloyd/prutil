@@ -399,4 +399,8 @@ const (
 	OutcomeNoAgent = "no-agent"
 	OutcomeBlocked = "blocked"
 	OutcomeFailed  = "failed"
+	// OutcomeHeld is feedback prutil would have handed over and did not,
+	// because somebody outside the reader's trust boundary had spoken on the
+	// pull request. Detail names them.
+	OutcomeHeld = "held"
 )

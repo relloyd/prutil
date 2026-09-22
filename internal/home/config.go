@@ -130,11 +130,11 @@ type SecurityConfig struct {
 	TrustedAuthors []string `yaml:"trusted_authors"`
 }
 
-// TrustPolicy is the configuration as the model asks about it, for the viewer
-// whose credentials read the pull request.
-func (c SecurityConfig) TrustPolicy(viewer string) model.TrustPolicy {
+// TrustPolicy is the configuration as the model asks about it. The viewer is
+// left out: gh.Review fills it in from the login its own credentials read the
+// pull request as, the way it fills in a ReviewFilter's.
+func (c SecurityConfig) TrustPolicy() model.TrustPolicy {
 	return model.TrustPolicy{
-		Viewer:       viewer,
 		Associations: c.TrustedAssociations,
 		Authors:      c.TrustedAuthors,
 	}

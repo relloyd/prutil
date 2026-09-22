@@ -188,6 +188,18 @@ func (a *App) applyFailedChecks(key model.Key, headOID string, checks []model.Ch
 	if !ok {
 		return nil
 	}
+	// A held pull request holds its failed checks too. The check prompt
+	// carries no comment text, but the agent it starts reads the same pull
+	// request, and under fallback: new this path can create a worktree and
+	// start one. The hold is whatever the last read of the review threads
+	// found; a pull request nobody has read is not held, and a new comment
+	// moves updatedAt, so the tripwire reads the threads before this can act
+	// on one.
+	if !force && entry.hold.Held() {
+		entry.handing = false
+		a.setWatchOperation(key, "")
+		return a.holdFeedback(pr, entry.hold, len(failed), "failed check")
+	}
 	entry.handing = true
 	a.setWatchOperation(key, "handing failed checks to an agent")
 	a.recordWatchActivity(key, fmt.Sprintf("found %d failed %s", len(failed), plural(len(failed), "check")))
@@ -422,6 +434,7 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	feedback := msg.review.Feedback(a.homeCfg.Watch.ReviewFilter())
 	entry := a.mutate(msg.key)
 	entry.feedback, entry.hasFeedback = len(feedback), true
+	entry.hold = msg.review.Hold(a.homeCfg.Security.TrustPolicy())
 	a.engine.Precise(msg.key, len(feedback), false, now)
 	activity := fmt.Sprintf("review feedback: %d %s awaiting",
 		len(feedback), plural(len(feedback), "thread"))
@@ -441,6 +454,9 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	pr, ok := a.prByKey(msg.key)
 	if !ok {
 		return nil
+	}
+	if entry.hold.Held() {
+		return a.holdFeedback(pr, entry.hold, len(fresh), "new review comment")
 	}
 	if a.hand == nil {
 		return status(fmt.Sprintf("%s has %d new review %s, but prutil cannot reach herdr",
@@ -465,6 +481,58 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 			msg.key, len(fresh), plural(len(fresh), "comment"))),
 		a.spin.Tick,
 	)
+}
+
+// holdFeedback records feedback prutil is declining to hand over on its own
+// because somebody outside the reader's trust boundary has spoken on the pull
+// request.
+//
+// Only the trusted threads could have been sent instead, and that would not
+// help: the prompt gives an agent the pull request, not a list of thread ids,
+// and it goes and reads all of them.
+func (a *App) holdFeedback(pr model.PullRequest, hold model.Hold, count int, noun string) tea.Cmd {
+	key, why := pr.Key(), holdReason(hold)
+	held := fmt.Sprintf("%d %s", count, plural(count, noun))
+
+	a.recordWatchActivity(key, "held "+held+": "+why)
+	if a.store != nil {
+		_ = a.store.AppendHandoff(home.Handoff{
+			At:      a.now(),
+			PR:      key.String(),
+			URL:     pr.URL,
+			Outcome: home.OutcomeHeld,
+			Detail:  why,
+		})
+	}
+	return status(fmt.Sprintf("%s: %s held, %s · W to send it anyway", key, held, why))
+}
+
+// holdReason says in one phrase why a pull request is held, for the status
+// line, the activity feed and the durable log alike.
+func holdReason(hold model.Hold) string {
+	switch {
+	case len(hold.Authors) > 0 && hold.Unknown:
+		return "feedback from " + english(hold.Authors) + ", and threads prutil could not read in full"
+	case len(hold.Authors) > 0:
+		return "feedback from " + english(hold.Authors)
+	case hold.Unknown:
+		return "threads prutil could not read in full"
+	}
+	return ""
+}
+
+// english joins names the way a sentence does, because this reaches the reader
+// as prose rather than as a list.
+func english(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	case 2:
+		return names[0] + " and " + names[1]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // notifyNewFeedback manually enters the watcher path after its change-detection
@@ -520,12 +588,9 @@ func (a *App) triggerAIReview() tea.Cmd {
 		return status("already reading review feedback on " + key.String())
 	}
 
-	if a.pendingReviewKey != key || a.now().Sub(a.pendingReviewAt) >= statusLifetime {
-		a.pendingReviewKey = key
-		a.pendingReviewAt = a.now()
+	if !a.confirms(key, confirmReview) {
 		return status(fmt.Sprintf("press R again to post %s on %s", comment, key))
 	}
-	a.pendingReviewKey = model.Key{}
 
 	a.mutate(key).requestingReview = true
 	a.setWatchOperation(key, "triggering AI review")
@@ -576,6 +641,15 @@ func (a *App) handOff() tea.Cmd {
 	}
 	if a.runtimeOf(pr.Key()).reviewing {
 		return status("already reading review feedback on " + pr.Key().String())
+	}
+	// W is the override for a hold, and the second press is what makes it one.
+	// It names what it is waving through, because a reader who has not looked
+	// at the thread is not in a position to judge it, and it clears either kind
+	// of hold: an untrusted author is a judgement call, and a false positive
+	// must not be a dead end.
+	if hold := a.runtimeOf(pr.Key()).hold; hold.Held() && !a.confirms(pr.Key(), confirmHeldHandoff) {
+		return status(fmt.Sprintf("%s is held, %s · press W again to send it anyway",
+			pr.Key(), holdReason(hold)))
 	}
 
 	a.mutate(pr.Key()).handing = true

@@ -362,7 +362,7 @@ func TestFeedbackIsWhateverIsUnresolvedAndNotTheViewersOwnLastWord(t *testing.T)
 // selfTestReview is a code-line thread a viewer deliberately created to
 // exercise watcher delivery without requiring another reviewer.
 func selfTestReview() gh.Review {
-	return gh.Review{
+	return trusted(gh.Review{
 		Viewer: "relloyd",
 		Threads: []model.ReviewThread{{
 			ID:       "self-test",
@@ -371,11 +371,11 @@ func selfTestReview() gh.Review {
 			LatestBy: "relloyd",
 			LatestID: "self-test-comment",
 		}},
-	}
+	})
 }
 
 func latestReplySelfTestReview() gh.Review {
-	return gh.Review{
+	return trusted(gh.Review{
 		Viewer: "relloyd",
 		Threads: []model.ReviewThread{{
 			ID:         "copilot-thread",
@@ -385,7 +385,7 @@ func latestReplySelfTestReview() gh.Review {
 			LatestID:   "viewer-test-reply",
 			LatestBody: "Acknowledged for watcher testing.\n\n" + model.DefaultSelfTestMarker,
 		}},
-	}
+	})
 }
 
 // handOver presses the handoff key and settles the reply the way the runtime
@@ -1294,4 +1294,187 @@ func TestEnterStillOpensTheBrowserFromTheChecksSection(t *testing.T) {
 
 	assert.Equal(t, detailOverview, app.page, "CHECKS has nothing to drill into")
 	require.Len(t, opener.opened(), 1, "so enter opens the selected check")
+}
+
+// hostileReview is the sample feedback with a stranger's reply added to one
+// thread, which is what the trust boundary exists for.
+func hostileReview() gh.Review {
+	review := sampleThreads()
+	review.Threads[0].Participants = append(review.Threads[0].Participants,
+		model.Participant{Login: "mallory", Association: "NONE"})
+	return review
+}
+
+func TestFeedbackFromAStrangerIsHeldRatherThanHandedToAnAgent(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+	dispatcher := dispatcherOf(t, app)
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	assert.Empty(t, dispatcher.requests(),
+		"a stranger's comment must not be enough to put an agent to work")
+}
+
+func TestAHeldPullRequestSaysWhoCausedIt(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	history, err := app.store.RecentHandoffs("relloyd/prutil#42", 10)
+	require.NoError(t, err)
+	require.Len(t, history, 1, "the attempt is recorded even though nothing was sent")
+	assert.Equal(t, home.OutcomeHeld, history[0].Outcome)
+	assert.Equal(t, "feedback from mallory", history[0].Detail)
+
+	var said []string
+	for _, entry := range app.runtimeOf(model.Key{Repo: "relloyd/prutil", Number: 42}).activity {
+		said = append(said, entry.text)
+	}
+	assert.Contains(t, said, "held 2 new review comments: feedback from mallory",
+		"the watch activity feed names them too")
+}
+
+func TestAThreadPrutilCouldNotReadInFullHoldsThePullRequest(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	review := sampleThreads()
+	review.Threads[0].ParticipantsComplete = false
+	client.review = review
+	dispatcher := dispatcherOf(t, app)
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	assert.Empty(t, dispatcher.requests(), "not knowing who spoke is not the same as knowing")
+	history, err := app.store.RecentHandoffs("relloyd/prutil#42", 10)
+	require.NoError(t, err)
+	require.Len(t, history, 1)
+	assert.Equal(t, "threads prutil could not read in full", history[0].Detail)
+}
+
+func TestATruncatedThreadListHoldsThePullRequest(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	review := sampleThreads()
+	review.Truncated = true
+	client.review = review
+	dispatcher := dispatcherOf(t, app)
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	assert.Empty(t, dispatcher.requests(),
+		"threads that did not come back cannot be judged")
+}
+
+func TestResolvingTheHostileThreadReleasesTheHold(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	require.Empty(t, dispatcher.requests())
+
+	// The reader resolves it on GitHub, and the next read finds it resolved.
+	released := hostileReview()
+	released.Threads[0].Resolved = true
+	client.review = released
+	advance(app, time.Minute)
+	notifyNewFeedback(t, app)
+
+	assert.Len(t, dispatcher.requests(), 1,
+		"resolving the thread is how a reader clears a hold without prutil doing anything")
+}
+
+func TestWNeedsASecondPressToSendHeldFeedback(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	require.Empty(t, dispatcher.requests())
+
+	asked := send(t, app, press("W"))
+	require.NotNil(t, asked)
+	assert.Empty(t, dispatcher.requests(), "the first press asks the question")
+	question, ok := asked().(statusMsg)
+	require.True(t, ok)
+	assert.Contains(t, string(question), "press W again")
+	assert.Contains(t, string(question), "mallory", "and names what it would be waving through")
+
+	handOver(t, app)
+	assert.Len(t, dispatcher.requests(), 1, "the second press is the override")
+}
+
+func TestAStaleConfirmationDoesNotSendHeldFeedback(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+	dispatcher := dispatcherOf(t, app)
+
+	send(t, app, press("w"))
+	poll(t, app)
+	require.NotNil(t, send(t, app, press("W")))
+
+	// The question has scrolled off the status line by the time the second
+	// press lands, so it is a fresh question rather than an answer.
+	advance(app, statusLifetime)
+	again := send(t, app, press("W"))
+	require.NotNil(t, again)
+
+	assert.Empty(t, dispatcher.requests())
+	question, ok := again().(statusMsg)
+	require.True(t, ok)
+	assert.Contains(t, string(question), "press W again", "an expired question is asked afresh")
+}
+
+func TestAHeldPullRequestAlsoHoldsItsFailedChecks(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+	dispatcher := dispatcherOf(t, app)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	require.Empty(t, dispatcher.requests(), "the review feedback is held")
+
+	// The checks on the same pull request have now failed. The check prompt
+	// carries no comment text, but the agent it would start reads the whole
+	// pull request, hostile thread included.
+	pump(t, app, send(t, app, checksMsg{
+		gen: app.gen, key: key, checkHandoff: true, headOID: "sha-new",
+		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
+	}))
+
+	assert.Empty(t, dispatcher.requests(),
+		"a failed check must not be the way round the hold")
+	history, err := app.store.RecentHandoffs(key.String(), 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, history)
+	assert.Equal(t, home.OutcomeHeld, history[0].Outcome, "the newest entry is this hold")
+}
+
+func TestAFailedCheckStillGoesToAnAgentWhenNothingIsHeld(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	sent := len(dispatcher.requests())
+
+	pump(t, app, send(t, app, checksMsg{
+		gen: app.gen, key: key, checkHandoff: true, headOID: "sha-new",
+		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
+	}))
+
+	require.Len(t, dispatcher.requests(), sent+1,
+		"the hold is the only thing that stops this path; trusted feedback leaves it working")
+	assert.True(t, dispatcher.requests()[sent].CheckHandoff)
 }

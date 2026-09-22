@@ -219,14 +219,15 @@ func TestAnEmptyTrustListIsADeliberateChoiceAndIsHonoured(t *testing.T) {
 		"and says nothing about the other key")
 }
 
-func TestTheTrustPolicyCarriesTheViewerTheCredentialsBelongTo(t *testing.T) {
-	policy := home.DefaultConfig().Security.TrustPolicy("relloyd")
+func TestTheTrustPolicyLeavesTheViewerToWhoeverReadThePullRequest(t *testing.T) {
+	policy := home.DefaultConfig().Security.TrustPolicy()
 
 	assert.Equal(t, model.TrustPolicy{
-		Viewer:       "relloyd",
 		Associations: []string{"OWNER", "COLLABORATOR"},
 		Authors:      []string{"gemini-code-assist[bot]"},
 	}, policy)
+	assert.Empty(t, policy.Viewer,
+		"the login comes from the credentials that read the threads, not from the file")
 }
 
 func TestTheWrittenTemplateNamesTheTrustBoundary(t *testing.T) {
