@@ -5,6 +5,19 @@ import (
 	"strings"
 )
 
+// writeSequence writes one indented YAML sequence, as a flow list when it is
+// empty so the key still reads as a list rather than as null.
+func writeSequence(out *strings.Builder, key string, values []string) {
+	if len(values) == 0 {
+		_, _ = fmt.Fprintf(out, "  %s: []\n", key)
+		return
+	}
+	_, _ = fmt.Fprintf(out, "  %s:\n", key)
+	for _, value := range values {
+		_, _ = fmt.Fprintf(out, "    - %q\n", value)
+	}
+}
+
 // DefaultConfigTemplate returns the default configuration as a human-editable
 // YAML template with comments and examples.
 func DefaultConfigTemplate() []byte {
@@ -88,7 +101,19 @@ func DefaultConfigTemplate() []byte {
 	out.WriteString("  # roots:\n")
 	out.WriteString("  #   - ~/src\n")
 	out.WriteString("  #   - /workspace\n")
-	out.WriteString("  roots: []\n")
+	out.WriteString("  roots: []\n\n")
+
+	out.WriteString("security:\n")
+	out.WriteString("  # Whose review feedback may be handed to an agent without asking you first.\n")
+	out.WriteString("  # Feedback on a pull request with an untrusted participant is held instead,\n")
+	out.WriteString("  # and W hands it over after a second press.\n")
+	out.WriteString("  #\n")
+	out.WriteString("  # GitHub authorAssociation values. MEMBER is not among the defaults: in a\n")
+	out.WriteString("  # large organisation it implies no write access. Add it if yours is small.\n")
+	writeSequence(&out, "trusted_associations", cfg.Security.TrustedAssociations)
+	out.WriteString("  # Extra logins. A name ending in [bot] matches only a GitHub App, so a\n")
+	out.WriteString("  # person who registers that name does not inherit its trust.\n")
+	writeSequence(&out, "trusted_authors", cfg.Security.TrustedAuthors)
 
 	return []byte(out.String())
 }

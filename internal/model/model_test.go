@@ -582,3 +582,162 @@ func TestSelfReviewModeWaitsForTheViewerToSubmitAComment(t *testing.T) {
 		SelfReview: true,
 	}), "a pending review draft is not feedback until it is submitted")
 }
+
+// trustPolicy is the shipped default, which every trust case starts from.
+func trustPolicy() model.TrustPolicy {
+	return model.TrustPolicy{
+		Viewer:       "relloyd",
+		Associations: []string{"OWNER", "COLLABORATOR"},
+		Authors:      []string{"gemini-code-assist[bot]"},
+	}
+}
+
+// thread builds an unresolved thread whose participants are the whole of it.
+func thread(id string, participants ...model.Participant) model.ReviewThread {
+	return model.ReviewThread{
+		ID:                   id,
+		Participants:         participants,
+		ParticipantsComplete: true,
+	}
+}
+
+func TestTrustDecidesOneParticipantAtATime(t *testing.T) {
+	cases := []struct {
+		name    string
+		who     model.Participant
+		trusted bool
+	}{
+		{
+			name:    "the viewer is trusted whatever GitHub calls their association",
+			who:     model.Participant{Login: "relloyd", Association: "NONE"},
+			trusted: true,
+		},
+		{
+			name:    "a login differing only in case is still the viewer",
+			who:     model.Participant{Login: "RelLoyd", Association: "NONE"},
+			trusted: true,
+		},
+		{
+			name:    "a collaborator is trusted by association alone",
+			who:     model.Participant{Login: "reviewer", Association: "COLLABORATOR"},
+			trusted: true,
+		},
+		{
+			name:    "an organisation member is not, because membership implies no write access",
+			who:     model.Participant{Login: "colleague", Association: "MEMBER"},
+			trusted: false,
+		},
+		{
+			name:    "a stranger is not",
+			who:     model.Participant{Login: "mallory", Association: "NONE"},
+			trusted: false,
+		},
+		{
+			name:    "a configured bot is trusted when GitHub says it is an app",
+			who:     model.Participant{Login: "gemini-code-assist", Association: "NONE", Bot: true},
+			trusted: true,
+		},
+		{
+			name:    "a person who registered the bot's login is not",
+			who:     model.Participant{Login: "gemini-code-assist", Association: "NONE"},
+			trusted: false,
+		},
+		{
+			name:    "an author GitHub has lost is nobody",
+			who:     model.Participant{Association: "OWNER"},
+			trusted: false,
+		},
+		{
+			name:    "an empty association matches no configured association",
+			who:     model.Participant{Login: "mallory"},
+			trusted: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hold := model.Untrusted([]model.ReviewThread{thread("PRRT_1", tc.who)}, trustPolicy())
+			assert.Equal(t, !tc.trusted, hold.Held(), tc.name)
+		})
+	}
+}
+
+func TestATrustedAuthorEntryWithoutTheBotSuffixMatchesOnlyAPerson(t *testing.T) {
+	policy := trustPolicy()
+	policy.Authors = []string{"dependabot"}
+
+	person := model.Participant{Login: "dependabot", Association: "NONE"}
+	app := model.Participant{Login: "dependabot", Association: "NONE", Bot: true}
+
+	assert.False(t, model.Untrusted([]model.ReviewThread{thread("PRRT_1", person)}, policy).Held(),
+		"the entry names a person, and this is that person")
+	assert.True(t, model.Untrusted([]model.ReviewThread{thread("PRRT_1", app)}, policy).Held(),
+		"the same name as an app is a different account, and the entry does not name it")
+}
+
+func TestAnUntrustedReplyBetweenTrustedOnesStillHolds(t *testing.T) {
+	hold := model.Untrusted([]model.ReviewThread{thread("PRRT_1",
+		model.Participant{Login: "reviewer", Association: "COLLABORATOR"},
+		model.Participant{Login: "mallory", Association: "NONE"},
+		model.Participant{Login: "relloyd", Association: "OWNER"},
+	)}, trustPolicy())
+
+	require.True(t, hold.Held(), "the first and last comment cannot answer for the middle of a thread")
+	assert.Equal(t, []string{"mallory"}, hold.Authors)
+}
+
+func TestAnIncompleteParticipantListHoldsWithoutNamingAnybody(t *testing.T) {
+	partial := thread("PRRT_1", model.Participant{Login: "reviewer", Association: "COLLABORATOR"})
+	partial.ParticipantsComplete = false
+
+	hold := model.Untrusted([]model.ReviewThread{partial}, trustPolicy())
+
+	require.True(t, hold.Held(), "not knowing who spoke is not the same as knowing")
+	assert.True(t, hold.Unknown)
+	assert.Empty(t, hold.Authors, "there is nobody to name; that is the point")
+}
+
+func TestResolvingAThreadReleasesTheHoldItCaused(t *testing.T) {
+	hostile := thread("PRRT_1", model.Participant{Login: "mallory", Association: "NONE"})
+	require.True(t, model.Untrusted([]model.ReviewThread{hostile}, trustPolicy()).Held())
+
+	hostile.Resolved = true
+	assert.False(t, model.Untrusted([]model.ReviewThread{hostile}, trustPolicy()).Held(),
+		"resolving it on GitHub is how a reader clears a hold for good")
+}
+
+func TestAHoldNamesEachUntrustedAuthorOnceInTheOrderMet(t *testing.T) {
+	hold := model.Untrusted([]model.ReviewThread{
+		thread("PRRT_1",
+			model.Participant{Login: "mallory", Association: "NONE"},
+			model.Participant{Login: "trudy", Association: "FIRST_TIME_CONTRIBUTOR"},
+		),
+		thread("PRRT_2",
+			model.Participant{Login: "Mallory", Association: "NONE"},
+			model.Participant{Association: "NONE"},
+		),
+	}, trustPolicy())
+
+	assert.Equal(t, []string{"mallory", "trudy", model.DeletedAccount}, hold.Authors,
+		"the same person under two spellings is one name in the notice")
+}
+
+func TestAnEmptyViewerTrustsNobodyByThatRoute(t *testing.T) {
+	policy := model.TrustPolicy{Associations: []string{"OWNER"}}
+
+	hold := model.Untrusted([]model.ReviewThread{thread("PRRT_1",
+		model.Participant{Login: "somebody", Association: "NONE"},
+	)}, policy)
+
+	assert.True(t, hold.Held(), "an unknown viewer must not make every login match")
+}
+
+func TestATrustedThreadHoldsNothing(t *testing.T) {
+	hold := model.Untrusted([]model.ReviewThread{
+		thread("PRRT_1", model.Participant{Login: "relloyd", Association: "OWNER"}),
+		thread("PRRT_2", model.Participant{Login: "gemini-code-assist", Association: "NONE", Bot: true}),
+	}, trustPolicy())
+
+	assert.False(t, hold.Held())
+	assert.Empty(t, hold.Authors)
+}

@@ -178,6 +178,112 @@ func (t ReviewThread) selfTestComment(viewer, marker string) bool {
 	return false
 }
 
+// TrustPolicy decides whose review feedback may be handed to an agent without
+// the reader being asked first.
+//
+// The question it answers is not the same as the one ReviewFilter answers. A
+// thread can be feedback and untrusted, or trusted and already dealt with.
+// Keeping them apart is deliberate: trust that filtered threads instead of
+// holding the handoff would take held feedback out of the counts on screen,
+// and the reader would be told a pull request was quiet when it was not.
+type TrustPolicy struct {
+	// Viewer is the authenticated login, who is always trusted. An empty
+	// viewer trusts nobody by that route rather than everybody.
+	Viewer string
+	// Associations are the GitHub authorAssociation values that carry trust,
+	// such as OWNER and COLLABORATOR.
+	Associations []string
+	// Authors are extra logins that carry trust. An entry ending in [bot]
+	// matches only a GitHub App.
+	Authors []string
+}
+
+// trusts reports whether one participant's word may reach an agent unasked.
+func (p TrustPolicy) trusts(who Participant) bool {
+	if who.Login == "" {
+		return false
+	}
+	if p.Viewer != "" && strings.EqualFold(who.Login, p.Viewer) {
+		return true
+	}
+	for _, association := range p.Associations {
+		if who.Association != "" && strings.EqualFold(association, who.Association) {
+			return true
+		}
+	}
+	for _, author := range p.Authors {
+		if namesParticipant(author, who) {
+			return true
+		}
+	}
+	return false
+}
+
+// namesParticipant applies the [bot] suffix rule to one configured author. An
+// entry naming a GitHub App matches only an App, and every other entry matches
+// only a person, because GraphQL reports a bot's login without the suffix REST
+// uses: without the rule, somebody who registered a bot's name as their own
+// login would inherit its trust.
+func namesParticipant(entry string, who Participant) bool {
+	name, bot := strings.CutSuffix(strings.TrimSpace(entry), "[bot]")
+	if bot != who.Bot {
+		return false
+	}
+	return name != "" && strings.EqualFold(name, who.Login)
+}
+
+// DeletedAccount stands in for an author GitHub no longer has, so that a hold
+// can name what caused it without an empty string in the list.
+const DeletedAccount = "a deleted account"
+
+// Hold is why a pull request's feedback is not being handed over on its own.
+// The zero value holds nothing.
+type Hold struct {
+	// Authors names the untrusted participants, in the order first met.
+	Authors []string
+	// Unknown is true when a thread came back with fewer participants than it
+	// holds comments, so who spoke in it could not be established at all.
+	Unknown bool
+}
+
+// Held reports whether anything about the pull request stops an automatic
+// handoff.
+func (h Hold) Held() bool { return len(h.Authors) > 0 || h.Unknown }
+
+// Untrusted asks the policy about every unresolved thread on a pull request.
+//
+// It reads every unresolved thread rather than the ones Feedback returns. A
+// thread whose last word is the viewer's own is not feedback, but an agent
+// handed the pull request reads it along with the rest, so a comment sitting
+// in it counts. It is also what makes the hold releasable: resolving a hostile
+// thread on GitHub takes it out of this list, and the next poll goes through.
+func Untrusted(threads []ReviewThread, policy TrustPolicy) Hold {
+	var hold Hold
+	seen := make(map[string]bool)
+	for _, thread := range threads {
+		if thread.Resolved {
+			continue
+		}
+		if !thread.ParticipantsComplete {
+			hold.Unknown = true
+		}
+		for _, who := range thread.Participants {
+			if policy.trusts(who) {
+				continue
+			}
+			name := who.Login
+			if name == "" {
+				name = DeletedAccount
+			}
+			if key := strings.ToLower(name); !seen[key] {
+				seen[key] = true
+				hold.Authors = append(hold.Authors, name)
+			}
+		}
+	}
+	return hold
+}
+
 // Feedback selects the threads still waiting on viewer, keeping the order they
 // arrived in.
 func Feedback(threads []ReviewThread, filter ReviewFilter) []ReviewThread {

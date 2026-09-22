@@ -191,3 +191,54 @@ func TestAPromptThatAlreadyAsksForTheMarkerIsLeftAlone(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(out, model.AgentCommentMarker))
 	assert.Equal(t, 1, strings.Count(out, home.MarkerInstruction))
 }
+
+func TestTheTrustBoundaryShipsStrict(t *testing.T) {
+	cfg := home.DefaultConfig()
+
+	assert.Equal(t, []string{"OWNER", "COLLABORATOR"}, cfg.Security.TrustedAssociations,
+		"MEMBER is not trusted: in a large organisation it implies no write access")
+	assert.Equal(t, []string{"gemini-code-assist[bot]"}, cfg.Security.TrustedAuthors,
+		"prutil's own review.comment default summons this bot")
+}
+
+func TestAnAbsentSecurityBlockKeepsTheDefaultTrustBoundary(t *testing.T) {
+	cfg, err := home.ParseConfig([]byte("watch:\n  base_interval: 5m\n"))
+	require.NoError(t, err)
+
+	assert.Equal(t, home.DefaultConfig().Security, cfg.Security,
+		"a file that says nothing about trust gets prutil's boundary, not an empty one")
+}
+
+func TestAnEmptyTrustListIsADeliberateChoiceAndIsHonoured(t *testing.T) {
+	cfg, err := home.ParseConfig([]byte("security:\n  trusted_associations: []\n"))
+	require.NoError(t, err)
+
+	assert.Empty(t, cfg.Security.TrustedAssociations,
+		"writing the key empty trusts nobody by association, which is stricter than the default")
+	assert.Equal(t, []string{"gemini-code-assist[bot]"}, cfg.Security.TrustedAuthors,
+		"and says nothing about the other key")
+}
+
+func TestTheTrustPolicyCarriesTheViewerTheCredentialsBelongTo(t *testing.T) {
+	policy := home.DefaultConfig().Security.TrustPolicy("relloyd")
+
+	assert.Equal(t, model.TrustPolicy{
+		Viewer:       "relloyd",
+		Associations: []string{"OWNER", "COLLABORATOR"},
+		Authors:      []string{"gemini-code-assist[bot]"},
+	}, policy)
+}
+
+func TestTheWrittenTemplateNamesTheTrustBoundary(t *testing.T) {
+	template := string(home.DefaultConfigTemplate())
+
+	assert.Contains(t, template, "security:")
+	assert.Contains(t, template, "trusted_associations:")
+	assert.Contains(t, template, "gemini-code-assist[bot]")
+	assert.NotContains(t, template, "MEMBER\n", "MEMBER is described, never shipped as trusted")
+
+	cfg, err := home.ParseConfig(home.DefaultConfigTemplate())
+	require.NoError(t, err)
+	assert.Equal(t, home.DefaultConfig().Security, cfg.Security,
+		"what the template writes has to read back as the defaults it was built from")
+}

@@ -423,6 +423,12 @@ repos:
 discovery:
   roots:
     - ~/src                    # optional roots scanned after repos misses
+security:
+  trusted_associations:        # whose feedback may reach an agent unasked
+    - OWNER
+    - COLLABORATOR
+  trusted_authors:
+    - "gemini-code-assist[bot]"  # [bot] matches only a GitHub App
 ```
 
 Discovery roots are walked four levels deep, and a checkout's origin remote is
@@ -437,6 +443,20 @@ a Go template given `Repo`, `Number`, `URL`, `Title`, `HeadRef`, `BaseRef`,
 `herdr.check_prompt`, whose `Checks` value contains the failed check entries
 and whose default prompt is designed for deciding between a follow-up commit,
 a retry, and human assistance.
+
+`security` is the trust boundary between whoever can comment on a pull request
+and the agent that acts on what they wrote. On a public repository that is any
+GitHub account, so feedback is handed over unasked only when everyone who has
+spoken in every unresolved thread is you, an author whose GitHub
+`authorAssociation` is listed, or a login in `trusted_authors`. Anything else
+is held: prutil sends nothing, records it, and tells you who caused it.
+
+`MEMBER` is not a default. In a large organisation it means only that somebody
+belongs to it, which implies no write access at all; add it if yours is small
+enough for membership to mean something. An entry ending in `[bot]` matches
+only a GitHub App, so a person registering that name as their login does not
+inherit its trust. Writing a key as `[]` is honoured as written and trusts
+nobody by that route, which is stricter than leaving it out.
 
 Explicit `repos` entries win. When none exists, prutil checks its private
 `repos.json` cache and then scans `discovery.roots`, validating every candidate

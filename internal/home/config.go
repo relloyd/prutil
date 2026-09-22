@@ -79,6 +79,9 @@ type Config struct {
 	// Discovery configures how prutil discovers repository checkouts when a
 	// repository is not listed in Repos.
 	Discovery DiscoveryConfig `yaml:"discovery"`
+
+	// Security decides whose review feedback may reach an agent unasked.
+	Security SecurityConfig `yaml:"security"`
 }
 
 // ReviewConfig governs triggering an automated AI review on a pull request.
@@ -110,6 +113,31 @@ func (r ReviewConfig) CommentFor(repo string) string {
 		return strings.TrimSpace(*r.Comment)
 	}
 	return DefaultReviewComment
+}
+
+// SecurityConfig is the trust boundary between whoever can comment on a pull
+// request and the agent that acts on what they wrote.
+//
+// A key left out of the file keeps prutil's default. A key present but empty
+// is a deliberate choice and is honoured: trusted_associations: [] trusts
+// nobody by association, which is stricter than the default rather than looser.
+type SecurityConfig struct {
+	// TrustedAssociations are the GitHub authorAssociation values whose review
+	// comments may be handed to an agent without asking.
+	TrustedAssociations []string `yaml:"trusted_associations"`
+	// TrustedAuthors are extra logins that carry the same trust. An entry
+	// ending in [bot] matches only a GitHub App.
+	TrustedAuthors []string `yaml:"trusted_authors"`
+}
+
+// TrustPolicy is the configuration as the model asks about it, for the viewer
+// whose credentials read the pull request.
+func (c SecurityConfig) TrustPolicy(viewer string) model.TrustPolicy {
+	return model.TrustPolicy{
+		Viewer:       viewer,
+		Associations: c.TrustedAssociations,
+		Authors:      c.TrustedAuthors,
+	}
 }
 
 // DiscoveryConfig controls checkout discovery on disk.
@@ -241,6 +269,25 @@ func DefaultConfig() Config {
 		Discovery: DiscoveryConfig{
 			Roots: []string{},
 		},
+		Security: defaultSecurity(),
+	}
+}
+
+// defaultSecurity is the trust boundary prutil ships with.
+//
+// MEMBER is deliberately absent. It means organisation member, which in a
+// large organisation implies no write access at all, so trusting it would let
+// anyone in the organisation put an agent to work. A reader whose organisation
+// is small enough for membership to mean something adds it.
+//
+// gemini-code-assist[bot] is here because prutil's own review.comment default
+// summons it, so out of the box the reader's own trigger is not something that
+// then holds the pull request. A trusted bot can still quote somebody else, but
+// an untrusted author anywhere in the thread holds it anyway.
+func defaultSecurity() SecurityConfig {
+	return SecurityConfig{
+		TrustedAssociations: []string{"OWNER", "COLLABORATOR"},
+		TrustedAuthors:      []string{"gemini-code-assist[bot]"},
 	}
 }
 
