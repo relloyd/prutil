@@ -189,17 +189,39 @@ func (a *App) applyFailedChecks(key model.Key, headOID string, checks []model.Ch
 	if !ok {
 		return nil
 	}
-	// A held pull request holds its failed checks too. The check prompt
-	// carries no comment text, but the agent it starts reads the same pull
-	// request, and under fallback: new this path can create a worktree and
-	// start one. The hold is whatever the last read of the review threads
-	// found; a pull request nobody has read is not held, and a new comment
-	// moves updatedAt, so the tripwire reads the threads before this can act
-	// on one.
-	if !force && entry.hold.Held() {
-		entry.handing = false
-		a.setWatchOperation(key, "")
-		return a.holdFeedback(pr, entry.hold, len(failed), "failed check")
+	// A held pull request holds its failed checks too. The check prompt carries
+	// no comment text, but the agent it starts reads the same pull request, and
+	// under fallback: new this path can create a worktree and start one, so it
+	// must not be the way round a hold.
+	//
+	// Not having read the review threads is not the same as having read them
+	// and found nothing, and the difference is the ordinary case rather than a
+	// corner of one. prRuntime is session-only, so every restart begins not
+	// knowing; applyWatch dispatches the review read and the check read in one
+	// batch, which run concurrently and can land in either order; the check
+	// read is dispatched whenever the rollup is failure, whether or not the
+	// tripwire flagged the pull request for a precise read at all; and a review
+	// read that GitHub refused leaves nothing behind. Treating any of those as
+	// "nothing is wrong" would be a way past the gate.
+	//
+	// So an unread pull request asks for its threads instead of handing work
+	// over. Nothing marks the head as investigated, so the next poll tries
+	// again, by which time the read has landed.
+	if !force {
+		switch {
+		case !entry.holdKnown:
+			a.setWatchOperation(key, "")
+			cmd := a.loadReview(key, false)
+			if cmd == nil {
+				// A read is already in flight; its reply settles this.
+				return nil
+			}
+			a.recordWatchActivity(key, "failed checks wait on the review threads being read")
+			return cmd
+		case entry.hold.Held():
+			a.setWatchOperation(key, "")
+			return a.holdFeedback(pr, entry.hold, len(failed), "failed check")
+		}
 	}
 	entry.handing = true
 	a.setWatchOperation(key, "handing failed checks to an agent")
@@ -435,7 +457,7 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	feedback := msg.review.Feedback(a.homeCfg.Watch.ReviewFilter())
 	entry := a.mutate(msg.key)
 	entry.feedback, entry.hasFeedback = len(feedback), true
-	entry.hold = msg.review.Hold(a.homeCfg.Security.TrustPolicy())
+	entry.hold, entry.holdKnown = msg.review.Hold(a.homeCfg.Security.TrustPolicy()), true
 	entry.holdMark = holdMarkOf(msg.review.Threads)
 	a.engine.Precise(msg.key, len(feedback), false, now)
 	activity := fmt.Sprintf("review feedback: %d %s awaiting",

@@ -458,6 +458,17 @@ only a GitHub App, so a person registering that name as their login does not
 inherit its trust. Writing a key as `[]` is honoured as written and trusts
 nobody by that route, which is stricter than leaving it out.
 
+A held pull request holds its failed checks with it, because the agent a check
+investigation starts reads the same pull request. Resolving the thread on
+GitHub releases the hold at the next poll, and `W` sends the feedback anyway
+after a second press that names what it is waving through.
+
+prutil only acts automatically on a pull request whose review threads it has
+actually read, so the first failed-check handoff after starting prutil waits
+one polling interval while it reads them. The same wait applies when GitHub
+refuses that read: not knowing who has commented leaves the automatic paths
+shut rather than open. `F` is your own key press and does not wait.
+
 Explicit `repos` entries win. When none exists, prutil checks its private
 `repos.json` cache and then scans `discovery.roots`, validating every candidate
 against its origin remote before it can be used. Stale cache paths are ignored

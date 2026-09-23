@@ -1330,11 +1330,8 @@ func TestAHeldPullRequestSaysWhoCausedIt(t *testing.T) {
 	assert.Equal(t, home.OutcomeHeld, history[0].Outcome)
 	assert.Equal(t, "feedback from mallory", history[0].Detail)
 
-	var said []string
-	for _, entry := range app.runtimeOf(model.Key{Repo: "relloyd/prutil", Number: 42}).activity {
-		said = append(said, entry.text)
-	}
-	assert.Contains(t, said, "held 2 new review comments: feedback from mallory",
+	assert.Contains(t, activityTexts(app, model.Key{Repo: "relloyd/prutil", Number: 42}),
+		"held 2 new review comments: feedback from mallory",
 		"the watch activity feed names them too")
 }
 
@@ -1528,4 +1525,83 @@ func TestANewCommentOnAHeldPullRequestNotifiesAgain(t *testing.T) {
 	notifyNewFeedback(t, app)
 
 	assert.Len(t, dispatcher.notifications(), 2)
+}
+
+func TestFailedChecksWaitUntilTheReviewThreadsHaveBeenRead(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = sampleThreads()
+	dispatcher := dispatcherOf(t, app)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	// Armed, and nothing has read the threads: the state every start begins in,
+	// and the state the poll that races the review read is in.
+	send(t, app, press("w"))
+	require.False(t, app.runtimeOf(key).holdKnown)
+
+	send(t, app, checksMsg{
+		gen: app.gen, key: key, checkHandoff: true, headOID: "sha-new",
+		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
+	})
+
+	assert.Empty(t, dispatcher.requests(),
+		"a pull request nobody has read is not a pull request with nothing wrong")
+	assert.Contains(t, activityTexts(app, key),
+		"failed checks wait on the review threads being read")
+}
+
+func TestAReviewReadGitHubRefusedLeavesTheCheckPathClosed(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.reviewErr = errors.New("API rate limit exceeded")
+	dispatcher := dispatcherOf(t, app)
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	require.False(t, app.runtimeOf(key).holdKnown, "a refusal establishes nothing")
+
+	pump(t, app, send(t, app, checksMsg{
+		gen: app.gen, key: key, checkHandoff: true, headOID: "sha-new",
+		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
+	}))
+
+	assert.Empty(t, dispatcher.requests(),
+		"GitHub refusing to say who spoke is not permission to act as though nobody did")
+}
+
+// checkHandoffs counts the failed-check investigations a dispatcher was asked
+// for, which is what the check path's tests measure rather than every handoff.
+func checkHandoffs(d *fakeDispatcher) int {
+	n := 0
+	for _, req := range d.requests() {
+		if req.CheckHandoff {
+			n++
+		}
+	}
+	return n
+}
+
+func TestTheDeferredCheckHandoffGoesThroughOnceTheThreadsAreRead(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = sampleThreads()
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	// The first attempt defers and asks for the threads instead. Pumping it
+	// settles that read, which is what the next poll would have done anyway.
+	send(t, app, press("w"))
+	pump(t, app, send(t, app, checksMsg{
+		gen: app.gen, key: key, checkHandoff: true, headOID: "sha-new",
+		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
+	}))
+	require.Zero(t, checkHandoffs(dispatcher), "deferred while the threads were unread")
+	require.True(t, app.runtimeOf(key).holdKnown, "and the read it asked for has landed")
+
+	// Nothing marked the head investigated, so the next poll tries again.
+	pump(t, app, send(t, app, checksMsg{
+		gen: app.gen, key: key, checkHandoff: true, headOID: "sha-new",
+		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
+	}))
+
+	assert.Equal(t, 1, checkHandoffs(dispatcher), "waiting one poll is the whole cost")
 }

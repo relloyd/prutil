@@ -328,6 +328,52 @@ nothing depends on it.
   already has checked out there. That exposure is the reader's own choice. What
   goes away is prutil creating the exposure on its own.
 
+### 1e. Unread is not the same as clear
+
+Found while building 1a, and the reason the check path needed more than a
+`hold.Held()` test.
+
+The hold is what the last read of a pull request's review threads found. An
+automatic path that acts whenever the hold is empty acts on two different
+things: a pull request read and found clear, and a pull request nobody has
+read. The second is not a judgement, and treating it as one is a way past the
+gate that needs no injection at all — only timing.
+
+It is also the ordinary case rather than a corner of one. Four ways in:
+
+- **Every start.** `prRuntime` is session-only, so prutil begins each run
+  knowing nothing about any pull request. The first poll after a restart, on a
+  watched pull request whose checks are failing, is the whole exposure.
+- **The poll race.** `applyWatch` dispatches the review read and the check read
+  in one `tea.Batch`. Batched commands run concurrently and their replies land
+  in whichever order the two GitHub requests finish in, so the check reply
+  winning is neither rare nor detectable after the fact.
+- **Checks without a precise read.** The check read is dispatched for any armed
+  pull request whose rollup is failure. Whether the tripwire flagged it for a
+  precise read is a separate question the engine answers on its own backoff, so
+  there are polls that read the checks and never read the threads.
+- **A refused review read.** `applyReview` returns early when GitHub errs, and
+  a rate limit is the most likely reason. The pull request is then indefinitely
+  in the state where nothing is known about it.
+
+So the automatic paths ask for two things, not one: the threads have been read,
+and what was read holds nothing. `prRuntime.holdKnown` is the first.
+
+A pull request that fails the first asks for its threads rather than handing
+work over, and records that it did. Nothing marks the head as investigated, so
+the next poll tries again with the answer in hand. The cost of being right here
+is one polling interval on the first failed check after a start, which is also
+the only case a reader would notice.
+
+Fail-closed is the point: a read prutil could not make leaves the check path
+shut rather than open.
+
+**What this does not cover.** `F` is the reader's own key press and overrides
+the hold outright, where `W` asks for a second press. Both start an agent that
+reads the same pull request, so the asymmetry is worth removing, but it is a
+change to a key's behaviour rather than part of the boundary and is left for a
+decision of its own.
+
 ## Tier 2: the agent runs inside its vendor's sandbox
 
 ### 2a. Pass launch flags through herdr

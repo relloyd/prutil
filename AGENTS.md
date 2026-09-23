@@ -264,6 +264,49 @@ the compact section packs onto one line what the expanded page gives a line
 each. Rendering goes through `watchRow`, plain text and a style, so counting
 the page is counting a slice; the scroll arithmetic asks on every key press.
 
+## The trust boundary
+
+Review feedback is written by whoever can comment on the pull request, and on a
+public repository that is any GitHub account. `model.Untrusted` decides whether
+an agent may be given it without asking the reader, from the participants
+`reviewThreadQuery` reads and the `security` block in `config.yaml`. The design
+and the threat it answers are in `docs/security/prompt-injection.md`.
+
+Five rules hold it together. Each is a thing that looks like a tidy-up and is
+not.
+
+- **Unknown is not trusted, and unread is not clear.** The automatic paths ask
+  two questions: have the threads been read (`prRuntime.holdKnown`), and did
+  what was read hold anything (`model.Hold.Held`). A pull request nobody has
+  read is not one with nothing wrong. `prRuntime` is session-only, `applyWatch`
+  batches the review read and the check read concurrently, the check read is
+  dispatched on the rollup alone, and a refused review read leaves nothing
+  behind — so "nobody has looked yet" is ordinary, not rare. Collapsing the
+  two questions into one reopens the route.
+- **Trust holds the handoff; it never filters threads.** `Feedback` answers
+  whose turn it is, `Untrusted` answers whether anyone outside the boundary has
+  spoken. Folding trust into `NeedsAttention` would take held feedback out of
+  the counts on screen and tell the reader a pull request was quiet when it was
+  not.
+- **The gate reads every unresolved thread, not the feedback subset.** A thread
+  whose last word is the viewer's own is not feedback, but an agent reads the
+  whole pull request. It is also what makes a hold releasable: resolving the
+  thread on GitHub is the reader's way out, with prutil doing nothing.
+- **An empty login is nobody.** GitHub returns a null author for a deleted
+  account, which decodes to the zero value. It must never match an empty
+  `Viewer`, and `TrustPolicy.trusts` guards both directions.
+- **A `[bot]` entry matches only a GitHub App.** GraphQL reports a bot's login
+  without the suffix REST uses, so without `__typename` a person who registered
+  that login would inherit the bot's trust.
+
+`W` is the override and asks for a second press naming what it is waving
+through, via the shared `pendingConfirm`. `F` overrides outright; that
+asymmetry is known and recorded in the design document rather than settled.
+
+A held handoff is an outcome like any other: `home.OutcomeHeld` in
+`handoffs.jsonl`, and a herdr notification through `dispatcher.Notify` under
+the reader's own `herdr.toast`, once per set of newest comment ids.
+
 ## Desktop notifications
 
 `notifications` in `internal/ui/notify.go` is the one list of what prutil can

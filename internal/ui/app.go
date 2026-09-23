@@ -297,10 +297,13 @@ type prRuntime struct {
 	feedback    int
 	hasFeedback bool
 	// hold is why prutil is not handing this pull request's feedback over on
-	// its own, as of the last read of its review threads. The zero value is
-	// both "nothing is wrong" and "nobody has looked yet", which is what the
-	// check path below relies on.
-	hold model.Hold
+	// its own, as of the last read of its review threads, and holdKnown
+	// whether there has been such a read. A pull request nobody has read is
+	// not a pull request with nothing wrong, and the automatic paths have to
+	// tell the two apart: this runtime is session-only, so every start begins
+	// knowing nothing.
+	hold      model.Hold
+	holdKnown bool
 	// holdMark identifies the newest comment the hold was last computed
 	// against, and heldAnnounced the one it was last announced for. A held
 	// pull request is polled for as long as it stays held, so without them it
