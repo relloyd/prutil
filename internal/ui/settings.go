@@ -36,6 +36,11 @@ const (
 	// notice runs into the border, which carries its own hints, and the two
 	// read as one line.
 	settingsChrome = 4
+	// settingsMinRows is how many rows the pane insists on showing before it
+	// starts giving the explanation up. The list scrolls, so a pane with more
+	// settings than fit is an ordinary pane rather than one that has run out
+	// of room; only a genuinely short terminal has to choose.
+	settingsMinRows = 6
 )
 
 // settingsMode is the interaction mode of the settings pane.
@@ -888,7 +893,13 @@ func (a *App) settingsLayout() settingsLayout {
 	// not: the blank comes out of the window instead, so that a row the reader
 	// can scroll to is what pays for it rather than the explanation of the
 	// setting they are sitting on.
-	fits := func() bool { return fixed()-1+dispRows <= room }
+	//
+	// The same reasoning caps the rows these questions ask about. The list
+	// scrolls, so needing more room than the terminal has is the ordinary
+	// state of a pane with many settings, and measuring against all of them
+	// would drop the explanation the moment one setting too many was added.
+	// What matters is whether enough rows survive to navigate by.
+	fits := func() bool { return fixed()-1+min(dispRows, settingsMinRows) <= room }
 	if !fits() {
 		l.detail = false
 	}
