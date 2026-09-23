@@ -700,7 +700,41 @@ func allSettings() []settingDescriptor {
 			def:     "0 roots",
 			path:    []string{"discovery", "roots"},
 		}, settingKindList, func(a *App) int { return len(a.homeCfg.Discovery.Roots) }, "root", "roots"),
+
+		// ---------------------------------------------------------------------
+		// SECURITY
+		// ---------------------------------------------------------------------
+		trustSetting(settingMeta{
+			id:      "security.trusted_associations",
+			section: "SECURITY",
+			title:   "Trusted author associations",
+			detail: "GitHub author associations whose review comments may be handed to an agent without asking you first. " +
+				"MEMBER is not a default: in a large organisation it implies no write access. Press enter to manage.",
+			path: []string{"security", "trusted_associations"},
+		}, func(a *App) []string { return a.homeCfg.Security.TrustedAssociations },
+			home.DefaultConfig().Security.TrustedAssociations, "association", "associations"),
+		trustSetting(settingMeta{
+			id:      "security.trusted_authors",
+			section: "SECURITY",
+			title:   "Trusted authors",
+			detail: "Extra logins whose review comments are trusted, and whose pull requests prutil may create a workspace over. " +
+				"A name ending in [bot] matches only a GitHub App. Press enter to manage.",
+			path: []string{"security", "trusted_authors"},
+		}, func(a *App) []string { return a.homeCfg.Security.TrustedAuthors },
+			home.DefaultConfig().Security.TrustedAuthors, "author", "authors"),
 	}
+}
+
+// trustSetting is a collection whose built-in default is not the empty list.
+//
+// collectionSetting reads "unchanged" off the count, which is right for the
+// collections that ship empty and wrong for these two: they ship with entries,
+// and a reader who empties one has made a deliberate choice that must not read
+// as the default.
+func trustSetting(m settingMeta, value func(a *App) []string, def []string, one, many string) settingDescriptor {
+	d := collectionSetting(m, settingKindList, func(a *App) int { return len(value(a)) }, one, many)
+	d.isDefault = func(a *App) bool { return slices.Equal(value(a), def) }
+	return d
 }
 
 // onOff returns "on" for true and "off" for false.

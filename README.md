@@ -451,6 +451,12 @@ spoken in every unresolved thread is you, an author whose GitHub
 `authorAssociation` is listed, or a login in `trusted_authors`. Anything else
 is held: prutil sends nothing, records it, and tells you who caused it.
 
+Both lists are editable from the settings pane (`s`, then the SECURITY
+section): `enter` opens the list, `a` adds an entry and `d` removes the
+selected one, saved to `config.yaml` as you go. An association that GitHub
+never reports, or a name that is not a login, is refused with an explanation
+rather than quietly trusting nobody.
+
 `MEMBER` is not a default. In a large organisation it means only that somebody
 belongs to it, which implies no write access at all; add it if yours is small
 enough for membership to mean something. An entry ending in `[bot]` matches
