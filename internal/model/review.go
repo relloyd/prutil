@@ -196,6 +196,10 @@ type TrustPolicy struct {
 	// Authors are extra logins that carry trust. An entry ending in [bot]
 	// matches only a GitHub App.
 	Authors []string
+	// Marker is prutil's own self-test HTML comment, which the hidden-content
+	// detector has to recognise so that it does not flag the reader's own way
+	// of exercising the watcher.
+	Marker string
 }
 
 // trusts reports whether one participant's word may reach an agent unasked.
@@ -241,6 +245,10 @@ const DeletedAccount = "a deleted account"
 type Hold struct {
 	// Authors names the untrusted participants, in the order first met.
 	Authors []string
+	// Hidden names whoever wrote a comment carrying text github.com does not
+	// show. It is kept apart from Authors because a trusted author's account
+	// can be the compromised one, which is the case this catches.
+	Hidden []string
 	// Unknown is true when a thread came back with fewer participants than it
 	// holds comments, so who spoke in it could not be established at all.
 	Unknown bool
@@ -248,16 +256,28 @@ type Hold struct {
 
 // Held reports whether anything about the pull request stops an automatic
 // handoff.
-func (h Hold) Held() bool { return len(h.Authors) > 0 || h.Unknown }
+func (h Hold) Held() bool {
+	return len(h.Authors) > 0 || len(h.Hidden) > 0 || h.Unknown
+}
 
-// Untrusted asks the policy about every unresolved thread on a pull request.
+// HoldFor asks both questions about every unresolved thread on a pull request:
+// whether anyone outside the trust boundary has spoken in it, and whether any
+// comment in it carries text the reader cannot see.
 //
 // It reads every unresolved thread rather than the ones Feedback returns. A
 // thread whose last word is the viewer's own is not feedback, but an agent
 // handed the pull request reads it along with the rest, so a comment sitting
 // in it counts. It is also what makes the hold releasable: resolving a hostile
 // thread on GitHub takes it out of this list, and the next poll goes through.
-func Untrusted(threads []ReviewThread, policy TrustPolicy) Hold {
+func HoldFor(threads []ReviewThread, policy TrustPolicy) Hold {
+	hold := untrusted(threads, policy)
+	hold.Hidden = hiddenAuthors(threads, policy)
+	return hold
+}
+
+// untrusted names everyone outside the boundary who has spoken, and reports
+// whether any thread's participants could not be established at all.
+func untrusted(threads []ReviewThread, policy TrustPolicy) Hold {
 	var hold Hold
 	seen := make(map[string]bool)
 	for _, thread := range threads {
@@ -271,17 +291,146 @@ func Untrusted(threads []ReviewThread, policy TrustPolicy) Hold {
 			if policy.trusts(who) {
 				continue
 			}
-			name := who.Login
-			if name == "" {
-				name = DeletedAccount
-			}
-			if key := strings.ToLower(name); !seen[key] {
-				seen[key] = true
-				hold.Authors = append(hold.Authors, name)
-			}
+			hold.Authors = appendName(hold.Authors, seen, who.Login)
 		}
 	}
 	return hold
+}
+
+// hiddenAuthors names everyone whose comment on an unresolved thread carries
+// text github.com does not render.
+//
+// prutil holds the pull request rather than stripping the text, because the
+// agent does not read the body prutil fetched: it is told to go and read the
+// threads itself, from the same API, and would find whatever was hidden there
+// still in place.
+func hiddenAuthors(threads []ReviewThread, policy TrustPolicy) []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, thread := range threads {
+		if thread.Resolved {
+			continue
+		}
+		if thread.hides(thread.Opener, thread.Body, policy) {
+			out = appendName(out, seen, thread.Opener)
+		}
+		if thread.LatestBody != "" && thread.hides(thread.LatestBy, thread.LatestBody, policy) {
+			out = appendName(out, seen, thread.LatestBy)
+		}
+	}
+	return out
+}
+
+// appendName adds a login to a hold's list once, however it is capitalised,
+// standing in for one GitHub has lost.
+func appendName(names []string, seen map[string]bool, login string) []string {
+	if login == "" {
+		login = DeletedAccount
+	}
+	key := strings.ToLower(login)
+	if seen[key] {
+		return names
+	}
+	seen[key] = true
+	return append(names, login)
+}
+
+// hides reports whether one comment in this thread carries text the reader
+// cannot see.
+func (t ReviewThread) hides(login, body string, policy TrustPolicy) bool {
+	if hiddenRunes(body) {
+		return true
+	}
+	// An HTML comment is how review bots carry their metadata and how prutil
+	// carries its own markers, so it only counts in somebody else's prose.
+	// Invisible characters count in anybody's, the viewer's included: an
+	// account that has been taken is still the account it was.
+	if login != "" && (strings.EqualFold(login, policy.Viewer) || t.spokeAsBot(login)) {
+		return false
+	}
+	return hiddenComment(body, policy.Marker)
+}
+
+// spokeAsBot reports whether the named login is a GitHub App in this thread.
+func (t ReviewThread) spokeAsBot(login string) bool {
+	for _, who := range t.Participants {
+		if who.Bot && who.Login != "" && strings.EqualFold(who.Login, login) {
+			return true
+		}
+	}
+	return false
+}
+
+// hiddenComment reports whether body carries an HTML comment that is not one
+// of prutil's own markers. github.com renders none of them.
+func hiddenComment(body, marker string) bool {
+	body = strings.ReplaceAll(body, AgentCommentMarker, "")
+	if marker != "" {
+		body = strings.ReplaceAll(body, marker, "")
+	}
+	return strings.Contains(body, "<!--")
+}
+
+// hiddenRunes reports whether body carries characters github.com does not
+// render, which a review comment has no ordinary reason to contain.
+//
+// The ranges are the ones that carry text invisibly: tag characters, which
+// encode ASCII one to one; the zero-width and format characters; and the bidi
+// controls, which can reorder a line so that what is displayed is not what is
+// written.
+func hiddenRunes(body string) bool {
+	runes := []rune(body)
+	for i, r := range runes {
+		switch {
+		case r >= 0xE0000 && r <= 0xE007F:
+			return true
+		case r == 0x200D:
+			// The zero-width joiner is how every family and profession emoji
+			// is built, so it only counts away from one. Two in a row are not
+			// an emoji and do count: a run of joiners between words encodes
+			// data as readily as a tag character does.
+			if !joinsEmoji(runes, i) {
+				return true
+			}
+		case r >= 0x200B && r <= 0x200F, r >= 0x2060 && r <= 0x2064, r == 0xFEFF:
+			return true
+		case r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069:
+			return true
+		}
+	}
+	return false
+}
+
+// joinsEmoji reports whether the joiner at i sits between two characters an
+// emoji sequence is built from.
+func joinsEmoji(runes []rune, i int) bool {
+	return i > 0 && i+1 < len(runes) &&
+		emojiPart(runes[i-1]) && emojiPart(runes[i+1])
+}
+
+// emojiPart reports whether r can take part in an emoji joined sequence: a
+// pictograph, a regional indicator, a skin-tone modifier, a dingbat, or the
+// variation selector that turns a plain symbol into one — 🏳️‍🌈 joins on the
+// selector rather than on the flag.
+//
+// It is deliberately generous. Being wrong here the other way would hold a
+// pull request over somebody's ordinary comment, and the rules that catch a
+// payload outright — the tag characters and the bidi controls — do not depend
+// on it.
+func emojiPart(r rune) bool {
+	switch {
+	case r >= 0x1F000 && r <= 0x1FAFF:
+		return true
+	case r >= 0x2600 && r <= 0x27BF:
+		return true
+	case r >= 0x2B00 && r <= 0x2BFF:
+		return true
+	case r >= 0x2190 && r <= 0x21FF:
+		return true
+	case r == 0xFE0E || r == 0xFE0F:
+		return true
+	}
+	return false
 }
 
 // Feedback selects the threads still waiting on viewer, keeping the order they

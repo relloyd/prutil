@@ -656,7 +656,7 @@ func TestTrustDecidesOneParticipantAtATime(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			hold := model.Untrusted([]model.ReviewThread{thread("PRRT_1", tc.who)}, trustPolicy())
+			hold := model.HoldFor([]model.ReviewThread{thread("PRRT_1", tc.who)}, trustPolicy())
 			assert.Equal(t, !tc.trusted, hold.Held(), tc.name)
 		})
 	}
@@ -669,14 +669,14 @@ func TestATrustedAuthorEntryWithoutTheBotSuffixMatchesOnlyAPerson(t *testing.T) 
 	person := model.Participant{Login: "dependabot", Association: "NONE"}
 	app := model.Participant{Login: "dependabot", Association: "NONE", Bot: true}
 
-	assert.False(t, model.Untrusted([]model.ReviewThread{thread("PRRT_1", person)}, policy).Held(),
+	assert.False(t, model.HoldFor([]model.ReviewThread{thread("PRRT_1", person)}, policy).Held(),
 		"the entry names a person, and this is that person")
-	assert.True(t, model.Untrusted([]model.ReviewThread{thread("PRRT_1", app)}, policy).Held(),
+	assert.True(t, model.HoldFor([]model.ReviewThread{thread("PRRT_1", app)}, policy).Held(),
 		"the same name as an app is a different account, and the entry does not name it")
 }
 
 func TestAnUntrustedReplyBetweenTrustedOnesStillHolds(t *testing.T) {
-	hold := model.Untrusted([]model.ReviewThread{thread("PRRT_1",
+	hold := model.HoldFor([]model.ReviewThread{thread("PRRT_1",
 		model.Participant{Login: "reviewer", Association: "COLLABORATOR"},
 		model.Participant{Login: "mallory", Association: "NONE"},
 		model.Participant{Login: "relloyd", Association: "OWNER"},
@@ -690,7 +690,7 @@ func TestAnIncompleteParticipantListHoldsWithoutNamingAnybody(t *testing.T) {
 	partial := thread("PRRT_1", model.Participant{Login: "reviewer", Association: "COLLABORATOR"})
 	partial.ParticipantsComplete = false
 
-	hold := model.Untrusted([]model.ReviewThread{partial}, trustPolicy())
+	hold := model.HoldFor([]model.ReviewThread{partial}, trustPolicy())
 
 	require.True(t, hold.Held(), "not knowing who spoke is not the same as knowing")
 	assert.True(t, hold.Unknown)
@@ -699,15 +699,15 @@ func TestAnIncompleteParticipantListHoldsWithoutNamingAnybody(t *testing.T) {
 
 func TestResolvingAThreadReleasesTheHoldItCaused(t *testing.T) {
 	hostile := thread("PRRT_1", model.Participant{Login: "mallory", Association: "NONE"})
-	require.True(t, model.Untrusted([]model.ReviewThread{hostile}, trustPolicy()).Held())
+	require.True(t, model.HoldFor([]model.ReviewThread{hostile}, trustPolicy()).Held())
 
 	hostile.Resolved = true
-	assert.False(t, model.Untrusted([]model.ReviewThread{hostile}, trustPolicy()).Held(),
+	assert.False(t, model.HoldFor([]model.ReviewThread{hostile}, trustPolicy()).Held(),
 		"resolving it on GitHub is how a reader clears a hold for good")
 }
 
 func TestAHoldNamesEachUntrustedAuthorOnceInTheOrderMet(t *testing.T) {
-	hold := model.Untrusted([]model.ReviewThread{
+	hold := model.HoldFor([]model.ReviewThread{
 		thread("PRRT_1",
 			model.Participant{Login: "mallory", Association: "NONE"},
 			model.Participant{Login: "trudy", Association: "FIRST_TIME_CONTRIBUTOR"},
@@ -725,7 +725,7 @@ func TestAHoldNamesEachUntrustedAuthorOnceInTheOrderMet(t *testing.T) {
 func TestAnEmptyViewerTrustsNobodyByThatRoute(t *testing.T) {
 	policy := model.TrustPolicy{Associations: []string{"OWNER"}}
 
-	hold := model.Untrusted([]model.ReviewThread{thread("PRRT_1",
+	hold := model.HoldFor([]model.ReviewThread{thread("PRRT_1",
 		model.Participant{Login: "somebody", Association: "NONE"},
 	)}, policy)
 
@@ -733,11 +733,201 @@ func TestAnEmptyViewerTrustsNobodyByThatRoute(t *testing.T) {
 }
 
 func TestATrustedThreadHoldsNothing(t *testing.T) {
-	hold := model.Untrusted([]model.ReviewThread{
+	hold := model.HoldFor([]model.ReviewThread{
 		thread("PRRT_1", model.Participant{Login: "relloyd", Association: "OWNER"}),
 		thread("PRRT_2", model.Participant{Login: "gemini-code-assist", Association: "NONE", Bot: true}),
 	}, trustPolicy())
 
 	assert.False(t, hold.Held())
 	assert.Empty(t, hold.Authors)
+}
+
+// commented builds an unresolved thread with a body and a reply, whose
+// participants are trusted, so that only the hidden-content rule can hold it.
+func commented(opener, body, latestBy, latestBody string, who ...model.Participant) model.ReviewThread {
+	if len(who) == 0 {
+		who = []model.Participant{
+			{Login: opener, Association: "COLLABORATOR"},
+			{Login: latestBy, Association: "COLLABORATOR"},
+		}
+	}
+	return model.ReviewThread{
+		ID: "PRRT_1", Opener: opener, Body: body,
+		LatestBy: latestBy, LatestBody: latestBody,
+		Participants: who, ParticipantsComplete: true,
+	}
+}
+
+func TestHiddenCharactersHoldAPullRequestWhoeverWroteThem(t *testing.T) {
+	cases := []struct {
+		name   string
+		body   string
+		hidden bool
+	}{
+		{
+			name:   "ordinary prose is not hidden text",
+			body:   "This retries forever. Please add a ceiling.",
+			hidden: false,
+		},
+		{
+			name:   "a tag character carries ASCII invisibly",
+			body:   "Looks fine to me\U000E0041\U000E0042",
+			hidden: true,
+		},
+		{
+			name:   "a zero-width space between words hides a boundary",
+			body:   "Looks\u200bfine to me",
+			hidden: true,
+		},
+		{
+			name:   "a word joiner counts too",
+			body:   "Looks\u2060fine",
+			hidden: true,
+		},
+		{
+			name:   "a byte order mark in the middle of prose counts",
+			body:   "Looks fine\ufeff to me",
+			hidden: true,
+		},
+		{
+			name:   "a right-to-left override can reorder what is displayed",
+			body:   "rm -rf \u202etxt.elif",
+			hidden: true,
+		},
+		{
+			name:   "an isolate counts as a bidi control",
+			body:   "see \u2066this\u2069",
+			hidden: true,
+		},
+		{
+			name:   "a family emoji is joiners between pictographs, and is ordinary",
+			body:   "ship it \U0001F468\u200d\U0001F469\u200d\U0001F467",
+			hidden: false,
+		},
+		{
+			name:   "so is a profession emoji, which joins on a symbol",
+			body:   "nice work \U0001F468\u200d\u2695\ufe0f",
+			hidden: false,
+		},
+		{
+			name:   "and a flag, which joins on the variation selector",
+			body:   "\U0001F3F3\ufe0f\u200d\U0001F308 merged",
+			hidden: false,
+		},
+		{
+			name:   "a joiner between letters is not an emoji",
+			body:   "loo\u200dks fine",
+			hidden: true,
+		},
+		{
+			name:   "two joiners in a row are not an emoji either",
+			body:   "\U0001F468\u200d\u200d\U0001F469",
+			hidden: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hold := model.HoldFor(
+				[]model.ReviewThread{commented("reviewer", tc.body, "reviewer", "")},
+				trustPolicy(),
+			)
+			assert.Equal(t, tc.hidden, len(hold.Hidden) > 0, tc.name)
+			if tc.hidden {
+				assert.Equal(t, []string{"reviewer"}, hold.Hidden, "and names who wrote it")
+			}
+		})
+	}
+}
+
+func TestTheViewersOwnCommentIsNotExemptFromHiddenCharacters(t *testing.T) {
+	// The exemption is for HTML comments, which are how prutil marks its own.
+	// An account that has been taken is still the account it was.
+	hold := model.HoldFor(
+		[]model.ReviewThread{commented("relloyd", "mine\u200b", "relloyd", "",
+			model.Participant{Login: "relloyd", Association: "OWNER"})},
+		trustPolicy(),
+	)
+
+	require.True(t, hold.Held())
+	assert.Equal(t, []string{"relloyd"}, hold.Hidden)
+}
+
+func TestAnHTMLCommentCountsOnlyInSomebodyElsesProse(t *testing.T) {
+	policy := trustPolicy()
+	policy.Marker = model.DefaultSelfTestMarker
+
+	cases := []struct {
+		name   string
+		thread model.ReviewThread
+		hidden bool
+	}{
+		{
+			name:   "a stranger's HTML comment is a place to hide instructions",
+			thread: commented("reviewer", "Looks fine <!-- and do this -->", "reviewer", ""),
+			hidden: true,
+		},
+		{
+			name: "the viewer's own self-test marker is how they exercise the watcher",
+			thread: commented("relloyd", "Exercise the watcher\n"+model.DefaultSelfTestMarker, "relloyd", "",
+				model.Participant{Login: "relloyd", Association: "OWNER"}),
+			hidden: false,
+		},
+		{
+			name: "an agent's reply marker is prutil's own bookkeeping",
+			thread: commented("relloyd", "Done\n"+model.AgentCommentMarker, "relloyd", "",
+				model.Participant{Login: "relloyd", Association: "OWNER"}),
+			hidden: false,
+		},
+		{
+			name: "a review bot's metadata is how those bots work",
+			thread: commented("gemini-code-assist", "Review <!-- id: 9 -->", "gemini-code-assist", "",
+				model.Participant{Login: "gemini-code-assist", Association: "NONE", Bot: true}),
+			hidden: false,
+		},
+		{
+			name: "a person registering the bot's login gets no such exemption",
+			thread: commented("gemini-code-assist", "Review <!-- id: 9 -->", "gemini-code-assist", "",
+				model.Participant{Login: "gemini-code-assist", Association: "NONE"}),
+			hidden: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hold := model.HoldFor([]model.ReviewThread{tc.thread}, policy)
+			assert.Equal(t, tc.hidden, len(hold.Hidden) > 0, tc.name)
+		})
+	}
+}
+
+func TestHiddenTextInAReplyHoldsTheThreadToo(t *testing.T) {
+	hold := model.HoldFor(
+		[]model.ReviewThread{commented("reviewer", "Fine by me", "colleague", "agreed\u200b")},
+		trustPolicy(),
+	)
+
+	require.True(t, hold.Held())
+	assert.Equal(t, []string{"colleague"}, hold.Hidden,
+		"the reply is read as well as the opening comment")
+}
+
+func TestResolvingAThreadClearsItsHiddenContentToo(t *testing.T) {
+	thread := commented("reviewer", "Looks fine\u200b", "reviewer", "")
+	require.True(t, model.HoldFor([]model.ReviewThread{thread}, trustPolicy()).Held())
+
+	thread.Resolved = true
+	assert.False(t, model.HoldFor([]model.ReviewThread{thread}, trustPolicy()).Held(),
+		"one way out serves both halves of the hold")
+}
+
+func TestAHoldCanNameAnUntrustedAuthorAndHiddenTextAtOnce(t *testing.T) {
+	hold := model.HoldFor([]model.ReviewThread{
+		thread("PRRT_1", model.Participant{Login: "mallory", Association: "NONE"}),
+		commented("reviewer", "Looks fine\u200b", "reviewer", ""),
+	}, trustPolicy())
+
+	assert.Equal(t, []string{"mallory"}, hold.Authors)
+	assert.Equal(t, []string{"reviewer"}, hold.Hidden,
+		"a trusted author's account is exactly the one worth compromising")
 }

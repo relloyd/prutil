@@ -77,7 +77,7 @@ func (r Review) Feedback(filter model.ReviewFilter) []model.ReviewThread {
 // a comment would go unnoticed.
 func (r Review) Hold(policy model.TrustPolicy) model.Hold {
 	policy.Viewer = r.Viewer
-	hold := model.Untrusted(r.Threads, policy)
+	hold := model.HoldFor(r.Threads, policy)
 	if r.Truncated {
 		hold.Unknown = true
 	}

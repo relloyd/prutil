@@ -458,6 +458,16 @@ only a GitHub App, so a person registering that name as their login does not
 inherit its trust. Writing a key as `[]` is honoured as written and trusts
 nobody by that route, which is stricter than leaving it out.
 
+A pull request is held for a second reason too: a comment carrying text
+github.com does not render. Tag characters, zero-width and bidi controls can
+put a paragraph of instructions into a comment that looks empty to you and
+reads normally to an agent, so prutil holds the pull request whoever wrote
+them — a trusted reviewer's account is exactly the one worth taking. HTML
+comments only count in somebody else's prose, since review bots use them as
+metadata and prutil's own markers are HTML comments. Emoji are safe: the
+zero-width joiner every family and profession emoji is built from is exempt
+between two emoji, and nowhere else.
+
 A held pull request holds its failed checks with it, because the agent a check
 investigation starts reads the same pull request. Resolving the thread on
 GitHub releases the hold at the next poll, and `W` sends the feedback anyway

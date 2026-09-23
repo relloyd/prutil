@@ -457,7 +457,7 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	feedback := msg.review.Feedback(a.homeCfg.Watch.ReviewFilter())
 	entry := a.mutate(msg.key)
 	entry.feedback, entry.hasFeedback = len(feedback), true
-	entry.hold, entry.holdKnown = msg.review.Hold(a.homeCfg.Security.TrustPolicy()), true
+	entry.hold, entry.holdKnown = msg.review.Hold(a.homeCfg.TrustPolicy()), true
 	entry.holdMark = holdMarkOf(msg.review.Threads)
 	a.engine.Precise(msg.key, len(feedback), false, now)
 	activity := fmt.Sprintf("review feedback: %d %s awaiting",
@@ -582,15 +582,19 @@ func holdMarkOf(threads []model.ReviewThread) string {
 // holdReason says in one phrase why a pull request is held, for the status
 // line, the activity feed and the durable log alike.
 func holdReason(hold model.Hold) string {
-	switch {
-	case len(hold.Authors) > 0 && hold.Unknown:
-		return "feedback from " + english(hold.Authors) + ", and threads prutil could not read in full"
-	case len(hold.Authors) > 0:
-		return "feedback from " + english(hold.Authors)
-	case hold.Unknown:
-		return "threads prutil could not read in full"
+	var why []string
+	if len(hold.Authors) > 0 {
+		why = append(why, "feedback from "+english(hold.Authors))
 	}
-	return ""
+	if len(hold.Hidden) > 0 {
+		why = append(why, "hidden text in a comment by "+english(hold.Hidden))
+	}
+	if hold.Unknown {
+		why = append(why, "threads prutil could not read in full")
+	}
+	// Semicolons rather than "and": each clause can already name several people
+	// with an "and" of its own, and two levels of them read as one list.
+	return strings.Join(why, "; ")
 }
 
 // english joins names the way a sentence does, because this reaches the reader

@@ -220,14 +220,23 @@ func TestAnEmptyTrustListIsADeliberateChoiceAndIsHonoured(t *testing.T) {
 }
 
 func TestTheTrustPolicyLeavesTheViewerToWhoeverReadThePullRequest(t *testing.T) {
-	policy := home.DefaultConfig().Security.TrustPolicy()
+	policy := home.DefaultConfig().TrustPolicy()
 
 	assert.Equal(t, model.TrustPolicy{
 		Associations: []string{"OWNER", "COLLABORATOR"},
 		Authors:      []string{"gemini-code-assist[bot]"},
+		Marker:       model.DefaultSelfTestMarker,
 	}, policy)
 	assert.Empty(t, policy.Viewer,
 		"the login comes from the credentials that read the threads, not from the file")
+}
+
+func TestTheTrustPolicyCarriesTheSelfTestMarkerFromTheWatchBlock(t *testing.T) {
+	cfg, err := home.ParseConfig([]byte("watch:\n  self_test_marker: \"<!-- mine -->\"\n"))
+	require.NoError(t, err)
+
+	assert.Equal(t, "<!-- mine -->", cfg.TrustPolicy().Marker,
+		"the detector has to know the reader's own marker or it flags them for using it")
 }
 
 func TestTheWrittenTemplateNamesTheTrustBoundary(t *testing.T) {

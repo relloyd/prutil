@@ -267,12 +267,12 @@ the page is counting a slice; the scroll arithmetic asks on every key press.
 ## The trust boundary
 
 Review feedback is written by whoever can comment on the pull request, and on a
-public repository that is any GitHub account. `model.Untrusted` decides whether
+public repository that is any GitHub account. `model.HoldFor` decides whether
 an agent may be given it without asking the reader, from the participants
 `reviewThreadQuery` reads and the `security` block in `config.yaml`. The design
 and the threat it answers are in `docs/security/prompt-injection.md`.
 
-Five rules hold it together. Each is a thing that looks like a tidy-up and is
+Six rules hold it together. Each is a thing that looks like a tidy-up and is
 not.
 
 - **Unknown is not trusted, and unread is not clear.** The automatic paths ask
@@ -284,10 +284,18 @@ not.
   behind — so "nobody has looked yet" is ordinary, not rare. Collapsing the
   two questions into one reopens the route.
 - **Trust holds the handoff; it never filters threads.** `Feedback` answers
-  whose turn it is, `Untrusted` answers whether anyone outside the boundary has
+  whose turn it is, `HoldFor` answers whether anyone outside the boundary has
   spoken. Folding trust into `NeedsAttention` would take held feedback out of
   the counts on screen and tell the reader a pull request was quiet when it was
   not.
+- **Hidden text holds a trusted author's comment too.** `hiddenRunes` flags tag
+  characters, zero-width and format characters and bidi controls in anybody's
+  comment, the viewer's own included, because a compromised account is still
+  the account it was. Only the HTML-comment rule is exempted, for the viewer
+  and for bots, whose metadata comments are how they work. The zero-width
+  joiner is exempt between two emoji and nowhere else: two joiners in a row are
+  not an emoji. prutil holds rather than strips, because the agent re-reads the
+  threads from the API and would find whatever was hidden still there.
 - **The gate reads every unresolved thread, not the feedback subset.** A thread
   whose last word is the viewer's own is not feedback, but an agent reads the
   whole pull request. It is also what makes a hold releasable: resolving the

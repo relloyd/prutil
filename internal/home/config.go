@@ -130,13 +130,21 @@ type SecurityConfig struct {
 	TrustedAuthors []string `yaml:"trusted_authors"`
 }
 
-// TrustPolicy is the configuration as the model asks about it. The viewer is
-// left out: gh.Review fills it in from the login its own credentials read the
-// pull request as, the way it fills in a ReviewFilter's.
-func (c SecurityConfig) TrustPolicy() model.TrustPolicy {
+// TrustPolicy is the whole trust question as the model asks it: whose feedback
+// may be handed over, from the security block, and what prutil's own self-test
+// marker is, from the watch block, so that the hidden-content detector does not
+// flag the reader for using it.
+//
+// It hangs off Config rather than SecurityConfig because it needs both, and a
+// caller holding only half of it would silently lose the marker.
+//
+// The viewer is left out: gh.Review fills it in from the login its own
+// credentials read the pull request as, the way it fills in a ReviewFilter's.
+func (c Config) TrustPolicy() model.TrustPolicy {
 	return model.TrustPolicy{
-		Associations: c.TrustedAssociations,
-		Authors:      c.TrustedAuthors,
+		Associations: c.Security.TrustedAssociations,
+		Authors:      c.Security.TrustedAuthors,
+		Marker:       c.Watch.Marker(),
 	}
 }
 
