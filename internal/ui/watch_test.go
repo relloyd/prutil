@@ -1605,3 +1605,62 @@ func TestTheDeferredCheckHandoffGoesThroughOnceTheThreadsAreRead(t *testing.T) {
 
 	assert.Equal(t, 1, checkHandoffs(dispatcher), "waiting one poll is the whole cost")
 }
+
+func TestTheWatchSectionSaysWhyAPullRequestIsHeld(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	screen := plain(app.render())
+	assert.Contains(t, screen, "held · feedback from mallory",
+		"the reader watching nothing happen is asking why")
+	assert.Contains(t, screen, "W sends it", "and how to get past it")
+}
+
+func TestTheExpandedWatchPageNamesTheHoldAndItsOverride(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	send(t, app, press("l"))
+	send(t, app, press("k"))
+	send(t, app, press("l"))
+	require.Equal(t, detailWatchPage, app.page)
+
+	screen := plain(app.render())
+	assert.Contains(t, screen, "hold: feedback from mallory")
+	assert.Contains(t, screen, "override: W, twice, sends it anyway",
+		"the page has a line to spend saying it in full")
+}
+
+func TestAPullRequestThatIsNotHeldSaysNothingAboutHolds(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	screen := plain(app.render())
+	assert.NotContains(t, screen, "held ·")
+	assert.NotContains(t, screen, "hold:")
+}
+
+func TestTheHoldOutlivesTheCompactSectionsBudget(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	facts := app.watchFactsOf(pr)
+	rows := app.compactRows(facts)
+
+	require.NotEmpty(t, rows)
+	assert.Contains(t, rows[0].text, "held ·",
+		"the budget gives up the history and the events before it gives up the hold")
+}

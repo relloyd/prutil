@@ -32,6 +32,11 @@ type watchFacts struct {
 	operation string
 	open      int
 	hasOpen   bool
+	// hold is why prutil is not handing this pull request over on its own. It
+	// is shown above both of those and survives the compact section's budget,
+	// because it answers the question a reader watching nothing happen is
+	// actually asking.
+	hold model.Hold
 	// events are this session's watcher activity, oldest first, as recorded.
 	events  []watchActivity
 	history handoffHistoryState
@@ -52,6 +57,7 @@ func (a *App) watchFactsOf(pr model.PullRequest) watchFacts {
 		operation: got.operation,
 		open:      got.feedback,
 		hasOpen:   got.hasFeedback,
+		hold:      got.hold,
 		events:    got.activity,
 		history:   got.history,
 	}
@@ -66,6 +72,7 @@ func (a *App) watchFactsOf(pr model.PullRequest) watchFacts {
 // nothing. A section only appears once it has something to say.
 func (f watchFacts) anything() bool {
 	return f.armed ||
+		f.hold.Held() ||
 		len(f.events) > 0 ||
 		f.history.err != nil ||
 		len(f.history.handoffs) > 0
@@ -168,6 +175,7 @@ func (a *App) compactState(f watchFacts) watchRow {
 // then the two most recent events, then the durable history.
 func (a *App) compactRows(f watchFacts) []watchRow {
 	rows := make([]watchRow, 0, 6)
+	rows = append(rows, a.holdRows(f, false)...)
 	if row, ok := a.currentRow(f, false); ok {
 		rows = append(rows, row)
 	}
@@ -221,6 +229,7 @@ func (a *App) watchPageRows(pr model.PullRequest) []watchRow {
 			})
 		}
 	}
+	rows = append(rows, a.holdRows(f, true)...)
 	if row, ok := a.currentRow(f, true); ok {
 		rows = append(rows, row)
 	}
@@ -313,6 +322,31 @@ func (a *App) currentRow(f watchFacts, labelled bool) (watchRow, bool) {
 		}, true
 	}
 	return watchRow{}, false
+}
+
+// holdRows say why prutil is not handing this pull request over on its own,
+// and how the reader overrides that.
+//
+// It is amber rather than red: a hold is prutil working, not prutil broken,
+// and an unfamiliar name on a pull request is as often a first-time
+// contributor as it is an attack. What the reader needs is the name and the
+// way past it.
+//
+// The page names the override on a line of its own; the compact section sits
+// beside the checks and cannot spend a second line on it, so the key rides
+// along with the reason.
+func (a *App) holdRows(f watchFacts, labelled bool) []watchRow {
+	if !f.hold.Held() {
+		return nil
+	}
+	why := holdReason(f.hold)
+	if !labelled {
+		return []watchRow{{text: "held · " + why + " · W sends it", style: a.styles.Status}}
+	}
+	return []watchRow{
+		{text: "hold: " + why, style: a.styles.Status},
+		{text: "override: W, twice, sends it anyway", style: a.styles.Meta},
+	}
 }
 
 // eventRows are the most recent watcher events, newest first, at most limit of
