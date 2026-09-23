@@ -473,6 +473,13 @@ investigation starts reads the same pull request. Resolving the thread on
 GitHub releases the hold at the next poll, and `W` sends the feedback anyway
 after a second press that names what it is waving through.
 
+Separately, every value prutil puts into a prompt is cleaned first: control and
+format characters are dropped, single-line fields stay on one line, and a failed
+check's link is kept only when it points back at the same GitHub the pull
+request came from. A prompt carrying a control character is refused outright
+rather than typed into an agent's terminal, so a `herdr.prompt` template of your
+own containing one will fail the handoff and say so.
+
 prutil only acts automatically on a pull request whose review threads it has
 actually read, so the first failed-check handoff after starting prutil waits
 one polling interval while it reads them. The same wait applies when GitHub

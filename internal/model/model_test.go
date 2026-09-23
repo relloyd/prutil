@@ -931,3 +931,138 @@ func TestAHoldCanNameAnUntrustedAuthorAndHiddenTextAtOnce(t *testing.T) {
 	assert.Equal(t, []string{"reviewer"}, hold.Hidden,
 		"a trusted author's account is exactly the one worth compromising")
 }
+
+func TestSafeLineDropsWhatNobodyCanSeeAndFoldsTheRest(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "ordinary text is untouched",
+			in:   "Add a retry to the uploader",
+			want: "Add a retry to the uploader",
+		},
+		{
+			name: "a newline would let a title become its own prompt line",
+			in:   "Fix the parser\n!rm -rf ~",
+			want: "Fix the parser !rm -rf ~",
+		},
+		{
+			name: "a carriage return could submit a line early",
+			in:   "Fix the parser\r!whoami",
+			want: "Fix the parser !whoami",
+		},
+		{
+			name: "an escape sequence is taken out entirely",
+			in:   "Fix \x1b[31mthe\x1b[0m parser",
+			want: "Fix [31mthe[0m parser",
+		},
+		{
+			name: "a C1 line separator folds like a newline, keeping the word boundary",
+			in:   "Fix\u0085the parser",
+			want: "Fix the parser",
+		},
+		{
+			name: "a C1 control that is not whitespace is dropped",
+			in:   "Fix\u0090the parser",
+			want: "Fixthe parser",
+		},
+		{
+			name: "a non-breaking space is still a space",
+			in:   "Fix\u00a0the parser",
+			want: "Fix the parser",
+		},
+		{
+			name: "tag characters carry ASCII invisibly",
+			in:   "Fix the parser\U000E0041\U000E0042",
+			want: "Fix the parser",
+		},
+		{
+			name: "zero-width and bidi controls are format characters",
+			in:   "Fix\u200bthe\u202eparser",
+			want: "Fixtheparser",
+		},
+		{
+			name: "a run of whitespace becomes one space",
+			in:   "Fix   the\t\n  parser",
+			want: "Fix the parser",
+		},
+		{
+			name: "leading and trailing whitespace goes",
+			in:   "  Fix the parser\n\n",
+			want: "Fix the parser",
+		},
+		{
+			name: "an emoji is ordinary text and stays",
+			in:   "Ship it \U0001F680",
+			want: "Ship it \U0001F680",
+		},
+		{
+			name: "so does anything else outside ASCII",
+			in:   "Corrige l\u2019analyseur — voilà",
+			want: "Corrige l\u2019analyseur — voilà",
+		},
+		{
+			name: "a string of nothing but controls empties",
+			in:   "\x1b\x00\u200b",
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, model.SafeLine(tc.in))
+		})
+	}
+}
+
+func TestClipRunesCountsCharactersNotBytes(t *testing.T) {
+	assert.Equal(t, "short", model.ClipRunes("short", 200))
+	assert.Equal(t, "abc…", model.ClipRunes("abcdef", 3))
+	assert.Empty(t, model.ClipRunes("anything", 0))
+
+	// Cutting by bytes here would leave half a character behind.
+	assert.Equal(t, "\U0001F680\U0001F680…", model.ClipRunes("\U0001F680\U0001F680\U0001F680", 2))
+	assert.Equal(t, "a…", model.ClipRunes("a  bcd", 3), "no trailing space before the ellipsis")
+}
+
+func TestSameHostURLKeepsOnlyLinksBackToTheSameGitHub(t *testing.T) {
+	const pr = "https://github.com/relloyd/prutil/pull/42"
+
+	cases := []struct {
+		name string
+		in   string
+		keep bool
+	}{
+		{name: "a check on the same host", in: "https://github.com/relloyd/prutil/runs/1", keep: true},
+		{name: "the host compared without case", in: "https://GitHub.com/relloyd/prutil/runs/1", keep: true},
+		{name: "somebody else's host", in: "https://evil.example/collect", keep: false},
+		{name: "a lookalike subdomain", in: "https://github.com.evil.example/x", keep: false},
+		{name: "a scheme that is not the web", in: "javascript:alert(1)", keep: false},
+		{name: "a file URL", in: "file:///etc/passwd", keep: false},
+		{name: "a relative path has no host to trust", in: "/relloyd/prutil/runs/1", keep: false},
+		{name: "nothing at all", in: "", keep: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := model.SameHostURL(tc.in, pr)
+			if tc.keep {
+				assert.Equal(t, tc.in, got)
+				return
+			}
+			assert.Empty(t, got)
+		})
+	}
+}
+
+func TestSameHostURLFollowsAnEnterpriseInstall(t *testing.T) {
+	const pr = "https://github.acme.example/acme/widgets/pull/7"
+
+	assert.Equal(t, "https://github.acme.example/acme/widgets/runs/1",
+		model.SameHostURL("https://github.acme.example/acme/widgets/runs/1", pr),
+		"the pull request's own URL is the host prutil is talking to, whatever it is")
+	assert.Empty(t, model.SameHostURL("https://github.com/relloyd/prutil/runs/1", pr),
+		"github.com is somebody else's host on an enterprise install")
+}

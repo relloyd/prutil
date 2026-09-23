@@ -272,8 +272,8 @@ an agent may be given it without asking the reader, from the participants
 `reviewThreadQuery` reads and the `security` block in `config.yaml`. The design
 and the threat it answers are in `docs/security/prompt-injection.md`.
 
-Six rules hold it together. Each is a thing that looks like a tidy-up and is
-not.
+Eight rules hold it together. Each is a thing that looks like a tidy-up and
+is not.
 
 - **Unknown is not trusted, and unread is not clear.** The automatic paths ask
   two questions: have the threads been read (`prRuntime.holdKnown`), and did
@@ -306,6 +306,23 @@ not.
 - **A `[bot]` entry matches only a GitHub App.** GraphQL reports a bot's login
   without the suffix REST uses, so without `__typename` a person who registered
   that login would inherit the bot's trust.
+
+- **Nothing prutil interpolates reaches a template as it came.** `promptData`
+  puts every free-text value through `model.SafeLine`, which drops control and
+  format characters and folds the value onto one line. A title is the pull
+  request author's text, a check's name comes from a workflow file in the
+  branch under review, and a legacy status context's description is set by
+  anything with commit-status write access. A check URL is kept only when
+  `model.SameHostURL` finds it on the same host as the pull request's own URL,
+  which is how the host is known without configuration on an enterprise
+  install, and the description is capped so one check cannot be the whole
+  prompt.
+- **`herdr.Client.Prompt` refuses control characters, and duplicates that
+  knowledge on purpose.** It is the backstop for a prompt template somebody
+  wrote by hand or a note built from data nobody has considered, so it must
+  keep answering even if `promptData` stops. Newline and tab are allowed; a
+  prompt is prose and the check list is indented. It does not import `model`:
+  this is about what may cross the wire to herdr.
 
 `W` is the override and asks for a second press naming what it is waving
 through, via the shared `pendingConfirm`. `F` overrides outright; that

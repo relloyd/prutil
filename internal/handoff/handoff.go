@@ -559,19 +559,51 @@ func workspaceBranch(pr model.PullRequest) string {
 }
 
 // promptData builds the shared prompt template input.
+//
+// Everything here beyond prutil's own wording arrives from GitHub, and much of
+// it is written by somebody other than the reader, so nothing reaches a
+// template as it came. See model.SafeLine for what is taken out and why.
+//
+// Repo and Number are left alone: they are prutil's own key, matched against
+// repoNamePattern before the search that produced them, and URL is the pull
+// request's own, which is also what every check URL is measured against.
 func promptData(req Request, note string) home.PromptData {
 	return home.PromptData{
 		Repo:            req.PR.Repo,
 		Number:          req.PR.Number,
 		URL:             req.PR.URL,
-		Title:           req.PR.Title,
-		HeadRef:         req.PR.HeadRef,
-		BaseRef:         req.PR.BaseRef,
+		Title:           model.SafeLine(req.PR.Title),
+		HeadRef:         model.SafeLine(req.PR.HeadRef),
+		BaseRef:         model.SafeLine(req.PR.BaseRef),
 		UnresolvedCount: req.UnresolvedCount,
 		NewCount:        req.NewCount,
 		Note:            note,
-		Checks:          req.Checks,
+		Checks:          safeChecks(req.Checks, req.PR.URL),
 	}
+}
+
+// descriptionLimit caps a check's description in the prompt. A legacy status
+// context's description is free text chosen by anything with commit-status
+// write access, and the prompt lists every failed check, so without a cap one
+// of them could be the whole prompt.
+const descriptionLimit = 200
+
+// safeChecks makes the failed-check list fit to be interpolated. A check's
+// name and workflow come from a workflow file in the pull request's own head,
+// which is the branch under review.
+func safeChecks(checks []model.Check, prURL string) []model.Check {
+	if len(checks) == 0 {
+		return nil
+	}
+	out := make([]model.Check, 0, len(checks))
+	for _, check := range checks {
+		check.Name = model.SafeLine(check.Name)
+		check.Workflow = model.SafeLine(check.Workflow)
+		check.Description = model.ClipRunes(model.SafeLine(check.Description), descriptionLimit)
+		check.URL = model.SameHostURL(check.URL, prURL)
+		out = append(out, check)
+	}
+	return out
 }
 
 // agentName derives a valid, stable herdr name from the pull request and adds
