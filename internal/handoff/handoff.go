@@ -45,6 +45,9 @@ var (
 	// ErrAgentKindRequired means a manual handoff needs to create an agent but
 	// the configuration deliberately does not name a concrete agent kind.
 	ErrAgentKindRequired = errors.New("herdr.agent_kind is required to start a new agent")
+	// ErrUntrustedAuthor means the pull request was opened by somebody outside
+	// the reader's trust boundary, so prutil will not check its head out.
+	ErrUntrustedAuthor = errors.New("prutil will not create a workspace over another author's branch")
 )
 
 const (
@@ -83,6 +86,10 @@ type Request struct {
 	// Threads maps each unresolved review thread id to the id of its newest
 	// comment, which is what the caller records once the handoff lands.
 	Threads map[string]string
+	// Viewer is the login prutil is authenticated as, as the review read that
+	// preceded this handoff reported it. Empty means prutil does not know, and
+	// provision treats not knowing as not the reader's own.
+	Viewer string
 	// AllowProvision means the reader explicitly pressed W and permits a
 	// no-agent handoff to create a worktree and start an agent.
 	AllowProvision bool
@@ -127,6 +134,7 @@ type Dispatcher struct {
 	repos    RepositoryResolver
 	fetch    git.PullRequestFetcher
 	cfg      home.HerdrConfig
+	security home.SecurityConfig
 	selfPane string
 	idleGap  time.Duration
 	sleep    func(ctx context.Context, d time.Duration) bool
@@ -166,6 +174,7 @@ func New(opts Options) *Dispatcher {
 		repos:    opts.Repos,
 		fetch:    opts.Fetch,
 		cfg:      opts.Config.Herdr,
+		security: opts.Config.Security,
 		selfPane: opts.SelfPane,
 		idleGap:  opts.Config.Watch.IdleInterval.Duration(),
 		sleep:    sleep,
@@ -435,6 +444,9 @@ func (d *Dispatcher) canProvision() bool {
 // agent working on the pull request. W always allows it; every other handoff
 // reaches it only when herdr.fallback is new.
 func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Request) (Result, error) {
+	if err := d.mayProvision(req); err != nil {
+		return d.fail(ctx, req, Result{}, err)
+	}
 	if strings.TrimSpace(d.cfg.AgentKind) == "" {
 		return d.fail(ctx, req, Result{}, ErrAgentKindRequired)
 	}
@@ -604,6 +616,43 @@ func safeChecks(checks []model.Check, prURL string) []model.Check {
 		out = append(out, check)
 	}
 	return out
+}
+
+// mayProvision reports whether prutil may check this pull request's head out
+// and start an agent in it.
+//
+// Provisioning fetches pull/<number>/head and starts an agent in the resulting
+// worktree. An agent started in somebody else's checkout loads that
+// repository's own agent configuration: project settings, hooks, MCP servers
+// and instruction files. Hooks run outside any sandbox, so this is code
+// execution from the branch under review before a model has read a word of it.
+//
+// The default search lists only the reader's own pull requests, but -query can
+// list anyone's, and herdr.fallback: new provisions without being asked.
+//
+// This is not the trust gate. That one asks who has commented; this asks whose
+// code prutil is about to run. A reader can still hand work to an agent they
+// already have checked out over somebody else's branch, which is their own
+// choice made with their own hands. What goes away is prutil making it for
+// them.
+func (d *Dispatcher) mayProvision(req Request) error {
+	author := strings.TrimSpace(req.PR.Author)
+	if author == "" {
+		// GitHub no longer has the account. Nobody is not the viewer.
+		return fmt.Errorf("%w: %s has no author prutil can identify", ErrUntrustedAuthor, req.PR.Key())
+	}
+	if viewer := strings.TrimSpace(req.Viewer); viewer != "" && strings.EqualFold(author, viewer) {
+		return nil
+	}
+	for _, trusted := range d.security.TrustedAuthors {
+		// A [bot] entry names a GitHub App, and an App does not open pull
+		// requests prutil provisions over, so the suffix is simply not matched
+		// here rather than being quietly ignored.
+		if name := strings.TrimSpace(trusted); name != "" && strings.EqualFold(name, author) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s was opened by %s", ErrUntrustedAuthor, req.PR.Key(), author)
 }
 
 // agentName derives a valid, stable herdr name from the pull request and adds

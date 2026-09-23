@@ -259,6 +259,11 @@ type App struct {
 	// watchSeq names the watch schedule currently in flight, the same way
 	// autoSeq names a run of auto-refresh ticks.
 	watchSeq int
+	// viewer is the login prutil is authenticated as, learned from the last
+	// review read. It is what tells the reader's own pull request from
+	// somebody else's, and provisioning over somebody else's runs that
+	// branch's hooks.
+	viewer string
 	// pending is the confirmation waiting on a second press of the same key.
 	// One value rather than a pair of fields per key, because a reader can
 	// only be answering the question that is on the status line, and arming a

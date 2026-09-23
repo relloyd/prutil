@@ -28,6 +28,7 @@ func samplePR() model.PullRequest {
 	return model.PullRequest{
 		Repo: "relloyd/prutil", Number: 42,
 		Title:   "Add a retry to the uploader",
+		Author:  "relloyd",
 		URL:     "https://github.com/relloyd/prutil/pull/42",
 		HeadRef: "feat/uploader-retry", BaseRef: "main",
 	}
@@ -261,6 +262,9 @@ func request() handoff.Request {
 		UnresolvedCount: 3,
 		NewCount:        2,
 		Threads:         map[string]string{"T1": "C1"},
+		// The reader's own pull request, which is what the default search
+		// returns and so what every test about something else assumes.
+		Viewer: "relloyd",
 	}
 }
 
@@ -1254,4 +1258,104 @@ func TestACheckURLOnTheSameGitHubIsKept(t *testing.T) {
 	assert.Contains(t, dryRunPrompt(t, req),
 		"https://github.com/relloyd/prutil/actions/runs/1",
 		"the ordinary case still gives the agent somewhere to look")
+}
+
+// provisioning runs a manual handoff that finds no agent, so the only way it
+// can succeed is by creating a workspace.
+func provisioning(t *testing.T, req handoff.Request, tune func(*home.Config)) (handoff.Result, error) {
+	t.Helper()
+	control := &fakeHerdr{}
+	repos := &fakeResolver{checkout: git.Checkout{Root: "/work/prutil", Repo: "relloyd/prutil"}}
+	dispatcher, _ := dispatcherWithProvision(t, control, fakeGit{}, repos, &fakeFetcher{},
+		func(cfg *home.Config) {
+			cfg.Herdr.AgentKind = "claude"
+			cfg.Herdr.DryRun = true
+			if tune != nil {
+				tune(cfg)
+			}
+		})
+	req.AllowProvision = true
+	return dispatcher.Dispatch(context.Background(), req)
+}
+
+func TestProvisioningRefusesToCheckOutSomebodyElsesBranch(t *testing.T) {
+	// An agent started in another author's checkout loads that repository's own
+	// configuration: project settings, hooks, MCP servers and instruction
+	// files. Hooks run outside any sandbox, so this is code execution from the
+	// branch under review before a model has read a word of it.
+	req := request()
+	req.PR.Author = "mallory"
+
+	res, err := provisioning(t, req, nil)
+
+	require.ErrorIs(t, err, handoff.ErrUntrustedAuthor)
+	assert.Equal(t, home.OutcomeFailed, res.Outcome)
+	assert.Contains(t, res.Detail, "opened by mallory")
+}
+
+func TestProvisioningOverTheReadersOwnPullRequestIsTheOrdinaryCase(t *testing.T) {
+	res, err := provisioning(t, request(), nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, home.OutcomeDryRun, res.Outcome)
+}
+
+func TestProvisioningFollowsTrustedAuthors(t *testing.T) {
+	req := request()
+	req.PR.Author = "colleague"
+
+	_, err := provisioning(t, req, nil)
+	require.ErrorIs(t, err, handoff.ErrUntrustedAuthor, "not trusted by default")
+
+	res, err := provisioning(t, req, func(cfg *home.Config) {
+		cfg.Security.TrustedAuthors = append(cfg.Security.TrustedAuthors, "colleague")
+	})
+	require.NoError(t, err, "the reader can say whose branches they are willing to run")
+	assert.Equal(t, home.OutcomeDryRun, res.Outcome)
+}
+
+func TestProvisioningRefusesWhenItCannotTellWhoTheAuthorIs(t *testing.T) {
+	cases := []struct {
+		name string
+		tune func(req *handoff.Request)
+	}{
+		{
+			name: "GitHub no longer has the account",
+			tune: func(req *handoff.Request) { req.PR.Author = "" },
+		},
+		{
+			name: "prutil does not know who it is itself",
+			tune: func(req *handoff.Request) { req.Viewer = "" },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := request()
+			tc.tune(&req)
+
+			_, err := provisioning(t, req, nil)
+
+			require.ErrorIs(t, err, handoff.ErrUntrustedAuthor,
+				"not knowing is not the same as knowing it is safe")
+		})
+	}
+}
+
+func TestAnAgentAlreadyCheckedOutOnSomebodyElsesBranchStillGetsTheWork(t *testing.T) {
+	// The reader put that checkout there themselves. What the refusal removes
+	// is prutil creating the exposure on its own, not the reader's own choice.
+	control := &fakeHerdr{agents: []herdr.Agent{
+		{Kind: "claude", Status: herdr.StatusIdle, CWD: "/work/retry", PaneID: "w3:p1"},
+	}}
+	dispatcher, _ := dispatcherFor(t, control,
+		fakeGit{"/work/retry": {Repo: "relloyd/prutil", Branch: "feat/uploader-retry"}}, nil)
+	req := request()
+	req.PR.Author = "mallory"
+
+	res, err := dispatcher.Dispatch(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, home.OutcomeSent, res.Outcome)
+	assert.Equal(t, "w3:p1", res.Target)
 }

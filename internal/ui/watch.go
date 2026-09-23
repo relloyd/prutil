@@ -226,7 +226,7 @@ func (a *App) applyFailedChecks(key model.Key, headOID string, checks []model.Ch
 	entry.handing = true
 	a.setWatchOperation(key, "handing failed checks to an agent")
 	a.recordWatchActivity(key, fmt.Sprintf("found %d failed %s", len(failed), plural(len(failed), "check")))
-	return tea.Batch(a.failedCheckHandoff(handoffMsg{pr: pr, check: true, headOID: headOID, checks: failed, allowProvision: allowProvision, force: force}), a.spin.Tick)
+	return tea.Batch(a.failedCheckHandoff(handoffMsg{pr: pr, check: true, headOID: headOID, checks: failed, allowProvision: allowProvision, force: force, viewer: a.viewer}), a.spin.Tick)
 }
 
 func (a *App) failedCheckHandoff(msg handoffMsg) tea.Cmd {
@@ -458,6 +458,7 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	entry := a.mutate(msg.key)
 	entry.feedback, entry.hasFeedback = len(feedback), true
 	entry.hold, entry.holdKnown = msg.review.Hold(a.homeCfg.TrustPolicy()), true
+	a.viewer = msg.review.Viewer
 	entry.holdMark = holdMarkOf(msg.review.Threads)
 	a.engine.Precise(msg.key, len(feedback), false, now)
 	activity := fmt.Sprintf("review feedback: %d %s awaiting",
@@ -765,6 +766,7 @@ func (a *App) dispatch(pr model.PullRequest) tea.Cmd {
 			open:    len(feedback),
 			fresh:   len(model.Unhandled(feedback, notified)),
 			threads: model.Digest(feedback),
+			viewer:  review.Viewer,
 		}
 		if len(feedback) == 0 {
 			msg.nothing = true
@@ -796,6 +798,7 @@ func (a *App) sender(allowProvision bool) func(context.Context, handoffMsg) hand
 			UnresolvedCount: msg.open,
 			NewCount:        msg.fresh,
 			Threads:         msg.threads,
+			Viewer:          msg.viewer,
 			AllowProvision:  allowProvision,
 		})
 		return msg
@@ -1111,6 +1114,10 @@ type handoffMsg struct {
 	// threads maps each open thread to its newest comment, which is what is
 	// remembered once the handoff lands.
 	threads map[string]string
+	// viewer is the login the review read behind this handoff was made as,
+	// which is how the dispatcher tells the reader's own pull request from
+	// somebody else's before it checks a head out.
+	viewer string
 	// nothing means there was no open feedback to send, so no agent was asked.
 	nothing bool
 	result  handoff.Result

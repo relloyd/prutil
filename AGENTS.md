@@ -272,7 +272,7 @@ an agent may be given it without asking the reader, from the participants
 `reviewThreadQuery` reads and the `security` block in `config.yaml`. The design
 and the threat it answers are in `docs/security/prompt-injection.md`.
 
-Eight rules hold it together. Each is a thing that looks like a tidy-up and
+Nine rules hold it together. Each is a thing that looks like a tidy-up and
 is not.
 
 - **Unknown is not trusted, and unread is not clear.** The automatic paths ask
@@ -323,6 +323,15 @@ is not.
   keep answering even if `promptData` stops. Newline and tab are allowed; a
   prompt is prose and the check list is indented. It does not import `model`:
   this is about what may cross the wire to herdr.
+
+- **Provisioning asks a different question from the trust gate.** The gate asks
+  who has commented; `Dispatcher.mayProvision` asks whose code prutil is about
+  to check out, because an agent started in another author's worktree loads
+  that repository's settings, hooks, MCP servers and instruction files, and
+  hooks run outside any sandbox. Only the viewer's own pull requests and
+  `trusted_authors` pass, and an author GitHub has lost fails like any other
+  stranger. A reader may still hand work to an agent they checked out there
+  themselves; what goes away is prutil doing it unasked.
 
 `W` is the override and asks for a second press naming what it is waving
 through, via the shared `pendingConfirm`. `F` overrides outright; that

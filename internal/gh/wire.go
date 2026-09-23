@@ -51,11 +51,14 @@ type repoNamesResponse struct {
 }
 
 type prNode struct {
-	TypeName       string     `json:"__typename"`
-	ID             string     `json:"id"`
-	Number         int        `json:"number"`
-	Title          string     `json:"title"`
-	URL            string     `json:"url"`
+	TypeName string `json:"__typename"`
+	ID       string `json:"id"`
+	Number   int    `json:"number"`
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+	Author   *struct {
+		Login string `json:"login"`
+	} `json:"author"`
 	IsDraft        bool       `json:"isDraft"`
 	CreatedAt      *time.Time `json:"createdAt"`
 	UpdatedAt      *time.Time `json:"updatedAt"`
@@ -82,6 +85,15 @@ type prNode struct {
 	Commits commitConnection `json:"commits"`
 }
 
+// authorLogin is who opened the pull request. GitHub returns a null author for
+// an account it no longer has, which is nobody, and nobody is not the viewer.
+func (n prNode) authorLogin() string {
+	if n.Author == nil {
+		return ""
+	}
+	return n.Author.Login
+}
+
 // toPullRequest converts a search node, reporting false for anything that is
 // not a pull request. The search API can only be asked for ISSUE nodes, so an
 // issue can appear if the caller's query drops the is:pr qualifier.
@@ -97,6 +109,7 @@ func (n prNode) toPullRequest() (model.PullRequest, bool) {
 		Repo:           n.Repository.NameWithOwner,
 		Number:         n.Number,
 		Title:          strings.TrimSpace(n.Title),
+		Author:         n.authorLogin(),
 		URL:            n.URL,
 		HeadRef:        n.HeadRefName,
 		BaseRef:        n.BaseRefName,

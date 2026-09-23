@@ -27,6 +27,7 @@ query($q: String!, $first: Int!, $after: String) {
         number
         title
         url
+        author { login }
         isDraft
         createdAt
         updatedAt
@@ -112,6 +113,7 @@ fragment prFields on PullRequest {
   number
   title
   url
+  author { login }
   isDraft
   state
   createdAt

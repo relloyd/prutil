@@ -468,6 +468,15 @@ metadata and prutil's own markers are HTML comments. Emoji are safe: the
 zero-width joiner every family and profession emoji is built from is exempt
 between two emoji, and nowhere else.
 
+prutil also will not create a workspace over a branch that is not yours. `W`
+and the automatic `fallback: new` path check out `pull/<number>/head` and start
+an agent in it, and an agent started in somebody else's checkout loads that
+repository's own settings, hooks and instruction files — hooks run outside any
+sandbox. Only your own pull requests and `trusted_authors` are provisioned
+over; `-query` can list anyone's, which is when this matters. An agent you have
+already checked out there yourself still takes the work, because that is your
+own choice rather than prutil's.
+
 A held pull request holds its failed checks with it, because the agent a check
 investigation starts reads the same pull request. Resolving the thread on
 GitHub releases the hold at the next poll, and `W` sends the feedback anyway

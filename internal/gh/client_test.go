@@ -870,3 +870,18 @@ func TestAddCommentValidatesArguments(t *testing.T) {
 	err = client.AddComment(context.Background(), "PR_kwDO123", "   ")
 	assert.Error(t, err)
 }
+
+func TestListDecodesWhoOpenedEachPullRequest(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "search.json")}}
+	client := gh.New(runner, 1)
+
+	prs, err := client.ListPullRequests(context.Background(), "is:open", 10)
+	require.NoError(t, err)
+	require.Len(t, prs, 3)
+
+	assert.Equal(t, "relloyd", prs[0].Author,
+		"provisioning checks a head out, so whose branch it is has to be known")
+	assert.Empty(t, prs[2].Author,
+		"GitHub returns a null author for an account it no longer has, and nobody is not the viewer")
+	assert.Contains(t, runner.argsOf(0), "author { login }")
+}
