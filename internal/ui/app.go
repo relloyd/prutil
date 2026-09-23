@@ -301,6 +301,16 @@ type prRuntime struct {
 	// both "nothing is wrong" and "nobody has looked yet", which is what the
 	// check path below relies on.
 	hold model.Hold
+	// holdMark identifies the newest comment the hold was last computed
+	// against, and heldAnnounced the one it was last announced for. A held
+	// pull request is polled for as long as it stays held, so without them it
+	// would raise a notification every time.
+	//
+	// Both are session-only. A reader who has just restarted has not seen the
+	// notification, so announcing a standing hold once more is the right side
+	// to err on, and it keeps the state file out of it.
+	holdMark      string
+	heldAnnounced string
 	// activity is a bounded, session-only account of what the watcher has
 	// done, oldest first.
 	activity []watchActivity

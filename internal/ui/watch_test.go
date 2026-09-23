@@ -1478,3 +1478,54 @@ func TestAFailedCheckStillGoesToAnAgentWhenNothingIsHeld(t *testing.T) {
 		"the hold is the only thing that stops this path; trusted feedback leaves it working")
 	assert.True(t, dispatcher.requests()[sent].CheckHandoff)
 }
+
+func TestAHeldPullRequestRaisesOneNotification(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+	dispatcher := dispatcherOf(t, app)
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	toasts := dispatcher.notifications()
+	require.Len(t, toasts, 1,
+		"held is the outcome nothing comes back from, so it is the one the reader most needs telling about")
+	assert.Equal(t, "relloyd/prutil#42: 2 new review comments held", toasts[0].title)
+	assert.Contains(t, toasts[0].body, "mallory")
+	assert.Contains(t, toasts[0].body, "W to send it anyway")
+}
+
+func TestAStandingHoldDoesNotNotifyOnEveryPoll(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+	dispatcher := dispatcherOf(t, app)
+
+	send(t, app, press("w"))
+	poll(t, app)
+	require.Len(t, dispatcher.notifications(), 1)
+
+	advance(app, time.Minute)
+	notifyNewFeedback(t, app)
+
+	assert.Len(t, dispatcher.notifications(), 1,
+		"the same comments held for the same reason are not news twice")
+}
+
+func TestANewCommentOnAHeldPullRequestNotifiesAgain(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+	dispatcher := dispatcherOf(t, app)
+
+	send(t, app, press("w"))
+	poll(t, app)
+	require.Len(t, dispatcher.notifications(), 1)
+
+	// Somebody replies. The pull request is still held, and that is news again.
+	spoken := hostileReview()
+	spoken.Threads[0].LatestID = "C9"
+	client.review = spoken
+	advance(app, time.Minute)
+	notifyNewFeedback(t, app)
+
+	assert.Len(t, dispatcher.notifications(), 2)
+}

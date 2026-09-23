@@ -35,6 +35,7 @@ const handoffGrace = 2 * time.Minute
 type dispatcher interface {
 	Dispatch(ctx context.Context, req handoff.Request) (handoff.Result, error)
 	DryRun() bool
+	Notify(ctx context.Context, title, body string)
 }
 
 // armed reports whether a pull request is being watched.
@@ -435,6 +436,7 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	entry := a.mutate(msg.key)
 	entry.feedback, entry.hasFeedback = len(feedback), true
 	entry.hold = msg.review.Hold(a.homeCfg.Security.TrustPolicy())
+	entry.holdMark = holdMarkOf(msg.review.Threads)
 	a.engine.Precise(msg.key, len(feedback), false, now)
 	activity := fmt.Sprintf("review feedback: %d %s awaiting",
 		len(feedback), plural(len(feedback), "thread"))
@@ -504,7 +506,55 @@ func (a *App) holdFeedback(pr model.PullRequest, hold model.Hold, count int, nou
 			Detail:  why,
 		})
 	}
-	return status(fmt.Sprintf("%s: %s held, %s · W to send it anyway", key, held, why))
+
+	line := fmt.Sprintf("%s: %s held, %s · W to send it anyway", key, held, why)
+	return tea.Batch(status(line), a.announceHold(pr, held, why))
+}
+
+// announceHold raises the herdr notification a held handoff would have raised
+// had it reached the dispatcher, once per newest comment.
+//
+// held is the outcome the reader is least likely to be sitting in front of
+// prutil for: nothing has been sent, so nothing will come back to tell them.
+// Every other outcome toasts, under the reader's own herdr.toast switch, and
+// this one only did not because the decision is made before Dispatch.
+func (a *App) announceHold(pr model.PullRequest, held, why string) tea.Cmd {
+	entry := a.mutate(pr.Key())
+	if a.hand == nil || entry.heldAnnounced == entry.holdMark {
+		return nil
+	}
+	entry.heldAnnounced = entry.holdMark
+
+	hand, title := a.hand, pr.Key().String()+": "+held+" held"
+	return func() tea.Msg {
+		hand.Notify(context.Background(), title, why+" · W to send it anyway")
+		return nil
+	}
+}
+
+// holdMarkOf names the newest comment on each unresolved thread, which is what
+// a hold is announced once per. A held pull request keeps being polled for as
+// long as it stays held, and somebody adding a comment is the only thing that
+// makes it news again.
+//
+// It is the set rather than the most recent of them, because a thread's
+// LatestAt is only as good as what GitHub returned: keyed on the newest by
+// time, a reply that arrived without a timestamp would announce nothing.
+//
+// A pull request with no comments to name still has to be announceable once,
+// so it answers with something no comment id can be rather than with nothing.
+func holdMarkOf(threads []model.ReviewThread) string {
+	ids := make([]string, 0, len(threads))
+	for _, thread := range threads {
+		if !thread.Resolved && thread.LatestID != "" {
+			ids = append(ids, thread.LatestID)
+		}
+	}
+	if len(ids) == 0 {
+		return "-"
+	}
+	slices.Sort(ids)
+	return strings.Join(ids, ",")
 }
 
 // holdReason says in one phrase why a pull request is held, for the status

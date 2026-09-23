@@ -1124,3 +1124,32 @@ func TestReopeningAWorkspaceThatIsBehindTellsTheNewAgentToFetch(t *testing.T) {
 	assert.Empty(t, fetch.calls, "git refuses to fetch into a branch that is checked out in a worktree")
 	assert.Contains(t, control.texts[0], "git fetch origin pull/42/head")
 }
+
+func TestNotifyAnnouncesSomethingTheCallerDecidedUnderTheSameSwitch(t *testing.T) {
+	cases := []struct {
+		name   string
+		toast  bool
+		toasts int
+	}{
+		{name: "with herdr.toast on, a caller's notification is shown", toast: true, toasts: 1},
+		{name: "with it off, nothing is shown", toast: false, toasts: 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			control := &fakeHerdr{}
+			dispatcher, _ := dispatcherFor(t, control, fakeGit{}, func(cfg *home.Config) {
+				cfg.Herdr.Toast = tc.toast
+			})
+
+			dispatcher.Notify(context.Background(), "acme/widgets#7: 2 new review comments held",
+				"feedback from mallory")
+
+			require.Len(t, control.toasts, tc.toasts)
+			if tc.toasts > 0 {
+				assert.Equal(t, "acme/widgets#7: 2 new review comments held | feedback from mallory",
+					control.toasts[0], "a held handoff reads like every other outcome")
+			}
+		})
+	}
+}

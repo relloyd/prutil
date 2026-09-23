@@ -840,13 +840,23 @@ const toastTimeout = 5 * time.Second
 // that the handoff failed, and the most common way for a handoff to fail is
 // for its context to run out, which would take the toast with it.
 func (d *Dispatcher) toast(ctx context.Context, req Request, body string) {
+	title := fmt.Sprintf("%s: %d new review %s", req.PR.Key(), req.NewCount, plural(req.NewCount, "comment"))
+	d.Notify(ctx, title, body)
+}
+
+// Notify shows a herdr notification for something the caller decided rather
+// than something Dispatch did, under the same herdr.toast switch as the rest.
+//
+// Feedback prutil holds back never reaches Dispatch, so without this it would
+// be the one outcome in the handoff log the reader is never told about, purely
+// because of where the decision is made.
+func (d *Dispatcher) Notify(ctx context.Context, title, body string) {
 	if !d.cfg.Toast {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), toastTimeout)
 	defer cancel()
 
-	title := fmt.Sprintf("%s: %d new review %s", req.PR.Key(), req.NewCount, plural(req.NewCount, "comment"))
 	_ = d.herdr.Notify(ctx, title, body)
 }
 

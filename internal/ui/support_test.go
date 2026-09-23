@@ -399,6 +399,13 @@ type fakeDispatcher struct {
 	result handoff.Result
 	err    error
 	dry    bool
+	toasts []fakeToast
+}
+
+// fakeToast is one herdr notification the app asked for.
+type fakeToast struct {
+	title string
+	body  string
 }
 
 func (f *fakeDispatcher) Dispatch(_ context.Context, req handoff.Request) (handoff.Result, error) {
@@ -414,10 +421,22 @@ func (f *fakeDispatcher) DryRun() bool {
 	return f.dry
 }
 
+func (f *fakeDispatcher) Notify(_ context.Context, title, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.toasts = append(f.toasts, fakeToast{title: title, body: body})
+}
+
 func (f *fakeDispatcher) requests() []handoff.Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]handoff.Request(nil), f.reqs...)
+}
+
+func (f *fakeDispatcher) notifications() []fakeToast {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeToast(nil), f.toasts...)
 }
 
 // dispatcherOf returns the fake handoff dispatcher newTestApp handed the app.
