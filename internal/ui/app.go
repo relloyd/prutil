@@ -342,6 +342,10 @@ const (
 	confirmReview confirmable = "review"
 	// confirmHeldHandoff hands over feedback prutil is holding back.
 	confirmHeldHandoff confirmable = "held handoff"
+	// confirmHeldChecks investigates the failed checks on a pull request
+	// prutil is holding back. Separate from confirmHeldHandoff because the two
+	// keys do different things and each has to say which it is asking about.
+	confirmHeldChecks confirmable = "held check investigation"
 )
 
 // pendingConfirm is a question prutil has asked on the status line and is
@@ -735,12 +739,12 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.Handoff):
 		if a.selectedFailedCheck() {
-			return a, a.checkHandoff(true, true)
+			return a, a.investigateChecks(a.keys.Handoff, true)
 		}
 		return a, a.handOff()
 
 	case key.Matches(msg, a.keys.CheckHandoff):
-		return a, a.checkHandoff(true, false)
+		return a, a.investigateChecks(a.keys.CheckHandoff, false)
 
 	case key.Matches(msg, a.keys.TriggerReview):
 		return a, a.triggerAIReview()

@@ -485,8 +485,11 @@ own choice rather than prutil's.
 
 A held pull request holds its failed checks with it, because the agent a check
 investigation starts reads the same pull request. Resolving the thread on
-GitHub releases the hold at the next poll, and `W` sends the feedback anyway
-after a second press that names what it is waving through.
+GitHub releases the hold at the next poll; otherwise `W` and `F` both act on it
+after a second press that names what it is waving through. That press covers
+one send, however much is wrong with the pull request, and is not remembered:
+the next attempt asks again, and nothing you wave through puts the pull request
+back on the automatic loop.
 
 Separately, every value prutil puts into a prompt is cleaned first: control and
 format characters are dropped, single-line fields stay on one line, and a failed
@@ -499,7 +502,7 @@ prutil only acts automatically on a pull request whose review threads it has
 actually read, so the first failed-check handoff after starting prutil waits
 one polling interval while it reads them. The same wait applies when GitHub
 refuses that read: not knowing who has commented leaves the automatic paths
-shut rather than open. `F` is your own key press and does not wait.
+shut rather than open. `W` and `F` are your own key presses and do not wait.
 
 Explicit `repos` entries win. When none exists, prutil checks its private
 `repos.json` cache and then scans `discovery.roots`, validating every candidate

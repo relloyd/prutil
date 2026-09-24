@@ -1727,3 +1727,119 @@ func TestAHoldNamesBothCausesWhenThereAreBoth(t *testing.T) {
 	assert.Equal(t, "feedback from mallory; hidden text in a comment by reviewer",
 		history[0].Detail, "two causes read as two clauses, not as one list")
 }
+
+// onFailedCheck puts the detail cursor on the failing check of the selected
+// pull request, which is what makes W investigate checks rather than hand the
+// review feedback over.
+func onFailedCheck(t *testing.T, app *App) {
+	t.Helper()
+	send(t, app, press("l"))
+	require.Equal(t, paneDetail, app.focus)
+	require.Equal(t, detailChecks, app.section)
+	for range 4 {
+		if app.selectedFailedCheck() {
+			return
+		}
+		send(t, app, press("j"))
+	}
+	require.True(t, app.selectedFailedCheck(), "the sample checks hold a failing one")
+}
+
+// investigate presses a key that starts a failed-check investigation and
+// settles the check read it dispatches. pump follows the watcher's own
+// messages but not a checksMsg, so the reply that reaches applyFailedChecks
+// has to be pumped in turn.
+func investigate(t *testing.T, app *App, k string) {
+	t.Helper()
+	for _, msg := range drain(send(t, app, press(k))) {
+		if checks, ok := msg.(checksMsg); ok {
+			pump(t, app, send(t, app, checks))
+			continue
+		}
+		send(t, app, msg)
+	}
+}
+
+func TestFAsksBeforeInvestigatingAHeldPullRequest(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	require.True(t, app.runtimeOf(model.Key{Repo: "relloyd/prutil", Number: 42}).hold.Held())
+	before := checkHandoffs(dispatcher)
+
+	asked := send(t, app, press("F"))
+	require.NotNil(t, asked)
+	question, ok := asked().(statusMsg)
+	require.True(t, ok)
+	assert.Contains(t, string(question), "press F again to investigate anyway")
+	assert.Contains(t, string(question), "mallory", "and says what it would be waving through")
+	assert.Equal(t, before, checkHandoffs(dispatcher), "the first press asks and sends nothing")
+
+	investigate(t, app, "F")
+	assert.Equal(t, before+1, checkHandoffs(dispatcher), "the second press is the override")
+}
+
+func TestWOnAFailedCheckAsksTheSameQuestionAsWOnTheList(t *testing.T) {
+	// W reaches the check path when the cursor is on a failed check, and that
+	// branch provisions. Without this it was the one explicit path that could
+	// start an agent on a held pull request without being asked, spelled with
+	// the same key as the one that does ask.
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	onFailedCheck(t, app)
+	before := checkHandoffs(dispatcher)
+
+	asked := send(t, app, press("W"))
+	require.NotNil(t, asked)
+	question, ok := asked().(statusMsg)
+	require.True(t, ok)
+	assert.Contains(t, string(question), "press W again to investigate anyway",
+		"the question names the key the reader actually pressed")
+	assert.Equal(t, before, checkHandoffs(dispatcher))
+
+	investigate(t, app, "W")
+	assert.Equal(t, before+1, checkHandoffs(dispatcher))
+}
+
+func TestAStaleConfirmationDoesNotInvestigateAHeldPullRequest(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	client.review = hostileReview()
+	dispatcher := dispatcherOf(t, app)
+
+	send(t, app, press("w"))
+	poll(t, app)
+	require.NotNil(t, send(t, app, press("F")))
+
+	advance(app, statusLifetime)
+	again := send(t, app, press("F"))
+	require.NotNil(t, again)
+
+	assert.Zero(t, checkHandoffs(dispatcher))
+	question, ok := again().(statusMsg)
+	require.True(t, ok)
+	assert.Contains(t, string(question), "press F again", "an expired question is asked afresh")
+}
+
+func TestFInvestigatesWithoutAskingWhenNothingIsHeld(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	before := checkHandoffs(dispatcher)
+
+	investigate(t, app, "F")
+
+	assert.Equal(t, before+1, checkHandoffs(dispatcher),
+		"the confirmation is the hold's, not a second press on every investigation")
+}

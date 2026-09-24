@@ -368,11 +368,39 @@ the only case a reader would notice.
 Fail-closed is the point: a read prutil could not make leaves the check path
 shut rather than open.
 
-**What this does not cover.** `F` is the reader's own key press and overrides
-the hold outright, where `W` asks for a second press. Both start an agent that
-reads the same pull request, so the asymmetry is worth removing, but it is a
-change to a key's behaviour rather than part of the boundary and is left for a
-decision of its own.
+**Every explicit path asks, and the gate is not `force`'s to answer.** The
+hold was first attached to `force`, which was the wrong axis. `force` means the
+reader asked for this now, and answers the armed check, the wait on checks
+still running, and the brake on a head already investigated — all questions
+about whether the work is due. Whether the reader has judged the trust boundary
+is a different question, and an explicit key press is not on its own evidence
+that anybody has read the hostile thread.
+
+Attached there, two of the three explicit paths skipped the gate, and one of
+them was spelled `W`: `handleKey` sends `W` to the check path when the cursor
+sits on a failed check, and that branch also provisions. So the same key asked
+for a second press on the list and started an agent without asking in the
+detail pane.
+
+`investigateChecks` now asks for that second press, naming the key the reader
+actually pressed, and does it at the key press rather than in
+`applyFailedChecks`: the checks may still have to be fetched, and a
+confirmation that appears a round trip later is worse than none, because the
+reader has moved on and a second press in the gap would answer a question that
+had not been asked yet.
+
+The confirmation is one press per send rather than a standing permission.
+Nothing remembers which hold was approved, so the next attempt asks again;
+what keeps that from nagging is that a handoff which lands records its threads
+as seen, so a held pull request stops re-asking until somebody comments again.
+A held pull request never returns to the automatic loop on the strength of an
+override.
+
+**What this does not cover.** Neither explicit key waits for the review threads
+to be read, so a pull request whose threads prutil has not read has no hold to
+ask about and both keys act on what is known. Blocking a key press on a round
+trip is the worse trade, but it is a difference from the automatic paths rather
+than an accident.
 
 ## Tier 2: the agent runs inside its vendor's sandbox
 

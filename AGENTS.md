@@ -333,9 +333,20 @@ is not.
   stranger. A reader may still hand work to an agent they checked out there
   themselves; what goes away is prutil doing it unasked.
 
-`W` is the override and asks for a second press naming what it is waving
-through, via the shared `pendingConfirm`. `F` overrides outright; that
-asymmetry is known and recorded in the design document rather than settled.
+Every explicit path asks for a second press before acting on a held pull
+request, naming the key the reader pressed, via the shared `pendingConfirm`.
+That gate is deliberately not `force`'s to answer: `force` says the work is due
+— it answers the armed check, the wait on running checks and the brake on a
+head already investigated — and a key press is not on its own evidence that
+anybody has read the hostile thread. Attached to `force`, the gate was skipped
+by `F` and by `W` in the detail pane, where `handleKey` sends `W` to the check
+path and that branch provisions as well.
+
+`investigateChecks` asks at the key press rather than in `applyFailedChecks`,
+because the checks may still have to be fetched and a confirmation arriving a
+round trip later would be answered by a press meant for something else. The
+confirmation is one press per send, not a standing permission, and no override
+puts a held pull request back on the automatic loop.
 
 A held handoff is an outcome like any other: `home.OutcomeHeld` in
 `handoffs.jsonl`, and a herdr notification through `dispatcher.Notify` under

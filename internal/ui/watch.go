@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/relloyd/prutil/internal/gh"
@@ -125,6 +126,37 @@ func (a *App) selectedFailedCheck() bool {
 	}
 	checks := a.selectedChecks().checks
 	return a.detailCursor >= 0 && a.detailCursor < len(checks) && checks[a.detailCursor].Status == model.StatusFailure
+}
+
+// investigateChecks is the reader asking for a failed-check investigation now,
+// by whichever key reached it: W does when the cursor is on a failed check, and
+// F always does.
+//
+// It exists so that a held pull request asks for a second press here as it does
+// for a handoff. force answers whether the investigation is due — the armed
+// check, the wait on checks still running, the brake on a head already looked
+// at — and none of those is the question of whether the reader has judged the
+// trust boundary. An explicit key press is a good reason to skip a schedule; it
+// is not on its own evidence that anybody has read the hostile thread.
+//
+// The question is asked here rather than in applyFailedChecks because the
+// checks may still have to be fetched. A confirmation that appears a round trip
+// after the key press is worse than none: the reader has moved on, and a second
+// press in the meantime would answer a question that had not been asked yet.
+//
+// A pull request whose threads have not been read has no hold to ask about, so
+// nothing is asked. Both explicit keys act on what is known rather than waiting
+// on GitHub, which is the same trade handOff makes.
+func (a *App) investigateChecks(by key.Binding, allowProvision bool) tea.Cmd {
+	if pr, ok := a.selectedPR(); ok && a.active == viewOpen {
+		if hold := a.runtimeOf(pr.Key()).hold; hold.Held() && !a.confirms(pr.Key(), confirmHeldChecks) {
+			return status(fmt.Sprintf("%s is held, %s · press %s again to investigate anyway",
+				pr.Key(), holdReason(hold), by.Help().Key))
+		}
+	}
+	// Everything else, including saying why this is not an open pull request,
+	// belongs to checkHandoff, where that wording already lives.
+	return a.checkHandoff(true, allowProvision)
 }
 
 func (a *App) checkHandoff(force, allowProvision bool, headOID ...string) tea.Cmd {
