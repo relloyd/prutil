@@ -2,7 +2,10 @@
   "data": {
     "search": {
       "issueCount": 3,
-      "pageInfo": { "hasNextPage": false, "endCursor": "Y3Vyc29yOjM=" },
+      "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": "Y3Vyc29yOjM="
+      },
       "nodes": [
         {
           "__typename": "PullRequest",
@@ -15,19 +18,36 @@
           "updatedAt": "2026-09-02T18:30:00Z",
           "mergeable": "MERGEABLE",
           "reviewDecision": "APPROVED",
-          "approvals": { "totalCount": 2 },
+          "approvals": {
+            "totalCount": 2
+          },
           "additions": 120,
           "deletions": 30,
           "changedFiles": 7,
           "headRefName": "feat/uploader-retry",
           "baseRefName": "main",
-          "repository": { "nameWithOwner": "relloyd/prutil" },
-          "comments": { "totalCount": 4 },
-          "reviewThreads": { "totalCount": 6 },
+          "repository": {
+            "nameWithOwner": "relloyd/prutil"
+          },
+          "comments": {
+            "totalCount": 4
+          },
+          "reviewThreads": {
+            "totalCount": 6
+          },
           "commits": {
             "nodes": [
-              { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }
+              {
+                "commit": {
+                  "statusCheckRollup": {
+                    "state": "SUCCESS"
+                  }
+                }
+              }
             ]
+          },
+          "author": {
+            "login": "relloyd"
           }
         },
         {
@@ -46,13 +66,28 @@
           "changedFiles": 1,
           "headRefName": "chore/config",
           "baseRefName": "develop",
-          "repository": { "nameWithOwner": "relloyd/other" },
-          "comments": { "totalCount": 0 },
-          "reviewThreads": { "totalCount": 2 },
+          "repository": {
+            "nameWithOwner": "relloyd/other"
+          },
+          "comments": {
+            "totalCount": 0
+          },
+          "reviewThreads": {
+            "totalCount": 2
+          },
           "commits": {
             "nodes": [
-              { "commit": { "statusCheckRollup": { "state": "FAILURE" } } }
+              {
+                "commit": {
+                  "statusCheckRollup": {
+                    "state": "FAILURE"
+                  }
+                }
+              }
             ]
+          },
+          "author": {
+            "login": "relloyd"
           }
         },
         {
@@ -71,12 +106,29 @@
           "changedFiles": 0,
           "headRefName": "deps/bump",
           "baseRefName": "main",
-          "repository": { "nameWithOwner": "relloyd/third" },
-          "comments": { "totalCount": 1 },
-          "reviewThreads": { "totalCount": 0 },
-          "commits": { "nodes": [ { "commit": { "statusCheckRollup": null } } ] }
+          "repository": {
+            "nameWithOwner": "relloyd/third"
+          },
+          "comments": {
+            "totalCount": 1
+          },
+          "reviewThreads": {
+            "totalCount": 0
+          },
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "statusCheckRollup": null
+                }
+              }
+            ]
+          },
+          "author": null
         },
-        { "__typename": "Issue" }
+        {
+          "__typename": "Issue"
+        }
       ]
     }
   }

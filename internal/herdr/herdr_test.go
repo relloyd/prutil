@@ -288,3 +288,39 @@ func TestWorktreeCommandsValidateRequiredInputsBeforeAnyProcessCall(t *testing.T
 
 	assert.Empty(t, runner.calls, "invalid inputs must not spawn a process")
 }
+
+func TestPromptRefusesTextThatCouldBeReadAsATerminalEscape(t *testing.T) {
+	cases := []struct {
+		name  string
+		text  string
+		sends bool
+	}{
+		{name: "prose goes through", text: "Triage the review feedback on acme/widgets#7", sends: true},
+		{name: "so do the newlines a prompt is made of", text: "line one\nline two", sends: true},
+		{name: "and the tabs a check list is indented with", text: "checks:\n\t- build", sends: true},
+		{name: "an escape could end a bracketed paste", text: "look at \x1b[31mthis", sends: false},
+		{name: "a carriage return could submit a line early", text: "look at this\r!whoami", sends: false},
+		{name: "a NUL has no business in a prompt", text: "look at\x00this", sends: false},
+		{name: "nor does DEL", text: "look at\x7fthis", sends: false},
+		{name: "nor a C1 control", text: "look at\u0090this", sends: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeRunner{replies: map[string]reply{
+				"agent prompt w1:p3 " + tc.text: {out: `{"result":{}}`},
+			}}
+
+			err := herdr.New(runner).Prompt(context.Background(), "w1:p3", tc.text)
+
+			if tc.sends {
+				require.NoError(t, err)
+				assert.Len(t, runner.calls, 1)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "terminal escape")
+			assert.Empty(t, runner.calls, "nothing reaches herdr at all")
+		})
+	}
+}

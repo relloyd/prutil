@@ -68,8 +68,14 @@ type PullRequest struct {
 	NodeID string
 	// HeadOID is the commit currently under review. The watcher uses it to
 	// deduplicate failed-check investigations across process restarts.
-	HeadOID        string
-	Title          string
+	HeadOID string
+	Title   string
+	// Author is the login that opened the pull request, empty for an account
+	// GitHub no longer has. It decides whether prutil may check the head out
+	// and start an agent in it: doing that over somebody else's branch loads
+	// that repository's own agent configuration, hooks included, and hooks run
+	// outside any sandbox.
+	Author         string
 	URL            string
 	HeadRef        string
 	BaseRef        string

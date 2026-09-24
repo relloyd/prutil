@@ -69,6 +69,21 @@ func (r Review) Feedback(filter model.ReviewFilter) []model.ReviewThread {
 	return model.Feedback(r.Threads, filter)
 }
 
+// Hold is why this pull request's feedback may not be handed to an agent
+// without the reader being asked, empty when it may.
+//
+// A truncated thread list holds it too. Threads prutil has not seen cannot be
+// judged, and a pull request long enough to run past the page is exactly where
+// a comment would go unnoticed.
+func (r Review) Hold(policy model.TrustPolicy) model.Hold {
+	policy.Viewer = r.Viewer
+	hold := model.HoldFor(r.Threads, policy)
+	if r.Truncated {
+		hold.Unknown = true
+	}
+	return hold
+}
+
 // ClosedResult is the outcome of a recently-closed query.
 type ClosedResult struct {
 	// PRs is the grouped list, most recently closed first.

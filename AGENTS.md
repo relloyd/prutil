@@ -264,6 +264,83 @@ the compact section packs onto one line what the expanded page gives a line
 each. Rendering goes through `watchRow`, plain text and a style, so counting
 the page is counting a slice; the scroll arithmetic asks on every key press.
 
+## The trust boundary
+
+Review feedback is written by whoever can comment on the pull request, and on a
+public repository that is any GitHub account. `model.HoldFor` decides whether
+an agent may be given it without asking the reader, from the participants
+`reviewThreadQuery` reads and the `security` block in `config.yaml`. The design
+and the threat it answers are in `docs/security/prompt-injection.md`.
+
+Nine rules hold it together. Each is a thing that looks like a tidy-up and
+is not.
+
+- **Unknown is not trusted, and unread is not clear.** The automatic paths ask
+  two questions: have the threads been read (`prRuntime.holdKnown`), and did
+  what was read hold anything (`model.Hold.Held`). A pull request nobody has
+  read is not one with nothing wrong. `prRuntime` is session-only, `applyWatch`
+  batches the review read and the check read concurrently, the check read is
+  dispatched on the rollup alone, and a refused review read leaves nothing
+  behind — so "nobody has looked yet" is ordinary, not rare. Collapsing the
+  two questions into one reopens the route.
+- **Trust holds the handoff; it never filters threads.** `Feedback` answers
+  whose turn it is, `HoldFor` answers whether anyone outside the boundary has
+  spoken. Folding trust into `NeedsAttention` would take held feedback out of
+  the counts on screen and tell the reader a pull request was quiet when it was
+  not.
+- **Hidden text holds a trusted author's comment too.** `hiddenRunes` flags tag
+  characters, zero-width and format characters and bidi controls in anybody's
+  comment, the viewer's own included, because a compromised account is still
+  the account it was. Only the HTML-comment rule is exempted, for the viewer
+  and for bots, whose metadata comments are how they work. The zero-width
+  joiner is exempt between two emoji and nowhere else: two joiners in a row are
+  not an emoji. prutil holds rather than strips, because the agent re-reads the
+  threads from the API and would find whatever was hidden still there.
+- **The gate reads every unresolved thread, not the feedback subset.** A thread
+  whose last word is the viewer's own is not feedback, but an agent reads the
+  whole pull request. It is also what makes a hold releasable: resolving the
+  thread on GitHub is the reader's way out, with prutil doing nothing.
+- **An empty login is nobody.** GitHub returns a null author for a deleted
+  account, which decodes to the zero value. It must never match an empty
+  `Viewer`, and `TrustPolicy.trusts` guards both directions.
+- **A `[bot]` entry matches only a GitHub App.** GraphQL reports a bot's login
+  without the suffix REST uses, so without `__typename` a person who registered
+  that login would inherit the bot's trust.
+
+- **Nothing prutil interpolates reaches a template as it came.** `promptData`
+  puts every free-text value through `model.SafeLine`, which drops control and
+  format characters and folds the value onto one line. A title is the pull
+  request author's text, a check's name comes from a workflow file in the
+  branch under review, and a legacy status context's description is set by
+  anything with commit-status write access. A check URL is kept only when
+  `model.SameHostURL` finds it on the same host as the pull request's own URL,
+  which is how the host is known without configuration on an enterprise
+  install, and the description is capped so one check cannot be the whole
+  prompt.
+- **`herdr.Client.Prompt` refuses control characters, and duplicates that
+  knowledge on purpose.** It is the backstop for a prompt template somebody
+  wrote by hand or a note built from data nobody has considered, so it must
+  keep answering even if `promptData` stops. Newline and tab are allowed; a
+  prompt is prose and the check list is indented. It does not import `model`:
+  this is about what may cross the wire to herdr.
+
+- **Provisioning asks a different question from the trust gate.** The gate asks
+  who has commented; `Dispatcher.mayProvision` asks whose code prutil is about
+  to check out, because an agent started in another author's worktree loads
+  that repository's settings, hooks, MCP servers and instruction files, and
+  hooks run outside any sandbox. Only the viewer's own pull requests and
+  `trusted_authors` pass, and an author GitHub has lost fails like any other
+  stranger. A reader may still hand work to an agent they checked out there
+  themselves; what goes away is prutil doing it unasked.
+
+`W` is the override and asks for a second press naming what it is waving
+through, via the shared `pendingConfirm`. `F` overrides outright; that
+asymmetry is known and recorded in the design document rather than settled.
+
+A held handoff is an outcome like any other: `home.OutcomeHeld` in
+`handoffs.jsonl`, and a herdr notification through `dispatcher.Notify` under
+the reader's own `herdr.toast`, once per set of newest comment ids.
+
 ## Desktop notifications
 
 `notifications` in `internal/ui/notify.go` is the one list of what prutil can

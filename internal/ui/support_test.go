@@ -399,6 +399,13 @@ type fakeDispatcher struct {
 	result handoff.Result
 	err    error
 	dry    bool
+	toasts []fakeToast
+}
+
+// fakeToast is one herdr notification the app asked for.
+type fakeToast struct {
+	title string
+	body  string
 }
 
 func (f *fakeDispatcher) Dispatch(_ context.Context, req handoff.Request) (handoff.Result, error) {
@@ -414,10 +421,22 @@ func (f *fakeDispatcher) DryRun() bool {
 	return f.dry
 }
 
+func (f *fakeDispatcher) Notify(_ context.Context, title, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.toasts = append(f.toasts, fakeToast{title: title, body: body})
+}
+
 func (f *fakeDispatcher) requests() []handoff.Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]handoff.Request(nil), f.reqs...)
+}
+
+func (f *fakeDispatcher) notifications() []fakeToast {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeToast(nil), f.toasts...)
 }
 
 // dispatcherOf returns the fake handoff dispatcher newTestApp handed the app.
@@ -428,10 +447,30 @@ func dispatcherOf(t *testing.T, app *App) *fakeDispatcher {
 	return got
 }
 
+// trusted fills in the participants of hand-built threads from who the thread
+// says spoke in it, and marks the list complete.
+//
+// Every test about what the watcher does with feedback assumes the feedback is
+// allowed through, which since the trust boundary landed is a thing a thread
+// has to say rather than a thing it gets for free: a thread with no
+// participants is one prutil could not read, and is held. A test about the
+// boundary itself writes its own participants instead.
+func trusted(review gh.Review) gh.Review {
+	for i, thread := range review.Threads {
+		who := []model.Participant{{Login: thread.Opener, Association: "COLLABORATOR"}}
+		if thread.LatestBy != "" && thread.LatestBy != thread.Opener {
+			who = append(who, model.Participant{Login: thread.LatestBy, Association: "COLLABORATOR"})
+		}
+		review.Threads[i].Participants = who
+		review.Threads[i].ParticipantsComplete = true
+	}
+	return review
+}
+
 // sampleThreads returns two review threads waiting on the viewer and one the
 // viewer answered themselves, which is the shape every dedup question needs.
 func sampleThreads() gh.Review {
-	return gh.Review{
+	return trusted(gh.Review{
 		Viewer: "relloyd",
 		Threads: []model.ReviewThread{
 			{
@@ -455,7 +494,7 @@ func sampleThreads() gh.Review {
 				URL: "https://github.com/relloyd/prutil/pull/42#discussion_r4",
 			},
 		},
-	}
+	})
 }
 
 // newTestApp builds an app sized to the given terminal, with the list already

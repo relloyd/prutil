@@ -1,6 +1,8 @@
 {
   "data": {
-    "viewer": { "login": "relloyd" },
+    "viewer": {
+      "login": "relloyd"
+    },
     "repository": {
       "pullRequest": {
         "reviewThreads": {
@@ -14,9 +16,13 @@
               "opener": {
                 "nodes": [
                   {
-                    "author": { "login": "relloyd" },
+                    "author": {
+                      "__typename": "User",
+                      "login": "relloyd"
+                    },
                     "createdAt": "2026-09-17T09:00:00Z",
-                    "body": "Please fix this before submitting the review."
+                    "body": "Please fix this before submitting the review.",
+                    "authorAssociation": "OWNER"
                   }
                 ]
               },
@@ -26,10 +32,25 @@
                   {
                     "id": "PRRC_PENDING",
                     "url": "https://github.com/relloyd/prutil/pull/42#discussion_rpending",
-                    "author": { "login": "relloyd" },
+                    "author": {
+                      "__typename": "User",
+                      "login": "relloyd"
+                    },
                     "createdAt": "2026-09-17T09:00:00Z",
                     "publishedAt": null,
-                    "body": "Please fix this before submitting the review."
+                    "body": "Please fix this before submitting the review.",
+                    "authorAssociation": "OWNER"
+                  }
+                ]
+              },
+              "participants": {
+                "nodes": [
+                  {
+                    "authorAssociation": "OWNER",
+                    "author": {
+                      "__typename": "User",
+                      "login": "relloyd"
+                    }
                   }
                 ]
               }

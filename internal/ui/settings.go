@@ -36,6 +36,11 @@ const (
 	// notice runs into the border, which carries its own hints, and the two
 	// read as one line.
 	settingsChrome = 4
+	// settingsMinRows is how many rows the pane insists on showing before it
+	// starts giving the explanation up. The list scrolls, so a pane with more
+	// settings than fit is an ordinary pane rather than one that has run out
+	// of room; only a genuinely short terminal has to choose.
+	settingsMinRows = 6
 )
 
 // settingsMode is the interaction mode of the settings pane.
@@ -56,7 +61,94 @@ const (
 	subPaneRepos
 	subPaneReviewRepos
 	subPaneDiscoveryRoots
+	subPaneTrustedAssociations
+	subPaneTrustedAuthors
 )
+
+// listSubPane describes a sub-pane over a sequence of strings.
+//
+// The sequences differ only in where they live, what one entry is called and
+// what counts as a valid one, so they share the add, delete, list and render
+// paths rather than each growing an arm in five switches. A map sub-pane is
+// still its own case: two fields and a key are a different shape.
+type listSubPane struct {
+	title string
+	// noun names one entry, for the prompt and for every notice about it.
+	noun string
+	path []string
+	get  func(c *home.Config) []string
+	set  func(c *home.Config, items []string)
+	// clean normalises an entry the reader typed and rejects one that cannot
+	// mean anything. Nil accepts whatever they wrote.
+	clean func(entry string) (string, error)
+}
+
+// listSubPanes is every sequence the pane can manage.
+func listSubPanes() map[subPaneType]listSubPane {
+	return map[subPaneType]listSubPane{
+		subPaneDiscoveryRoots: {
+			title: "Discovery: Checkout Roots",
+			noun:  "discovery root",
+			path:  []string{"discovery", "roots"},
+			get:   func(c *home.Config) []string { return c.Discovery.Roots },
+			set:   func(c *home.Config, items []string) { c.Discovery.Roots = items },
+		},
+		subPaneTrustedAssociations: {
+			title: "Security: Trusted Associations",
+			noun:  "trusted association",
+			path:  []string{"security", "trusted_associations"},
+			get:   func(c *home.Config) []string { return c.Security.TrustedAssociations },
+			set:   func(c *home.Config, items []string) { c.Security.TrustedAssociations = items },
+			clean: cleanAssociation,
+		},
+		subPaneTrustedAuthors: {
+			title: "Security: Trusted Authors",
+			noun:  "trusted author",
+			path:  []string{"security", "trusted_authors"},
+			get:   func(c *home.Config) []string { return c.Security.TrustedAuthors },
+			set:   func(c *home.Config, items []string) { c.Security.TrustedAuthors = items },
+			clean: cleanAuthor,
+		},
+	}
+}
+
+// listSubPaneFor returns the sequence behind a sub-pane kind, if it is one.
+func listSubPaneFor(kind subPaneType) (listSubPane, bool) {
+	spec, ok := listSubPanes()[kind]
+	return spec, ok
+}
+
+// associations are the authorAssociation values GitHub reports. A value
+// outside them can never match, so it is a typo rather than a stricter policy,
+// and saying so is better than silently trusting nobody.
+var associations = []string{
+	"OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR",
+	"FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", "NONE",
+}
+
+// cleanAssociation upper-cases what the reader typed, since GitHub's values
+// are upper-case, and refuses anything that is not one of them.
+func cleanAssociation(entry string) (string, error) {
+	got := strings.ToUpper(strings.TrimSpace(entry))
+	if !slices.Contains(associations, got) {
+		return "", fmt.Errorf("%q is not a GitHub author association; one of %s",
+			entry, strings.Join(associations, ", "))
+	}
+	return got, nil
+}
+
+// cleanAuthor refuses anything that is not a plain login, optionally with the
+// [bot] suffix that names a GitHub App. A login with a space in it is a typo,
+// and a typo here reads as trusting nobody.
+func cleanAuthor(entry string) (string, error) {
+	got := strings.TrimSpace(entry)
+	name := strings.TrimSuffix(got, "[bot]")
+	if name == "" || strings.ContainsAny(name, " \t/@:") {
+		return "", fmt.Errorf("%q is not a GitHub login; write it as it appears on github.com, "+
+			"with [bot] on the end for an app", entry)
+	}
+	return got, nil
+}
 
 // subPaneState tracks state for managing maps or sequences.
 type subPaneState struct {
@@ -516,6 +608,10 @@ func (a *App) openSubPane(item settingDescriptor) tea.Cmd {
 		kind = subPaneReviewRepos
 	case "discovery.roots":
 		kind = subPaneDiscoveryRoots
+	case "security.trusted_associations":
+		kind = subPaneTrustedAssociations
+	case "security.trusted_authors":
+		kind = subPaneTrustedAuthors
 	}
 	if kind == subPaneNone {
 		return nil
@@ -523,6 +619,10 @@ func (a *App) openSubPane(item settingDescriptor) tea.Cmd {
 
 	ki := textinput.New()
 	ki.Prompt = "key: "
+	if _, isList := listSubPaneFor(kind); isList {
+		// One field, and the row above it already names what goes in it.
+		ki.Prompt = ""
+	}
 	ki.SetStyles(a.styles.helpInput())
 
 	vi := textinput.New()
@@ -587,7 +687,7 @@ func (a *App) handleSubPaneInputKey(msg tea.KeyPressMsg) tea.Cmd {
 		sp.editing = false
 		return nil
 	case "tab":
-		if sp.kind != subPaneDiscoveryRoots {
+		if _, isList := listSubPaneFor(sp.kind); !isList {
 			sp.activeIdx = 1 - sp.activeIdx
 			if sp.activeIdx == 0 {
 				sp.valInput.Blur()
@@ -597,21 +697,13 @@ func (a *App) handleSubPaneInputKey(msg tea.KeyPressMsg) tea.Cmd {
 			return sp.valInput.Focus()
 		}
 	case "enter":
-		if sp.kind == subPaneDiscoveryRoots {
+		if spec, isList := listSubPaneFor(sp.kind); isList {
 			val := strings.TrimSpace(sp.valInput.Value())
 			if val == "" {
 				val = strings.TrimSpace(sp.keyInput.Value())
 			}
 			if val != "" {
-				roots := append([]string{}, a.homeCfg.Discovery.Roots...)
-				roots = append(roots, val)
-				if err := a.saveSequence([]string{"discovery", "roots"}, roots, func(c *home.Config) {
-					c.Discovery.Roots = roots
-				}); err != nil {
-					a.settings.setNotice("could not save discovery roots: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Added discovery root %q · saved", val), false)
+				a.addListEntry(spec, val)
 			}
 			sp.adding = false
 			return nil
@@ -679,10 +771,35 @@ func (a *App) subPaneEntries() []string {
 			res = append(res, fmt.Sprintf("%s → %s", k, a.homeCfg.Review.Repos[k]))
 		}
 		return res
-	case subPaneDiscoveryRoots:
-		return a.homeCfg.Discovery.Roots
+	}
+	if spec, isList := listSubPaneFor(sp.kind); isList {
+		return spec.get(&a.homeCfg)
 	}
 	return nil
+}
+
+// addListEntry appends one entry to a sequence and saves the file, reporting
+// what happened on the pane's own notice line.
+func (a *App) addListEntry(spec listSubPane, entry string) {
+	if spec.clean != nil {
+		cleaned, err := spec.clean(entry)
+		if err != nil {
+			a.settings.setNotice(err.Error(), true)
+			return
+		}
+		entry = cleaned
+	}
+	items := append([]string{}, spec.get(&a.homeCfg)...)
+	if slices.ContainsFunc(items, func(got string) bool { return strings.EqualFold(got, entry) }) {
+		a.settings.setNotice(fmt.Sprintf("%s %q is already listed", spec.noun, entry), true)
+		return
+	}
+	items = append(items, entry)
+	if err := a.saveSequence(spec.path, items, func(c *home.Config) { spec.set(c, items) }); err != nil {
+		a.settings.setNotice("could not save the "+spec.noun+": "+err.Error(), true)
+		return
+	}
+	a.settings.setNotice(fmt.Sprintf("Added %s %q · saved", spec.noun, entry), false)
 }
 
 // deleteSubPaneEntry removes the selected item from map or sequence.
@@ -709,23 +826,23 @@ func (a *App) deleteSubPaneEntry(entry string) tea.Cmd {
 			return nil
 		}
 		a.settings.setNotice(fmt.Sprintf("Deleted review trigger for %q · saved", key), false)
-	case subPaneDiscoveryRoots:
-		// Not a nil slice: ParseConfig reads "roots: []" back as an empty one, so
-		// nil here would never equal what the file says and the save would be
-		// refused for removing the last root. That refusal used to be discarded.
-		roots := []string{}
-		for _, r := range a.homeCfg.Discovery.Roots {
-			if r != entry {
-				roots = append(roots, r)
+	}
+	if spec, isList := listSubPaneFor(sp.kind); isList {
+		// Not a nil slice: ParseConfig reads "roots: []" back as an empty one,
+		// so nil here would never equal what the file says and the save would
+		// be refused for removing the last entry. That refusal used to be
+		// discarded.
+		kept := []string{}
+		for _, got := range spec.get(&a.homeCfg) {
+			if got != entry {
+				kept = append(kept, got)
 			}
 		}
-		if err := a.saveSequence([]string{"discovery", "roots"}, roots, func(c *home.Config) {
-			c.Discovery.Roots = roots
-		}); err != nil {
-			a.settings.setNotice("could not save discovery roots: "+err.Error(), true)
+		if err := a.saveSequence(spec.path, kept, func(c *home.Config) { spec.set(c, kept) }); err != nil {
+			a.settings.setNotice("could not save the "+spec.noun+": "+err.Error(), true)
 			return nil
 		}
-		a.settings.setNotice(fmt.Sprintf("Deleted discovery root %q · saved", entry), false)
+		a.settings.setNotice(fmt.Sprintf("Deleted %s %q · saved", spec.noun, entry), false)
 	}
 	if sp.cursor > 0 && sp.cursor >= len(a.subPaneEntries()) {
 		sp.cursor = len(a.subPaneEntries()) - 1
@@ -888,7 +1005,13 @@ func (a *App) settingsLayout() settingsLayout {
 	// not: the blank comes out of the window instead, so that a row the reader
 	// can scroll to is what pays for it rather than the explanation of the
 	// setting they are sitting on.
-	fits := func() bool { return fixed()-1+dispRows <= room }
+	//
+	// The same reasoning caps the rows these questions ask about. The list
+	// scrolls, so needing more room than the terminal has is the ordinary
+	// state of a pane with many settings, and measuring against all of them
+	// would drop the explanation the moment one setting too many was added.
+	// What matters is whether enough rows survive to navigate by.
+	fits := func() bool { return fixed()-1+min(dispRows, settingsMinRows) <= room }
 	if !fits() {
 		l.detail = false
 	}
@@ -1010,8 +1133,9 @@ func (a *App) subPaneBox(l settingsLayout) []string {
 		title = "Repositories: Explicit Paths"
 	case subPaneReviewRepos:
 		title = "Review: Repository Overrides"
-	case subPaneDiscoveryRoots:
-		title = "Discovery: Checkout Roots"
+	}
+	if spec, isList := listSubPaneFor(sp.kind); isList {
+		title = spec.title
 	}
 
 	box := make([]string, 0, l.height)
@@ -1021,8 +1145,8 @@ func (a *App) subPaneBox(l settingsLayout) []string {
 
 	if sp.adding {
 		box = append(box, a.frameRow("  "+a.styles.SectionHdr.Render("ADD NEW ENTRY"), l.inner))
-		if sp.kind == subPaneDiscoveryRoots {
-			prompt := "  Root path: " + sp.keyInput.View()
+		if spec, isList := listSubPaneFor(sp.kind); isList {
+			prompt := "  " + capitalise(spec.noun) + ": " + sp.keyInput.View()
 			box = append(box, a.frameRow(prompt, l.inner))
 		} else {
 			p1 := "  Repo (owner/repo): " + sp.keyInput.View()
@@ -1265,4 +1389,12 @@ func (a *App) settingsHints() string {
 // settingsTestMsg reports how the test notification went.
 type settingsTestMsg struct {
 	err error
+}
+
+// capitalise upper-cases the first letter of a noun for a prompt label.
+func capitalise(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }

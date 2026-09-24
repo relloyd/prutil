@@ -35,6 +35,7 @@ const handoffGrace = 2 * time.Minute
 type dispatcher interface {
 	Dispatch(ctx context.Context, req handoff.Request) (handoff.Result, error)
 	DryRun() bool
+	Notify(ctx context.Context, title, body string)
 }
 
 // armed reports whether a pull request is being watched.
@@ -188,10 +189,44 @@ func (a *App) applyFailedChecks(key model.Key, headOID string, checks []model.Ch
 	if !ok {
 		return nil
 	}
+	// A held pull request holds its failed checks too. The check prompt carries
+	// no comment text, but the agent it starts reads the same pull request, and
+	// under fallback: new this path can create a worktree and start one, so it
+	// must not be the way round a hold.
+	//
+	// Not having read the review threads is not the same as having read them
+	// and found nothing, and the difference is the ordinary case rather than a
+	// corner of one. prRuntime is session-only, so every restart begins not
+	// knowing; applyWatch dispatches the review read and the check read in one
+	// batch, which run concurrently and can land in either order; the check
+	// read is dispatched whenever the rollup is failure, whether or not the
+	// tripwire flagged the pull request for a precise read at all; and a review
+	// read that GitHub refused leaves nothing behind. Treating any of those as
+	// "nothing is wrong" would be a way past the gate.
+	//
+	// So an unread pull request asks for its threads instead of handing work
+	// over. Nothing marks the head as investigated, so the next poll tries
+	// again, by which time the read has landed.
+	if !force {
+		switch {
+		case !entry.holdKnown:
+			a.setWatchOperation(key, "")
+			cmd := a.loadReview(key, false)
+			if cmd == nil {
+				// A read is already in flight; its reply settles this.
+				return nil
+			}
+			a.recordWatchActivity(key, "failed checks wait on the review threads being read")
+			return cmd
+		case entry.hold.Held():
+			a.setWatchOperation(key, "")
+			return a.holdFeedback(pr, entry.hold, len(failed), "failed check")
+		}
+	}
 	entry.handing = true
 	a.setWatchOperation(key, "handing failed checks to an agent")
 	a.recordWatchActivity(key, fmt.Sprintf("found %d failed %s", len(failed), plural(len(failed), "check")))
-	return tea.Batch(a.failedCheckHandoff(handoffMsg{pr: pr, check: true, headOID: headOID, checks: failed, allowProvision: allowProvision, force: force}), a.spin.Tick)
+	return tea.Batch(a.failedCheckHandoff(handoffMsg{pr: pr, check: true, headOID: headOID, checks: failed, allowProvision: allowProvision, force: force, viewer: a.viewer}), a.spin.Tick)
 }
 
 func (a *App) failedCheckHandoff(msg handoffMsg) tea.Cmd {
@@ -422,6 +457,9 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	feedback := msg.review.Feedback(a.homeCfg.Watch.ReviewFilter())
 	entry := a.mutate(msg.key)
 	entry.feedback, entry.hasFeedback = len(feedback), true
+	entry.hold, entry.holdKnown = msg.review.Hold(a.homeCfg.TrustPolicy()), true
+	a.viewer = msg.review.Viewer
+	entry.holdMark = holdMarkOf(msg.review.Threads)
 	a.engine.Precise(msg.key, len(feedback), false, now)
 	activity := fmt.Sprintf("review feedback: %d %s awaiting",
 		len(feedback), plural(len(feedback), "thread"))
@@ -441,6 +479,9 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	pr, ok := a.prByKey(msg.key)
 	if !ok {
 		return nil
+	}
+	if entry.hold.Held() {
+		return a.holdFeedback(pr, entry.hold, len(fresh), "new review comment")
 	}
 	if a.hand == nil {
 		return status(fmt.Sprintf("%s has %d new review %s, but prutil cannot reach herdr",
@@ -465,6 +506,110 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 			msg.key, len(fresh), plural(len(fresh), "comment"))),
 		a.spin.Tick,
 	)
+}
+
+// holdFeedback records feedback prutil is declining to hand over on its own
+// because somebody outside the reader's trust boundary has spoken on the pull
+// request.
+//
+// Only the trusted threads could have been sent instead, and that would not
+// help: the prompt gives an agent the pull request, not a list of thread ids,
+// and it goes and reads all of them.
+func (a *App) holdFeedback(pr model.PullRequest, hold model.Hold, count int, noun string) tea.Cmd {
+	key, why := pr.Key(), holdReason(hold)
+	held := fmt.Sprintf("%d %s", count, plural(count, noun))
+
+	a.recordWatchActivity(key, "held "+held+": "+why)
+	if a.store != nil {
+		_ = a.store.AppendHandoff(home.Handoff{
+			At:      a.now(),
+			PR:      key.String(),
+			URL:     pr.URL,
+			Outcome: home.OutcomeHeld,
+			Detail:  why,
+		})
+	}
+
+	line := fmt.Sprintf("%s: %s held, %s · W to send it anyway", key, held, why)
+	return tea.Batch(status(line), a.announceHold(pr, held, why))
+}
+
+// announceHold raises the herdr notification a held handoff would have raised
+// had it reached the dispatcher, once per newest comment.
+//
+// held is the outcome the reader is least likely to be sitting in front of
+// prutil for: nothing has been sent, so nothing will come back to tell them.
+// Every other outcome toasts, under the reader's own herdr.toast switch, and
+// this one only did not because the decision is made before Dispatch.
+func (a *App) announceHold(pr model.PullRequest, held, why string) tea.Cmd {
+	entry := a.mutate(pr.Key())
+	if a.hand == nil || entry.heldAnnounced == entry.holdMark {
+		return nil
+	}
+	entry.heldAnnounced = entry.holdMark
+
+	hand, title := a.hand, pr.Key().String()+": "+held+" held"
+	return func() tea.Msg {
+		hand.Notify(context.Background(), title, why+" · W to send it anyway")
+		return nil
+	}
+}
+
+// holdMarkOf names the newest comment on each unresolved thread, which is what
+// a hold is announced once per. A held pull request keeps being polled for as
+// long as it stays held, and somebody adding a comment is the only thing that
+// makes it news again.
+//
+// It is the set rather than the most recent of them, because a thread's
+// LatestAt is only as good as what GitHub returned: keyed on the newest by
+// time, a reply that arrived without a timestamp would announce nothing.
+//
+// A pull request with no comments to name still has to be announceable once,
+// so it answers with something no comment id can be rather than with nothing.
+func holdMarkOf(threads []model.ReviewThread) string {
+	ids := make([]string, 0, len(threads))
+	for _, thread := range threads {
+		if !thread.Resolved && thread.LatestID != "" {
+			ids = append(ids, thread.LatestID)
+		}
+	}
+	if len(ids) == 0 {
+		return "-"
+	}
+	slices.Sort(ids)
+	return strings.Join(ids, ",")
+}
+
+// holdReason says in one phrase why a pull request is held, for the status
+// line, the activity feed and the durable log alike.
+func holdReason(hold model.Hold) string {
+	var why []string
+	if len(hold.Authors) > 0 {
+		why = append(why, "feedback from "+english(hold.Authors))
+	}
+	if len(hold.Hidden) > 0 {
+		why = append(why, "hidden text in a comment by "+english(hold.Hidden))
+	}
+	if hold.Unknown {
+		why = append(why, "threads prutil could not read in full")
+	}
+	// Semicolons rather than "and": each clause can already name several people
+	// with an "and" of its own, and two levels of them read as one list.
+	return strings.Join(why, "; ")
+}
+
+// english joins names the way a sentence does, because this reaches the reader
+// as prose rather than as a list.
+func english(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	case 2:
+		return names[0] + " and " + names[1]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // notifyNewFeedback manually enters the watcher path after its change-detection
@@ -520,12 +665,9 @@ func (a *App) triggerAIReview() tea.Cmd {
 		return status("already reading review feedback on " + key.String())
 	}
 
-	if a.pendingReviewKey != key || a.now().Sub(a.pendingReviewAt) >= statusLifetime {
-		a.pendingReviewKey = key
-		a.pendingReviewAt = a.now()
+	if !a.confirms(key, confirmReview) {
 		return status(fmt.Sprintf("press R again to post %s on %s", comment, key))
 	}
-	a.pendingReviewKey = model.Key{}
 
 	a.mutate(key).requestingReview = true
 	a.setWatchOperation(key, "triggering AI review")
@@ -577,6 +719,15 @@ func (a *App) handOff() tea.Cmd {
 	if a.runtimeOf(pr.Key()).reviewing {
 		return status("already reading review feedback on " + pr.Key().String())
 	}
+	// W is the override for a hold, and the second press is what makes it one.
+	// It names what it is waving through, because a reader who has not looked
+	// at the thread is not in a position to judge it, and it clears either kind
+	// of hold: an untrusted author is a judgement call, and a false positive
+	// must not be a dead end.
+	if hold := a.runtimeOf(pr.Key()).hold; hold.Held() && !a.confirms(pr.Key(), confirmHeldHandoff) {
+		return status(fmt.Sprintf("%s is held, %s · press W again to send it anyway",
+			pr.Key(), holdReason(hold)))
+	}
 
 	a.mutate(pr.Key()).handing = true
 	a.setWatchOperation(pr.Key(), "reading review feedback for a manual handoff")
@@ -615,6 +766,7 @@ func (a *App) dispatch(pr model.PullRequest) tea.Cmd {
 			open:    len(feedback),
 			fresh:   len(model.Unhandled(feedback, notified)),
 			threads: model.Digest(feedback),
+			viewer:  review.Viewer,
 		}
 		if len(feedback) == 0 {
 			msg.nothing = true
@@ -646,6 +798,7 @@ func (a *App) sender(allowProvision bool) func(context.Context, handoffMsg) hand
 			UnresolvedCount: msg.open,
 			NewCount:        msg.fresh,
 			Threads:         msg.threads,
+			Viewer:          msg.viewer,
 			AllowProvision:  allowProvision,
 		})
 		return msg
@@ -961,6 +1114,10 @@ type handoffMsg struct {
 	// threads maps each open thread to its newest comment, which is what is
 	// remembered once the handoff lands.
 	threads map[string]string
+	// viewer is the login the review read behind this handoff was made as,
+	// which is how the dispatcher tells the reader's own pull request from
+	// somebody else's before it checks a head out.
+	viewer string
 	// nothing means there was no open feedback to send, so no agent was asked.
 	nothing bool
 	result  handoff.Result

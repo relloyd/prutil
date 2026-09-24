@@ -1,0 +1,49 @@
+{
+  "data": {
+    "viewer": { "login": "relloyd" },
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "id": "PRRT_GHOST",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "internal/gh/client.go",
+              "opener": {
+                "nodes": [
+                  {
+                    "authorAssociation": "NONE",
+                    "author": null,
+                    "createdAt": "2026-09-01T09:00:00Z",
+                    "body": "Deleted account's opening comment."
+                  }
+                ]
+              },
+              "latest": {
+                "totalCount": 1,
+                "nodes": [
+                  {
+                    "id": "PRRC_GHOST",
+                    "url": "https://github.com/relloyd/prutil/pull/42#discussion_r1",
+                    "authorAssociation": "NONE",
+                    "author": null,
+                    "createdAt": "2026-09-01T09:00:00Z",
+                    "publishedAt": "2026-09-01T09:00:00Z",
+                    "body": "Deleted account's opening comment."
+                  }
+                ]
+              },
+              "participants": {
+                "nodes": [
+                  { "authorAssociation": "NONE", "author": null }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

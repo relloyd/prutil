@@ -622,6 +622,65 @@ func TestReviewThreadsDecodesTheConversationsAndTheViewer(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), first.LatestAt)
 }
 
+func TestReviewThreadsDecodesEveryoneWhoHasSpokenInAThread(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "review_threads.json")}}
+	client := gh.New(runner, 1)
+
+	review, err := client.ReviewThreads(context.Background(), model.Key{Repo: "relloyd/prutil", Number: 42})
+	require.NoError(t, err)
+	require.Len(t, review.Threads, 3)
+
+	assert.Equal(t, []model.Participant{
+		{Login: "reviewer", Association: "COLLABORATOR"},
+		{Login: "reviewer", Association: "COLLABORATOR"},
+	}, review.Threads[0].Participants,
+		"every comment's author is decoded, not just the first and the last")
+	assert.True(t, review.Threads[0].ParticipantsComplete,
+		"two participants of two comments is the whole thread")
+
+	assert.False(t, review.Threads[2].ParticipantsComplete,
+		"two participants of three comments leaves somebody nobody has seen")
+
+	assert.Contains(t, runner.argsOf(0), "participants: comments(first: 100)",
+		"the precise query asks who has spoken")
+	assert.Contains(t, runner.argsOf(0), "authorAssociation",
+		"and what GitHub says their relationship to the repository is")
+}
+
+func TestReviewThreadsTellsABotFromAPersonOfTheSameName(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "review_threads_latest_marker.json")}}
+	client := gh.New(runner, 1)
+
+	review, err := client.ReviewThreads(context.Background(), model.Key{
+		Repo: "dojo-engineering/payments-infrastructure", Number: 6907,
+	})
+	require.NoError(t, err)
+	require.Len(t, review.Threads, 1)
+
+	require.Len(t, review.Threads[0].Participants, 2)
+	assert.Equal(t, model.Participant{
+		Login: "copilot-pull-request-reviewer", Association: "NONE", Bot: true,
+	}, review.Threads[0].Participants[0],
+		"a GitHub App is marked as one, so a person registering its login does not inherit its trust")
+	assert.False(t, review.Threads[0].Participants[1].Bot, "the viewer is a person")
+}
+
+func TestReviewThreadsDecodesADeletedAuthorAsNobody(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "review_threads_ghost.json")}}
+	client := gh.New(runner, 1)
+
+	review, err := client.ReviewThreads(context.Background(), model.Key{Repo: "relloyd/prutil", Number: 42})
+	require.NoError(t, err)
+	require.Len(t, review.Threads, 1, "a thread whose author GitHub has lost is still a thread")
+
+	thread := review.Threads[0]
+	assert.Empty(t, thread.Opener, "GitHub returns a null author for an account it no longer has")
+	require.Len(t, thread.Participants, 1)
+	assert.Equal(t, model.Participant{Association: "NONE"}, thread.Participants[0],
+		"an empty login is nobody, and nothing can trust it")
+	assert.True(t, thread.ParticipantsComplete)
+}
+
 func TestReviewThreadsAdmitsAMarkerInTheViewersLatestReply(t *testing.T) {
 	runner := &fakeRunner{responses: [][]byte{fixture(t, "review_threads_latest_marker.json")}}
 	client := gh.New(runner, 1)
@@ -810,4 +869,19 @@ func TestAddCommentValidatesArguments(t *testing.T) {
 
 	err = client.AddComment(context.Background(), "PR_kwDO123", "   ")
 	assert.Error(t, err)
+}
+
+func TestListDecodesWhoOpenedEachPullRequest(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "search.json")}}
+	client := gh.New(runner, 1)
+
+	prs, err := client.ListPullRequests(context.Background(), "is:open", 10)
+	require.NoError(t, err)
+	require.Len(t, prs, 3)
+
+	assert.Equal(t, "relloyd", prs[0].Author,
+		"provisioning checks a head out, so whose branch it is has to be known")
+	assert.Empty(t, prs[2].Author,
+		"GitHub returns a null author for an account it no longer has, and nobody is not the viewer")
+	assert.Contains(t, runner.argsOf(0), "author { login }")
 }

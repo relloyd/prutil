@@ -259,10 +259,16 @@ type App struct {
 	// watchSeq names the watch schedule currently in flight, the same way
 	// autoSeq names a run of auto-refresh ticks.
 	watchSeq int
-	// pendingReviewKey and pendingReviewAt track the two-press confirmation
-	// for triggering an AI review.
-	pendingReviewKey model.Key
-	pendingReviewAt  time.Time
+	// viewer is the login prutil is authenticated as, learned from the last
+	// review read. It is what tells the reader's own pull request from
+	// somebody else's, and provisioning over somebody else's runs that
+	// branch's hooks.
+	viewer string
+	// pending is the confirmation waiting on a second press of the same key.
+	// One value rather than a pair of fields per key, because a reader can
+	// only be answering the question that is on the status line, and arming a
+	// second question has to take the first one down.
+	pending pendingConfirm
 	// runtime is what the app knows about each pull request beyond the list
 	// row itself. See prRuntime.
 	runtime map[model.Key]*prRuntime
@@ -295,6 +301,24 @@ type prRuntime struct {
 	// request nobody has asked about is not one with nothing waiting.
 	feedback    int
 	hasFeedback bool
+	// hold is why prutil is not handing this pull request's feedback over on
+	// its own, as of the last read of its review threads, and holdKnown
+	// whether there has been such a read. A pull request nobody has read is
+	// not a pull request with nothing wrong, and the automatic paths have to
+	// tell the two apart: this runtime is session-only, so every start begins
+	// knowing nothing.
+	hold      model.Hold
+	holdKnown bool
+	// holdMark identifies the newest comment the hold was last computed
+	// against, and heldAnnounced the one it was last announced for. A held
+	// pull request is polled for as long as it stays held, so without them it
+	// would raise a notification every time.
+	//
+	// Both are session-only. A reader who has just restarted has not seen the
+	// notification, so announcing a standing hold once more is the right side
+	// to err on, and it keeps the state file out of it.
+	holdMark      string
+	heldAnnounced string
 	// activity is a bounded, session-only account of what the watcher has
 	// done, oldest first.
 	activity []watchActivity
@@ -307,6 +331,41 @@ type prRuntime struct {
 	facts    prFacts
 	factsAt  time.Time
 	hasFacts bool
+}
+
+// confirmable names an action a reader has to press twice, because it does
+// something on a pull request that cannot be quietly undone.
+type confirmable string
+
+const (
+	// confirmReview posts the configured AI review comment.
+	confirmReview confirmable = "review"
+	// confirmHeldHandoff hands over feedback prutil is holding back.
+	confirmHeldHandoff confirmable = "held handoff"
+)
+
+// pendingConfirm is a question prutil has asked on the status line and is
+// waiting for an answer to.
+type pendingConfirm struct {
+	key    model.Key
+	action confirmable
+	at     time.Time
+}
+
+// confirms reports whether this press answers the question already on screen.
+// When it does not, it asks the question instead, so the caller can say what
+// the second press would do.
+//
+// The confirmation expires with the status line that carries it: a question
+// the reader can no longer read is not one their next key press is answering.
+func (a *App) confirms(key model.Key, action confirmable) bool {
+	now := a.now()
+	if a.pending.key == key && a.pending.action == action && now.Sub(a.pending.at) < statusLifetime {
+		a.pending = pendingConfirm{}
+		return true
+	}
+	a.pending = pendingConfirm{key: key, action: action, at: now}
+	return false
 }
 
 // runtimeOf reads the runtime state for one pull request. A pull request

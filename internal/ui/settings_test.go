@@ -527,9 +527,7 @@ func TestSettingsSubPaneMapAndSequence(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	openSettingsPane(t, app)
 
-	// Jump to last section (REPOSITORIES & DISCOVERY)
-	send(t, app, press("G"))
-	assert.Equal(t, len(allSettings())-1, app.settings.cursor) // discovery.roots
+	cursorOn(t, app, "discovery.roots")
 
 	// Open sub-pane
 	send(t, app, press("enter"))
@@ -620,9 +618,7 @@ func TestSettingsSubPaneRendering(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	openSettingsPane(t, app)
 
-	// Jump to discovery.roots
-	send(t, app, press("G"))
-	assert.Equal(t, len(allSettings())-1, app.settings.cursor)
+	cursorOn(t, app, "discovery.roots")
 
 	// Enter subpane
 	send(t, app, press("enter"))
@@ -638,7 +634,7 @@ func TestSettingsSubPaneRendering(t *testing.T) {
 	assert.True(t, app.settings.subPane.adding)
 	addScreen := plain(app.render())
 	assert.Contains(t, addScreen, "ADD NEW ENTRY")
-	assert.Contains(t, addScreen, "Root path:")
+	assert.Contains(t, addScreen, "Discovery root:")
 
 	// Cancel adding
 	send(t, app, press("esc"))
@@ -826,4 +822,119 @@ func TestTheSettingsPaneKeepsItsExplanationWhenThereIsRoomForOne(t *testing.T) {
 
 	assert.Contains(t, plain(app.render()), "Treat every unresolved review comment",
 		"the selected setting still explains itself")
+}
+
+func TestTheTrustListsAreManagedFromTheSettingsPane(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	openSettingsPane(t, app)
+	cursorOn(t, app, "security.trusted_authors")
+
+	send(t, app, press("enter"))
+	require.Equal(t, settingsModeSubPane, app.settings.mode)
+	assert.Equal(t, subPaneTrustedAuthors, app.settings.subPane.kind)
+	assert.Equal(t, []string{"gemini-code-assist[bot]"}, app.subPaneEntries(),
+		"the shipped default is what the pane opens on")
+
+	send(t, app, press("a"))
+	app.settings.subPane.valInput.SetValue("colleague")
+	send(t, app, press("enter"))
+
+	assert.Equal(t, []string{"gemini-code-assist[bot]", "colleague"}, app.homeCfg.Security.TrustedAuthors)
+	assert.Contains(t, app.settings.notice, `Added trusted author "colleague" · saved`)
+
+	send(t, app, press("d"))
+	assert.Equal(t, []string{"colleague"}, app.homeCfg.Security.TrustedAuthors,
+		"the cursor was on the first entry, so that is the one removed")
+}
+
+func TestTrustedAssociationsAreCheckedAgainstWhatGitHubReports(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	openSettingsPane(t, app)
+	cursorOn(t, app, "security.trusted_associations")
+	send(t, app, press("enter"))
+	require.Equal(t, subPaneTrustedAssociations, app.settings.subPane.kind)
+
+	// A value GitHub never reports can only ever fail to match, so it is a
+	// typo rather than a stricter policy, and saying so beats trusting nobody.
+	send(t, app, press("a"))
+	app.settings.subPane.valInput.SetValue("OWNRE")
+	send(t, app, press("enter"))
+
+	assert.Equal(t, []string{"OWNER", "COLLABORATOR"}, app.homeCfg.Security.TrustedAssociations,
+		"nothing was added")
+	assert.Contains(t, app.settings.notice, "is not a GitHub author association")
+	assert.True(t, app.settings.noticeErr)
+
+	// GitHub's values are upper case, so the reader need not shout.
+	send(t, app, press("a"))
+	app.settings.subPane.valInput.SetValue("member")
+	send(t, app, press("enter"))
+
+	assert.Equal(t, []string{"OWNER", "COLLABORATOR", "MEMBER"}, app.homeCfg.Security.TrustedAssociations)
+}
+
+func TestATrustedEntryCannotBeListedTwice(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	openSettingsPane(t, app)
+	cursorOn(t, app, "security.trusted_associations")
+	send(t, app, press("enter"))
+
+	send(t, app, press("a"))
+	app.settings.subPane.valInput.SetValue("owner")
+	send(t, app, press("enter"))
+
+	assert.Equal(t, []string{"OWNER", "COLLABORATOR"}, app.homeCfg.Security.TrustedAssociations)
+	assert.Contains(t, app.settings.notice, "is already listed")
+}
+
+func TestATrustedAuthorHasToLookLikeALogin(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	openSettingsPane(t, app)
+	cursorOn(t, app, "security.trusted_authors")
+	send(t, app, press("enter"))
+
+	for _, bad := range []string{"not a login", "https://github.com/someone", "a@b"} {
+		send(t, app, press("a"))
+		app.settings.subPane.valInput.SetValue(bad)
+		send(t, app, press("enter"))
+		assert.Contains(t, app.settings.notice, "is not a GitHub login", bad)
+	}
+
+	assert.Equal(t, []string{"gemini-code-assist[bot]"}, app.homeCfg.Security.TrustedAuthors,
+		"none of them was saved")
+
+	send(t, app, press("a"))
+	app.settings.subPane.valInput.SetValue("dependabot[bot]")
+	send(t, app, press("enter"))
+	assert.Contains(t, app.homeCfg.Security.TrustedAuthors, "dependabot[bot]",
+		"the [bot] suffix is how an app is named, so it has to be accepted")
+}
+
+func TestEmptyingATrustListIsNotTheSameAsLeavingItAtItsDefault(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	openSettingsPane(t, app)
+
+	descriptor := settingByID(t, "security.trusted_authors")
+	require.True(t, descriptor.isDefault(app), "a fresh configuration is the default")
+
+	cursorOn(t, app, "security.trusted_authors")
+	send(t, app, press("enter"))
+	send(t, app, press("d"))
+
+	require.Empty(t, app.homeCfg.Security.TrustedAuthors)
+	assert.False(t, descriptor.isDefault(app),
+		"trusting nobody is a deliberate choice, not the shipped boundary")
+}
+
+// settingByID finds one registered setting, so a test can ask about it without
+// depending on where it sits in the list.
+func settingByID(t *testing.T, id string) settingDescriptor {
+	t.Helper()
+	for _, d := range allSettings() {
+		if d.id == id {
+			return d
+		}
+	}
+	t.Fatalf("no setting registered as %q", id)
+	return settingDescriptor{}
 }

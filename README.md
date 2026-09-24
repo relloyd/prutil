@@ -423,6 +423,12 @@ repos:
 discovery:
   roots:
     - ~/src                    # optional roots scanned after repos misses
+security:
+  trusted_associations:        # whose feedback may reach an agent unasked
+    - OWNER
+    - COLLABORATOR
+  trusted_authors:
+    - "gemini-code-assist[bot]"  # [bot] matches only a GitHub App
 ```
 
 Discovery roots are walked four levels deep, and a checkout's origin remote is
@@ -437,6 +443,63 @@ a Go template given `Repo`, `Number`, `URL`, `Title`, `HeadRef`, `BaseRef`,
 `herdr.check_prompt`, whose `Checks` value contains the failed check entries
 and whose default prompt is designed for deciding between a follow-up commit,
 a retry, and human assistance.
+
+`security` is the trust boundary between whoever can comment on a pull request
+and the agent that acts on what they wrote. On a public repository that is any
+GitHub account, so feedback is handed over unasked only when everyone who has
+spoken in every unresolved thread is you, an author whose GitHub
+`authorAssociation` is listed, or a login in `trusted_authors`. Anything else
+is held: prutil sends nothing, records it, and tells you who caused it.
+
+Both lists are editable from the settings pane (`s`, then the SECURITY
+section): `enter` opens the list, `a` adds an entry and `d` removes the
+selected one, saved to `config.yaml` as you go. An association that GitHub
+never reports, or a name that is not a login, is refused with an explanation
+rather than quietly trusting nobody.
+
+`MEMBER` is not a default. In a large organisation it means only that somebody
+belongs to it, which implies no write access at all; add it if yours is small
+enough for membership to mean something. An entry ending in `[bot]` matches
+only a GitHub App, so a person registering that name as their login does not
+inherit its trust. Writing a key as `[]` is honoured as written and trusts
+nobody by that route, which is stricter than leaving it out.
+
+A pull request is held for a second reason too: a comment carrying text
+github.com does not render. Tag characters, zero-width and bidi controls can
+put a paragraph of instructions into a comment that looks empty to you and
+reads normally to an agent, so prutil holds the pull request whoever wrote
+them — a trusted reviewer's account is exactly the one worth taking. HTML
+comments only count in somebody else's prose, since review bots use them as
+metadata and prutil's own markers are HTML comments. Emoji are safe: the
+zero-width joiner every family and profession emoji is built from is exempt
+between two emoji, and nowhere else.
+
+prutil also will not create a workspace over a branch that is not yours. `W`
+and the automatic `fallback: new` path check out `pull/<number>/head` and start
+an agent in it, and an agent started in somebody else's checkout loads that
+repository's own settings, hooks and instruction files — hooks run outside any
+sandbox. Only your own pull requests and `trusted_authors` are provisioned
+over; `-query` can list anyone's, which is when this matters. An agent you have
+already checked out there yourself still takes the work, because that is your
+own choice rather than prutil's.
+
+A held pull request holds its failed checks with it, because the agent a check
+investigation starts reads the same pull request. Resolving the thread on
+GitHub releases the hold at the next poll, and `W` sends the feedback anyway
+after a second press that names what it is waving through.
+
+Separately, every value prutil puts into a prompt is cleaned first: control and
+format characters are dropped, single-line fields stay on one line, and a failed
+check's link is kept only when it points back at the same GitHub the pull
+request came from. A prompt carrying a control character is refused outright
+rather than typed into an agent's terminal, so a `herdr.prompt` template of your
+own containing one will fail the handoff and say so.
+
+prutil only acts automatically on a pull request whose review threads it has
+actually read, so the first failed-check handoff after starting prutil waits
+one polling interval while it reads them. The same wait applies when GitHub
+refuses that read: not knowing who has commented leaves the automatic paths
+shut rather than open. `F` is your own key press and does not wait.
 
 Explicit `repos` entries win. When none exists, prutil checks its private
 `repos.json` cache and then scans `discovery.roots`, validating every candidate

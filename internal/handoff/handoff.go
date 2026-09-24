@@ -45,6 +45,9 @@ var (
 	// ErrAgentKindRequired means a manual handoff needs to create an agent but
 	// the configuration deliberately does not name a concrete agent kind.
 	ErrAgentKindRequired = errors.New("herdr.agent_kind is required to start a new agent")
+	// ErrUntrustedAuthor means the pull request was opened by somebody outside
+	// the reader's trust boundary, so prutil will not check its head out.
+	ErrUntrustedAuthor = errors.New("prutil will not create a workspace over another author's branch")
 )
 
 const (
@@ -83,6 +86,10 @@ type Request struct {
 	// Threads maps each unresolved review thread id to the id of its newest
 	// comment, which is what the caller records once the handoff lands.
 	Threads map[string]string
+	// Viewer is the login prutil is authenticated as, as the review read that
+	// preceded this handoff reported it. Empty means prutil does not know, and
+	// provision treats not knowing as not the reader's own.
+	Viewer string
 	// AllowProvision means the reader explicitly pressed W and permits a
 	// no-agent handoff to create a worktree and start an agent.
 	AllowProvision bool
@@ -127,6 +134,7 @@ type Dispatcher struct {
 	repos    RepositoryResolver
 	fetch    git.PullRequestFetcher
 	cfg      home.HerdrConfig
+	security home.SecurityConfig
 	selfPane string
 	idleGap  time.Duration
 	sleep    func(ctx context.Context, d time.Duration) bool
@@ -166,6 +174,7 @@ func New(opts Options) *Dispatcher {
 		repos:    opts.Repos,
 		fetch:    opts.Fetch,
 		cfg:      opts.Config.Herdr,
+		security: opts.Config.Security,
 		selfPane: opts.SelfPane,
 		idleGap:  opts.Config.Watch.IdleInterval.Duration(),
 		sleep:    sleep,
@@ -435,6 +444,9 @@ func (d *Dispatcher) canProvision() bool {
 // agent working on the pull request. W always allows it; every other handoff
 // reaches it only when herdr.fallback is new.
 func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Request) (Result, error) {
+	if err := d.mayProvision(req); err != nil {
+		return d.fail(ctx, req, Result{}, err)
+	}
 	if strings.TrimSpace(d.cfg.AgentKind) == "" {
 		return d.fail(ctx, req, Result{}, ErrAgentKindRequired)
 	}
@@ -559,19 +571,88 @@ func workspaceBranch(pr model.PullRequest) string {
 }
 
 // promptData builds the shared prompt template input.
+//
+// Everything here beyond prutil's own wording arrives from GitHub, and much of
+// it is written by somebody other than the reader, so nothing reaches a
+// template as it came. See model.SafeLine for what is taken out and why.
+//
+// Repo and Number are left alone: they are prutil's own key, matched against
+// repoNamePattern before the search that produced them, and URL is the pull
+// request's own, which is also what every check URL is measured against.
 func promptData(req Request, note string) home.PromptData {
 	return home.PromptData{
 		Repo:            req.PR.Repo,
 		Number:          req.PR.Number,
 		URL:             req.PR.URL,
-		Title:           req.PR.Title,
-		HeadRef:         req.PR.HeadRef,
-		BaseRef:         req.PR.BaseRef,
+		Title:           model.SafeLine(req.PR.Title),
+		HeadRef:         model.SafeLine(req.PR.HeadRef),
+		BaseRef:         model.SafeLine(req.PR.BaseRef),
 		UnresolvedCount: req.UnresolvedCount,
 		NewCount:        req.NewCount,
 		Note:            note,
-		Checks:          req.Checks,
+		Checks:          safeChecks(req.Checks, req.PR.URL),
 	}
+}
+
+// descriptionLimit caps a check's description in the prompt. A legacy status
+// context's description is free text chosen by anything with commit-status
+// write access, and the prompt lists every failed check, so without a cap one
+// of them could be the whole prompt.
+const descriptionLimit = 200
+
+// safeChecks makes the failed-check list fit to be interpolated. A check's
+// name and workflow come from a workflow file in the pull request's own head,
+// which is the branch under review.
+func safeChecks(checks []model.Check, prURL string) []model.Check {
+	if len(checks) == 0 {
+		return nil
+	}
+	out := make([]model.Check, 0, len(checks))
+	for _, check := range checks {
+		check.Name = model.SafeLine(check.Name)
+		check.Workflow = model.SafeLine(check.Workflow)
+		check.Description = model.ClipRunes(model.SafeLine(check.Description), descriptionLimit)
+		check.URL = model.SameHostURL(check.URL, prURL)
+		out = append(out, check)
+	}
+	return out
+}
+
+// mayProvision reports whether prutil may check this pull request's head out
+// and start an agent in it.
+//
+// Provisioning fetches pull/<number>/head and starts an agent in the resulting
+// worktree. An agent started in somebody else's checkout loads that
+// repository's own agent configuration: project settings, hooks, MCP servers
+// and instruction files. Hooks run outside any sandbox, so this is code
+// execution from the branch under review before a model has read a word of it.
+//
+// The default search lists only the reader's own pull requests, but -query can
+// list anyone's, and herdr.fallback: new provisions without being asked.
+//
+// This is not the trust gate. That one asks who has commented; this asks whose
+// code prutil is about to run. A reader can still hand work to an agent they
+// already have checked out over somebody else's branch, which is their own
+// choice made with their own hands. What goes away is prutil making it for
+// them.
+func (d *Dispatcher) mayProvision(req Request) error {
+	author := strings.TrimSpace(req.PR.Author)
+	if author == "" {
+		// GitHub no longer has the account. Nobody is not the viewer.
+		return fmt.Errorf("%w: %s has no author prutil can identify", ErrUntrustedAuthor, req.PR.Key())
+	}
+	if viewer := strings.TrimSpace(req.Viewer); viewer != "" && strings.EqualFold(author, viewer) {
+		return nil
+	}
+	for _, trusted := range d.security.TrustedAuthors {
+		// A [bot] entry names a GitHub App, and an App does not open pull
+		// requests prutil provisions over, so the suffix is simply not matched
+		// here rather than being quietly ignored.
+		if name := strings.TrimSpace(trusted); name != "" && strings.EqualFold(name, author) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s was opened by %s", ErrUntrustedAuthor, req.PR.Key(), author)
 }
 
 // agentName derives a valid, stable herdr name from the pull request and adds
@@ -840,13 +921,23 @@ const toastTimeout = 5 * time.Second
 // that the handoff failed, and the most common way for a handoff to fail is
 // for its context to run out, which would take the toast with it.
 func (d *Dispatcher) toast(ctx context.Context, req Request, body string) {
+	title := fmt.Sprintf("%s: %d new review %s", req.PR.Key(), req.NewCount, plural(req.NewCount, "comment"))
+	d.Notify(ctx, title, body)
+}
+
+// Notify shows a herdr notification for something the caller decided rather
+// than something Dispatch did, under the same herdr.toast switch as the rest.
+//
+// Feedback prutil holds back never reaches Dispatch, so without this it would
+// be the one outcome in the handoff log the reader is never told about, purely
+// because of where the decision is made.
+func (d *Dispatcher) Notify(ctx context.Context, title, body string) {
 	if !d.cfg.Toast {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), toastTimeout)
 	defer cancel()
 
-	title := fmt.Sprintf("%s: %d new review %s", req.PR.Key(), req.NewCount, plural(req.NewCount, "comment"))
 	_ = d.herdr.Notify(ctx, title, body)
 }
 

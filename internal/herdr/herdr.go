@@ -285,8 +285,42 @@ func (c *Client) OpenWorktree(ctx context.Context, root, path, branch, label str
 // Prompt implements Controller. It deliberately does not wait: a handoff is
 // work the agent will take minutes over, and prutil has a terminal to keep
 // redrawing in the meantime.
+//
+// It refuses text carrying a control character first. herdr types a prompt
+// into the agent's terminal, and prutil neither knows nor should need to know
+// how that delivery works, so an ESC sequence could end a bracketed paste and
+// a carriage return could submit a line early. Claude Code runs a prompt line
+// beginning with "!" as a shell command without involving the model at all.
+//
+// The values prutil interpolates are already cleaned where they are built, by
+// model.SafeLine. This is the backstop, kept here rather than there so that a
+// prompt template somebody writes by hand, or a note built from data nobody
+// has thought about yet, cannot reopen the route. Deliberately not a dependency
+// on the model package: this is about what may cross the wire to herdr, and it
+// should keep answering even if nothing upstream does.
 func (c *Client) Prompt(ctx context.Context, target, text string) error {
+	if r, bad := controlRune(text); bad {
+		return fmt.Errorf("refusing to send a prompt containing %q: it could be read as a terminal escape", r)
+	}
 	return c.call(ctx, nil, "agent", "prompt", target, text)
+}
+
+// controlRune finds the first character that has no business in a prompt, and
+// reports whether there was one.
+//
+// Newline and tab are allowed: a prompt is several lines of prose, and the
+// check list is indented. Everything else below space is not, DEL and the C1
+// block with it.
+func controlRune(text string) (rune, bool) {
+	for _, r := range text {
+		if r == '\n' || r == '\t' {
+			continue
+		}
+		if r < 0x20 || r == 0x7F || (r >= 0x80 && r <= 0x9F) {
+			return r, true
+		}
+	}
+	return 0, false
 }
 
 // Notify implements Controller. The request sound is used because a toast

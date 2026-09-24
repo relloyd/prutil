@@ -51,11 +51,14 @@ type repoNamesResponse struct {
 }
 
 type prNode struct {
-	TypeName       string     `json:"__typename"`
-	ID             string     `json:"id"`
-	Number         int        `json:"number"`
-	Title          string     `json:"title"`
-	URL            string     `json:"url"`
+	TypeName string `json:"__typename"`
+	ID       string `json:"id"`
+	Number   int    `json:"number"`
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+	Author   *struct {
+		Login string `json:"login"`
+	} `json:"author"`
 	IsDraft        bool       `json:"isDraft"`
 	CreatedAt      *time.Time `json:"createdAt"`
 	UpdatedAt      *time.Time `json:"updatedAt"`
@@ -82,6 +85,15 @@ type prNode struct {
 	Commits commitConnection `json:"commits"`
 }
 
+// authorLogin is who opened the pull request. GitHub returns a null author for
+// an account it no longer has, which is nobody, and nobody is not the viewer.
+func (n prNode) authorLogin() string {
+	if n.Author == nil {
+		return ""
+	}
+	return n.Author.Login
+}
+
 // toPullRequest converts a search node, reporting false for anything that is
 // not a pull request. The search API can only be asked for ISSUE nodes, so an
 // issue can appear if the caller's query drops the is:pr qualifier.
@@ -97,6 +109,7 @@ func (n prNode) toPullRequest() (model.PullRequest, bool) {
 		Repo:           n.Repository.NameWithOwner,
 		Number:         n.Number,
 		Title:          strings.TrimSpace(n.Title),
+		Author:         n.authorLogin(),
 		URL:            n.URL,
 		HeadRef:        n.HeadRefName,
 		BaseRef:        n.BaseRefName,
@@ -262,19 +275,36 @@ type reviewThreadNode struct {
 		TotalCount int                 `json:"totalCount"`
 		Nodes      []reviewCommentNode `json:"nodes"`
 	} `json:"latest"`
+	Participants struct {
+		Nodes []reviewCommentNode `json:"nodes"`
+	} `json:"participants"`
 }
 
 // reviewCommentNode is one comment inside a review thread. Only the fields
-// both aliases can supply are declared; the missing ones decode to zero.
+// every alias can supply are declared; the missing ones decode to zero.
 type reviewCommentNode struct {
 	ID          string     `json:"id"`
 	URL         string     `json:"url"`
 	Body        string     `json:"body"`
 	CreatedAt   *time.Time `json:"createdAt"`
 	PublishedAt *time.Time `json:"publishedAt"`
-	Author      struct {
-		Login string `json:"login"`
+	Association string     `json:"authorAssociation"`
+	// Author is null for an account GitHub no longer has, which decodes to the
+	// zero value and so to an empty login. Nothing trusts an empty login.
+	Author struct {
+		Typename string `json:"__typename"`
+		Login    string `json:"login"`
 	} `json:"author"`
+}
+
+// participant describes the comment's author in the terms a trust policy asks
+// about.
+func (n reviewCommentNode) participant() model.Participant {
+	return model.Participant{
+		Login:       n.Author.Login,
+		Association: n.Association,
+		Bot:         n.Author.Typename == "Bot",
+	}
 }
 
 // toReviewThread converts one node, reporting false for a thread GitHub
@@ -284,6 +314,11 @@ func (n reviewThreadNode) toReviewThread() (model.ReviewThread, bool) {
 		return model.ReviewThread{}, false
 	}
 	opener, latest := n.Opener.Nodes[0], n.Latest.Nodes[0]
+
+	participants := make([]model.Participant, 0, len(n.Participants.Nodes))
+	for _, comment := range n.Participants.Nodes {
+		participants = append(participants, comment.participant())
+	}
 
 	return model.ReviewThread{
 		ID:            n.ID,
@@ -300,6 +335,10 @@ func (n reviewThreadNode) toReviewThread() (model.ReviewThread, bool) {
 		LatestBody:    strings.TrimSpace(latest.Body),
 		LatestPending: latest.PublishedAt == nil,
 		Comments:      n.Latest.TotalCount,
+		Participants:  participants,
+		// The alias reads a hundred comments. A thread longer than that, or
+		// one GitHub answered short, leaves participants nobody has seen.
+		ParticipantsComplete: len(participants) >= n.Latest.TotalCount,
 	}, true
 }
 
