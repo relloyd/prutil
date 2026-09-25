@@ -312,11 +312,36 @@ func (c *Client) OpenWorktree(ctx context.Context, root, path, branch, label str
 // has thought about yet, cannot reopen the route. Deliberately not a dependency
 // on the model package: this is about what may cross the wire to herdr, and it
 // should keep answering even if nothing upstream does.
+//
+// It also refuses a prompt with a line that begins with "!". Claude Code runs
+// such a line as a shell command without the model, and Copilot CLI documents
+// the same escape; with Claude Code 2.1.282 the command runs outside the
+// sandbox, strict mode notwithstanding, so it is a way out of Tier 2 as well as
+// into the terminal. prutil's own prompts never begin that way, but a template
+// a reader writes might begin with {{.Title}}, which the pull request's author
+// chose, and model.SafeLine keeps a value on one line without saying what the
+// line may start with. Every line is checked rather than only the first, in
+// case a line is ever submitted on its own.
 func (c *Client) Prompt(ctx context.Context, target, text string) error {
 	if r, bad := controlRune(text); bad {
 		return fmt.Errorf("refusing to send a prompt containing %q: it could be read as a terminal escape", r)
 	}
+	if line, bad := shellEscapeLine(text); bad {
+		return fmt.Errorf("refusing to send a prompt with a line beginning %q: an agent runs such a line "+
+			"as a shell command, outside its sandbox", line)
+	}
 	return c.call(ctx, nil, "agent", "prompt", target, text)
+}
+
+// shellEscapeLine finds a line whose first visible character is "!", and
+// returns the start of it.
+func shellEscapeLine(text string) (string, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		if trimmed := strings.TrimLeft(line, " \t"); strings.HasPrefix(trimmed, "!") {
+			return trimmed[:min(len(trimmed), 24)], true
+		}
+	}
+	return "", false
 }
 
 // controlRune finds the first character that has no business in a prompt, and
