@@ -62,6 +62,10 @@ type fakeHerdr struct {
 	started  []string
 	opened   []string
 	created  []string
+	// startArgs is the agent arguments each StartAgent was given, and
+	// processes what Process reports for a pane.
+	startArgs [][]string
+	processes map[string]herdr.Process
 }
 
 func (f *fakeHerdr) Agents(context.Context) ([]herdr.Agent, error) {
@@ -106,9 +110,17 @@ func (f *fakeHerdr) OpenWorktree(_ context.Context, root, path, branch, label st
 	return f.open, f.openErr
 }
 
-func (f *fakeHerdr) StartAgent(_ context.Context, name, kind, pane string, _ time.Duration) (herdr.Agent, error) {
+func (f *fakeHerdr) StartAgent(_ context.Context, name, kind, pane string, args []string, _ time.Duration) (herdr.Agent, error) {
 	f.started = append(f.started, name+"|"+kind+"|"+pane)
+	f.startArgs = append(f.startArgs, args)
 	return f.start, f.startErr
+}
+
+func (f *fakeHerdr) Process(_ context.Context, pane string) (herdr.Process, error) {
+	if proc, ok := f.processes[pane]; ok {
+		return proc, nil
+	}
+	return herdr.Process{}, errors.New("no process recorded for pane " + pane)
 }
 
 func (f *fakeHerdr) Prompt(_ context.Context, target, text string) error {

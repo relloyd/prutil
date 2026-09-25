@@ -503,7 +503,7 @@ func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Re
 		note = staleWorkspaceNote(short(reused), head, req.PR.Number)
 	}
 
-	agent, err := d.herdr.StartAgent(ctx, name, d.cfg.AgentKind, session.RootPaneID, startAgentTimeout)
+	agent, err := d.herdr.StartAgent(ctx, name, d.cfg.AgentKind, session.RootPaneID, nil, startAgentTimeout)
 	if err != nil {
 		return d.fail(ctx, req, res, err)
 	}

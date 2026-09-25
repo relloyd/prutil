@@ -175,7 +175,7 @@ func TestStartingAnAgentPassesTheTimeoutInMilliseconds(t *testing.T) {
 		},
 	}}
 
-	agent, err := herdr.New(runner).StartAgent(context.Background(), "pr-prutil-42", "claude", "w3:p1", time.Minute)
+	agent, err := herdr.New(runner).StartAgent(context.Background(), "pr-prutil-42", "claude", "w3:p1", nil, time.Minute)
 	require.NoError(t, err)
 	assert.Equal(t, "pr-prutil-42", agent.Name)
 	assert.True(t, agent.Settled())
@@ -323,4 +323,41 @@ func TestPromptRefusesTextThatCouldBeReadAsATerminalEscape(t *testing.T) {
 			assert.Empty(t, runner.calls, "nothing reaches herdr at all")
 		})
 	}
+}
+
+func TestStartingAnAgentPassesItsOwnArgumentsAfterTheSeparator(t *testing.T) {
+	started := `{"result":{"agent":{"agent":"claude","agent_status":"idle","pane_id":"w3:p1","name":"pr-prutil-42"}}}`
+	runner := &fakeRunner{replies: map[string]reply{
+		"agent start pr-prutil-42 --kind claude --pane w3:p1 -- --settings /home/p/sandbox/claude.json": {out: started},
+		"agent start pr-prutil-42 --kind claude --pane w3:p1":                                           {out: started},
+	}}
+	client := herdr.New(runner)
+
+	_, err := client.StartAgent(context.Background(), "pr-prutil-42", "claude", "w3:p1",
+		[]string{"--settings", "/home/p/sandbox/claude.json"}, 0)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"agent", "start", "pr-prutil-42", "--kind", "claude", "--pane", "w3:p1",
+		"--", "--settings", "/home/p/sandbox/claude.json"}, runner.calls[0],
+		"herdr stops reading its own options at --, which is how the agent receives these")
+
+	_, err = client.StartAgent(context.Background(), "pr-prutil-42", "claude", "w3:p1", nil, 0)
+	require.NoError(t, err)
+	assert.NotContains(t, runner.calls[1], "--", "no arguments means no separator either")
+}
+
+func TestProcessReportsTheCommandLineAndWhereItRuns(t *testing.T) {
+	runner := &fakeRunner{replies: map[string]reply{
+		"pane process-info --pane w3:p1": {out: `{"result":{"process_info":{"foreground_processes":[` +
+			`{"argv":["claude","--settings","/p/claude.json"],"argv0":"claude","cwd":"/work/wt","pid":7}],` +
+			`"pane_id":"w3:p1"},"type":"pane_process_info"}}`},
+		"pane process-info --pane w3:p2": {out: `{"result":{"process_info":{"foreground_processes":[]}}}`},
+	}}
+	client := herdr.New(runner)
+
+	proc, err := client.Process(context.Background(), "w3:p1")
+	require.NoError(t, err)
+	assert.Equal(t, herdr.Process{Argv: []string{"claude", "--settings", "/p/claude.json"}, CWD: "/work/wt"}, proc)
+
+	_, err = client.Process(context.Background(), "w3:p2")
+	assert.Error(t, err, "a pane with nothing in the foreground has nothing to say")
 }

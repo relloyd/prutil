@@ -67,12 +67,26 @@ type Controller interface {
 	CreateWorktree(ctx context.Context, root, branch, label string) (WorktreeSession, error)
 	// OpenWorktree asks herdr to open an existing worktree in herdr.
 	OpenWorktree(ctx context.Context, root, path, branch, label string) (WorktreeSession, error)
-	// StartAgent launches a supported agent in a shell pane and waits for it to settle.
-	StartAgent(ctx context.Context, name, kind, pane string, timeout time.Duration) (Agent, error)
+	// StartAgent launches a supported agent in a shell pane and waits for it to
+	// settle. args reach the agent's own command line, after herdr's.
+	StartAgent(ctx context.Context, name, kind, pane string, args []string, timeout time.Duration) (Agent, error)
+	// Process reports the command running in the foreground of a pane, and
+	// where: how an agent there was launched, or where its shell is.
+	Process(ctx context.Context, pane string) (Process, error)
 	// Prompt submits text to an agent, followed by Enter.
 	Prompt(ctx context.Context, target, text string) error
 	// Notify shows a toast in the herdr UI.
 	Notify(ctx context.Context, title, body string) error
+}
+
+// Process is the command in the foreground of a pane, as herdr reports it.
+type Process struct {
+	// Argv is the command line, the program first. It is how an agent already
+	// running was launched, which is the only evidence of its sandbox that
+	// survives prutil restarting.
+	Argv []string
+	// CWD is where it is running.
+	CWD string
 }
 
 // Agent is one recognised coding agent occupying a pane.
@@ -336,10 +350,19 @@ func (c *Client) Notify(ctx context.Context, title, body string) error {
 // StartAgent launches a supported agent in a pane that is already sitting at
 // an interactive shell prompt. herdr returns only once it has detected the
 // agent in that same pane and considers it ready for input.
-func (c *Client) StartAgent(ctx context.Context, name, kind, pane string, timeout time.Duration) (Agent, error) {
+//
+// agentArgs go after "--", which is where herdr stops reading its own options
+// and starts passing them to the agent. That is how an agent is started inside
+// its vendor's sandbox: the sandbox confines what the agent runs, not the agent
+// itself, so the agent stays the pane's foreground process and herdr still
+// recognises it.
+func (c *Client) StartAgent(ctx context.Context, name, kind, pane string, agentArgs []string, timeout time.Duration) (Agent, error) {
 	args := []string{"agent", "start", name, "--kind", kind, "--pane", pane}
 	if timeout > 0 {
 		args = append(args, "--timeout", strconv.Itoa(int(timeout.Milliseconds())))
+	}
+	if len(agentArgs) > 0 {
+		args = append(append(args, "--"), agentArgs...)
 	}
 	var result struct {
 		Agent Agent `json:"agent"`
@@ -348,6 +371,27 @@ func (c *Client) StartAgent(ctx context.Context, name, kind, pane string, timeou
 		return Agent{}, err
 	}
 	return result.Agent, nil
+}
+
+// Process implements Controller. A pane can have several foreground
+// processes in its group; the first is the one herdr names the pane after.
+func (c *Client) Process(ctx context.Context, pane string) (Process, error) {
+	var result struct {
+		ProcessInfo struct {
+			Foreground []struct {
+				Argv []string `json:"argv"`
+				CWD  string   `json:"cwd"`
+			} `json:"foreground_processes"`
+		} `json:"process_info"`
+	}
+	if err := c.call(ctx, &result, "pane", "process-info", "--pane", pane); err != nil {
+		return Process{}, err
+	}
+	if len(result.ProcessInfo.Foreground) == 0 {
+		return Process{}, fmt.Errorf("herdr reported no foreground process in pane %s", pane)
+	}
+	first := result.ProcessInfo.Foreground[0]
+	return Process{Argv: first.Argv, CWD: first.CWD}, nil
 }
 
 // call runs one herdr command and unwraps its envelope into result, which may
