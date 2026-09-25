@@ -266,7 +266,7 @@ func (a *App) failedCheckHandoff(msg handoffMsg) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
-		msg.result, msg.err = hand.Dispatch(ctx, handoff.Request{PR: msg.pr, CheckHandoff: true, HeadOID: msg.headOID, Checks: msg.checks, AllowProvision: msg.allowProvision})
+		msg.result, msg.err = hand.Dispatch(ctx, handoff.Request{PR: msg.pr, CheckHandoff: true, HeadOID: msg.headOID, Checks: msg.checks, AllowProvision: msg.allowProvision, Viewer: msg.viewer})
 		return msg
 	}
 }

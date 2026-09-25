@@ -1843,3 +1843,25 @@ func TestFInvestigatesWithoutAskingWhenNothingIsHeld(t *testing.T) {
 	assert.Equal(t, before+1, checkHandoffs(dispatcher),
 		"the confirmation is the hold's, not a second press on every investigation")
 }
+
+func TestACheckHandoffKnowsTheViewer(t *testing.T) {
+	// Provisioning refuses when prutil cannot tell whose pull request it is,
+	// so a check handoff built without the viewer could never create one.
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	pump(t, app, send(t, app, checksMsg{
+		gen: app.gen, key: key, checkHandoff: true, headOID: "sha-new",
+		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
+	}))
+
+	reqs := dispatcher.requests()
+	require.NotEmpty(t, reqs)
+	last := reqs[len(reqs)-1]
+	require.True(t, last.CheckHandoff)
+	assert.Equal(t, "relloyd", last.Viewer)
+}
