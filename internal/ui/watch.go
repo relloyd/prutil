@@ -538,6 +538,7 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 			open:    len(feedback),
 			fresh:   len(fresh),
 			threads: model.Digest(feedback),
+			viewer:  msg.review.Viewer,
 		}),
 		status(fmt.Sprintf("%s has %d new review %s · handing it to an agent…",
 			msg.key, len(fresh), plural(len(fresh), "comment"))),

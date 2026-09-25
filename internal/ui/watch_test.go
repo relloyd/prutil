@@ -1903,3 +1903,20 @@ func TestTheHandoffHistoryNamesTheSandboxTheWorkWentTo(t *testing.T) {
 
 	assert.Equal(t, "just now · sent · claude w3:p1 · sandboxed, strict", line)
 }
+
+func TestTheWatchersOwnHandoffKnowsTheViewer(t *testing.T) {
+	// Provisioning refuses a pull request it cannot tell is the reader's own,
+	// so a watcher handoff without the viewer turned every fallback: new into
+	// "prutil will not create a workspace over another author's branch", for
+	// the reader's own pull requests.
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	req := lastRequest(t, dispatcher, false)
+	assert.Equal(t, "relloyd", req.Viewer)
+	assert.False(t, req.Manual)
+}
