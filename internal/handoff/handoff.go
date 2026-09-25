@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -153,6 +154,16 @@ type Dispatcher struct {
 	selfPane string
 	idleGap  time.Duration
 	sleep    func(ctx context.Context, d time.Duration) bool
+	// live is the configuration a saved setting replaces. cfg, security and
+	// idleGap above are what one handoff reads: every call runs on a copy of
+	// the dispatcher taken from live when it starts. See Configure.
+	live *liveConfig
+}
+
+// liveConfig is shared by every copy of a dispatcher.
+type liveConfig struct {
+	mu  sync.Mutex
+	cfg home.Config
 }
 
 // Container is the sandbox registry a dispatcher consults. sandbox.Sandbox is
@@ -199,27 +210,64 @@ func New(opts Options) *Dispatcher {
 	if sleep == nil {
 		sleep = wait
 	}
+	cfg := opts.Config.Clone()
 	return &Dispatcher{
 		herdr:    opts.Herdr,
 		git:      opts.Git,
 		repos:    opts.Repos,
 		fetch:    opts.Fetch,
-		cfg:      opts.Config.Herdr,
-		security: opts.Config.Security,
+		cfg:      cfg.Herdr,
+		security: cfg.Security,
+		live:     &liveConfig{cfg: cfg},
 		sandbox:  opts.Sandbox,
 		selfPane: opts.SelfPane,
-		idleGap:  opts.Config.Watch.IdleInterval.Duration(),
+		idleGap:  cfg.Watch.IdleInterval.Duration(),
 		sleep:    sleep,
 	}
 }
 
+// Configure replaces the configuration handoffs are made by, from the next one
+// on; one already under way finishes on the settings it started with. The
+// settings pane calls it after every save. Without it a changed agent kind,
+// fallback, prompt or trust list would do nothing until prutil restarted,
+// while the pane said it had been saved.
+//
+// It takes a copy that shares nothing with cfg, because the caller goes on
+// editing its own in place while a handoff reads this one elsewhere. A
+// resolver that can be told is told too.
+func (d *Dispatcher) Configure(cfg home.Config) {
+	cfg = cfg.Clone()
+	d.live.mu.Lock()
+	d.live.cfg = cfg
+	d.live.mu.Unlock()
+	if r, ok := d.repos.(interface{ Configure(home.Config) }); ok {
+		r.Configure(cfg)
+	}
+}
+
+// current is the dispatcher as the latest configuration has it: a copy, so
+// that one handoff reads one configuration from start to finish whatever is
+// saved meanwhile.
+func (d *Dispatcher) current() *Dispatcher {
+	d.live.mu.Lock()
+	cfg := d.live.cfg
+	d.live.mu.Unlock()
+	c := *d
+	c.cfg, c.security, c.idleGap = cfg.Herdr, cfg.Security, cfg.Watch.IdleInterval.Duration()
+	return &c
+}
+
 // DryRun reports whether handoffs are being recorded rather than sent.
-func (d *Dispatcher) DryRun() bool { return d.cfg.DryRun }
+func (d *Dispatcher) DryRun() bool { return d.current().cfg.DryRun }
 
 // Dispatch finds the agent for a pull request and gives it the work. It always
 // returns a Result worth logging, error or not, because "prutil could not find
 // anybody to tell" is exactly the thing the log exists to record.
 func (d *Dispatcher) Dispatch(ctx context.Context, req Request) (Result, error) {
+	return d.current().dispatch(ctx, req)
+}
+
+func (d *Dispatcher) dispatch(ctx context.Context, req Request) (Result, error) {
 	agents, err := d.herdr.Agents(ctx)
 	if err != nil {
 		return Result{Outcome: home.OutcomeFailed, Detail: err.Error()}, err
@@ -1068,7 +1116,7 @@ const toastTimeout = 5 * time.Second
 // for its context to run out, which would take the toast with it.
 func (d *Dispatcher) toast(ctx context.Context, req Request, body string) {
 	title := fmt.Sprintf("%s: %d new review %s", req.PR.Key(), req.NewCount, plural(req.NewCount, "comment"))
-	d.Notify(ctx, title, body)
+	d.notify(ctx, title, body)
 }
 
 // Notify shows a herdr notification for something the caller decided rather
@@ -1078,6 +1126,11 @@ func (d *Dispatcher) toast(ctx context.Context, req Request, body string) {
 // be the one outcome in the handoff log the reader is never told about, purely
 // because of where the decision is made.
 func (d *Dispatcher) Notify(ctx context.Context, title, body string) {
+	d.current().notify(ctx, title, body)
+}
+
+// notify is Notify on the configuration this copy was taken with.
+func (d *Dispatcher) notify(ctx context.Context, title, body string) {
 	if !d.cfg.Toast {
 		return
 	}

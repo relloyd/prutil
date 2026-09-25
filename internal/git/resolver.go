@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/relloyd/prutil/internal/home"
 )
@@ -31,8 +32,10 @@ var ErrCheckoutNotFound = errors.New("no local checkout found")
 // Resolver maps owner/name repositories to local checkout roots.
 type Resolver struct {
 	id    Identifier
-	cfg   home.Config
 	store CacheStore
+
+	mu  sync.Mutex
+	cfg home.Config
 }
 
 // NewResolver builds a repository resolver over a git identifier, runtime
@@ -44,7 +47,22 @@ func NewResolver(id Identifier, cfg home.Config, store CacheStore) *Resolver {
 	if noStore(store) {
 		store = noopCache{}
 	}
-	return &Resolver{id: id, cfg: cfg, store: store}
+	return &Resolver{id: id, cfg: cfg.Clone(), store: store}
+}
+
+// Configure replaces the repos mappings and discovery roots the resolver
+// reads, from the next Resolve on, so that a checkout the reader has just
+// mapped in the settings pane is found without restarting prutil.
+func (r *Resolver) Configure(cfg home.Config) {
+	r.mu.Lock()
+	r.cfg = cfg.Clone()
+	r.mu.Unlock()
+}
+
+func (r *Resolver) config() home.Config {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cfg
 }
 
 // noStore reports a cache there is no point calling, in either of the two
@@ -87,8 +105,9 @@ func (r *Resolver) Resolve(ctx context.Context, repo string) (Checkout, error) {
 	if err != nil {
 		return Checkout{}, err
 	}
+	cfg := r.config()
 
-	if configuredPath, ok := explicitPathFor(want, r.cfg.Repos); ok {
+	if configuredPath, ok := explicitPathFor(want, cfg.Repos); ok {
 		return r.resolveConfigured(ctx, want, configuredPath)
 	}
 
@@ -106,11 +125,11 @@ func (r *Resolver) Resolve(ctx context.Context, repo string) (Checkout, error) {
 		}
 	}
 
-	if len(r.cfg.Discovery.Roots) == 0 {
+	if len(cfg.Discovery.Roots) == 0 {
 		return Checkout{}, fmt.Errorf("%w for %s", ErrCheckoutNotFound, want)
 	}
 
-	for _, root := range r.cfg.Discovery.Roots {
+	for _, root := range cfg.Discovery.Roots {
 		checkout, found := r.discover(ctx, want, root)
 		if !found {
 			continue

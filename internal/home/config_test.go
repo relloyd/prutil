@@ -1,6 +1,7 @@
 package home_test
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -251,4 +252,38 @@ func TestTheWrittenTemplateNamesTheTrustBoundary(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, home.DefaultConfig().Security, cfg.Security,
 		"what the template writes has to read back as the defaults it was built from")
+}
+
+func TestCloneSharesNothing(t *testing.T) {
+	// Every map, slice and pointer is given a value, so that a nil one cannot
+	// pass for an independent one.
+	marker, comment := "<!-- m -->", "/review"
+	cfg := home.DefaultConfig()
+	cfg.Repos = map[string]string{"a/b": "/x"}
+	cfg.Review.Repos = map[string]string{"a/b": "/review"}
+	cfg.Review.Comment = &comment
+	cfg.Watch.SelfTestMarker = &marker
+	cfg.Discovery.Roots = []string{"/src"}
+
+	clone := cfg.Clone()
+	assertIndependent(t, reflect.ValueOf(cfg), reflect.ValueOf(clone), "Config")
+	assert.Equal(t, cfg, clone, "and equal in every value")
+}
+
+// assertIndependent fails for any map, slice or pointer the two values share,
+// however deep in the struct it is.
+func assertIndependent(t *testing.T, a, b reflect.Value, path string) {
+	t.Helper()
+	switch a.Kind() {
+	case reflect.Struct:
+		for i := range a.NumField() {
+			assertIndependent(t, a.Field(i), b.Field(i), path+"."+a.Type().Field(i).Name)
+		}
+	case reflect.Map, reflect.Slice, reflect.Pointer:
+		if a.IsNil() {
+			t.Errorf("%s is nil in the fixture, so the test cannot tell whether Clone copies it", path)
+			return
+		}
+		assert.NotEqual(t, a.Pointer(), b.Pointer(), "%s is shared with the clone", path)
+	}
 }

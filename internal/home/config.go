@@ -2,6 +2,8 @@ package home
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"text/template"
 	"time"
@@ -521,3 +523,31 @@ func (f *FallbackStrategy) UnmarshalYAML(node *yaml.Node) error {
 
 // MarshalYAML implements yaml.Marshaler.
 func (f FallbackStrategy) MarshalYAML() (any, error) { return string(f), nil }
+
+// Clone returns a copy of c that shares no map, slice or pointer with it.
+//
+// The settings pane edits the running configuration in place, down to adding
+// a key to a map, while a handoff reads its own copy on another goroutine. A
+// plain copy of the struct would share those maps and slices, and the two
+// would race. TestCloneSharesNothing walks the struct, so a reference field
+// added later without a line here fails a test rather than a handoff.
+func (c Config) Clone() Config {
+	out := c
+	out.Repos = maps.Clone(c.Repos)
+	out.Review.Repos = maps.Clone(c.Review.Repos)
+	out.Review.Comment = clonePointer(c.Review.Comment)
+	out.Notifications.Events = maps.Clone(c.Notifications.Events)
+	out.Discovery.Roots = slices.Clone(c.Discovery.Roots)
+	out.Security.TrustedAssociations = slices.Clone(c.Security.TrustedAssociations)
+	out.Security.TrustedAuthors = slices.Clone(c.Security.TrustedAuthors)
+	out.Watch.SelfTestMarker = clonePointer(c.Watch.SelfTestMarker)
+	return out
+}
+
+func clonePointer[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}

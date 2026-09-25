@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -160,9 +161,14 @@ func (h historyGit) Contains(ctx context.Context, dir, commit string) bool {
 }
 
 type fakeResolver struct {
-	checkout git.Checkout
-	err      error
-	repos    []string
+	checkout   git.Checkout
+	err        error
+	repos      []string
+	configured []home.Config
+}
+
+func (f *fakeResolver) Configure(cfg home.Config) {
+	f.configured = append(f.configured, cfg)
 }
 
 func (f *fakeResolver) Resolve(_ context.Context, repo string) (git.Checkout, error) {
@@ -1593,4 +1599,61 @@ func TestAKindWithNoProfileIsNotHeldToTheRequirement(t *testing.T) {
 	require.NoError(t, err, "requiring a sandbox prutil cannot start would stop the loop dead for that kind")
 	assert.Equal(t, []string{"w3:p1"}, control.prompted)
 	assert.Empty(t, box.inspected)
+}
+
+func TestASettingSavedWhilePrutilRunsDecidesTheNextHandoff(t *testing.T) {
+	// The settings pane saves require_sandbox off. Before Configure, the
+	// dispatcher went on with the value it started with until a restart.
+	control, checkouts := onTheBranch("claude", "claude")
+	dispatcher := dispatcherWithSandbox(t, control, checkouts, claudeBox(strict), nil)
+
+	_, err := dispatcher.Dispatch(context.Background(), request())
+	require.ErrorIs(t, err, handoff.ErrUncontained, "on at startup")
+
+	cfg := home.DefaultConfig()
+	cfg.Herdr.Skill, cfg.Herdr.AgentKind = "pr-triage", "claude"
+	cfg.Security.RequireSandbox = false
+	dispatcher.Configure(cfg)
+
+	_, err = dispatcher.Dispatch(context.Background(), request())
+	require.NoError(t, err, "off from the next handoff")
+	assert.Equal(t, []string{"w3:p1"}, control.prompted)
+}
+
+func TestConfigureTellsTheResolverToo(t *testing.T) {
+	repos := &fakeResolver{}
+	dispatcher, _ := dispatcherWithProvision(t, &fakeHerdr{}, fakeGit{}, repos, &fakeFetcher{}, nil)
+	cfg := home.DefaultConfig()
+	cfg.Repos["relloyd/dummy-repo"] = "/Users/p/dummy-repo"
+
+	dispatcher.Configure(cfg)
+
+	require.Len(t, repos.configured, 1)
+	assert.Equal(t, "/Users/p/dummy-repo", repos.configured[0].Repos["relloyd/dummy-repo"])
+}
+
+func TestConfiguringWhileHandoffsRunIsSafe(t *testing.T) {
+	// Run under -race, which task test does: the settings pane saves on the
+	// update loop while a handoff reads its copy on a command's goroutine.
+	control, checkouts := onTheBranch("claude", strings.Fields(launchedArgv)...)
+	dispatcher := dispatcherWithSandbox(t, control, checkouts, claudeBox(strict), nil)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range 50 {
+			cfg := home.DefaultConfig()
+			cfg.Repos[fmt.Sprintf("a/b%d", i)] = "/x"
+			cfg.Security.TrustedAuthors = append(cfg.Security.TrustedAuthors, "someone")
+			dispatcher.Configure(cfg)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 50 {
+			_ = dispatcher.DryRun()
+		}
+	}()
+	wg.Wait()
 }

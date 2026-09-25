@@ -37,6 +37,9 @@ type dispatcher interface {
 	Dispatch(ctx context.Context, req handoff.Request) (handoff.Result, error)
 	DryRun() bool
 	Notify(ctx context.Context, title, body string)
+	// Configure hands over the configuration saved in the settings pane, for
+	// the next handoff to be made by.
+	Configure(cfg home.Config)
 }
 
 // armed reports whether a pull request is being watched.

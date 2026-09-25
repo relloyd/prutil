@@ -268,3 +268,24 @@ func TestDiscoveryFindsACheckoutWithinTheDepthItWalks(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, nested, got.Root)
 }
+
+func TestAMappingSavedAfterStartupIsFoundWithoutARestart(t *testing.T) {
+	base := t.TempDir()
+	clone := filepath.Join(base, "dummy-repo")
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{
+		clone: {Root: clone, Repo: "relloyd/dummy-repo", Branch: "main"},
+	}}
+	resolver := git.NewResolver(id, home.DefaultConfig(), home.OpenIn(filepath.Join(base, "store")))
+
+	_, err := resolver.Resolve(context.Background(), "relloyd/dummy-repo")
+	require.ErrorIs(t, err, git.ErrCheckoutNotFound, "nothing is mapped at startup")
+
+	cfg := home.DefaultConfig()
+	cfg.Repos["relloyd/dummy-repo"] = clone
+	resolver.Configure(cfg)
+	cfg.Repos["relloyd/dummy-repo"] = "/somewhere/else"
+
+	got, err := resolver.Resolve(context.Background(), "relloyd/dummy-repo")
+	require.NoError(t, err, "the mapping the settings pane saved is the one used")
+	assert.Equal(t, clone, got.Root, "and the caller editing its own copy afterwards changes nothing")
+}
