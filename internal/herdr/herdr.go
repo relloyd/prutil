@@ -73,10 +73,29 @@ type Controller interface {
 	// Process reports the command running in the foreground of a pane, and
 	// where: how an agent there was launched, or where its shell is.
 	Process(ctx context.Context, pane string) (Process, error)
+	// Panes lists every pane herdr has open, agent or not.
+	Panes(ctx context.Context) ([]Pane, error)
 	// Prompt submits text to an agent, followed by Enter.
 	Prompt(ctx context.Context, target, text string) error
 	// Notify shows a toast in the herdr UI.
 	Notify(ctx context.Context, title, body string) error
+}
+
+// Pane is one terminal herdr has open, whatever is running in it.
+type Pane struct {
+	PaneID string `json:"pane_id"`
+	// CWD is where the pane was started, and ForegroundCWD where its
+	// foreground process is now.
+	CWD           string `json:"cwd"`
+	ForegroundCWD string `json:"foreground_cwd"`
+}
+
+// Dir is the directory the pane is working in now, where herdr can say.
+func (p Pane) Dir() string {
+	if p.ForegroundCWD != "" {
+		return p.ForegroundCWD
+	}
+	return p.CWD
 }
 
 // Process is the command in the foreground of a pane, as herdr reports it.
@@ -417,6 +436,17 @@ func (c *Client) Process(ctx context.Context, pane string) (Process, error) {
 	}
 	first := result.ProcessInfo.Foreground[0]
 	return Process{Argv: first.Argv, CWD: first.CWD}, nil
+}
+
+// Panes implements Controller.
+func (c *Client) Panes(ctx context.Context) ([]Pane, error) {
+	var result struct {
+		Panes []Pane `json:"panes"`
+	}
+	if err := c.call(ctx, &result, "pane", "list"); err != nil {
+		return nil, err
+	}
+	return result.Panes, nil
 }
 
 // call runs one herdr command and unwraps its envelope into result, which may

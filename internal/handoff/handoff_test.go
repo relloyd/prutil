@@ -68,6 +68,8 @@ type fakeHerdr struct {
 	// processes what Process reports for a pane.
 	startArgs [][]string
 	processes map[string]herdr.Process
+	// panes is what Panes lists.
+	panes []herdr.Pane
 }
 
 func (f *fakeHerdr) Agents(context.Context) ([]herdr.Agent, error) {
@@ -118,6 +120,8 @@ func (f *fakeHerdr) StartAgent(_ context.Context, name, kind, pane string, args 
 	return f.start, f.startErr
 }
 
+func (f *fakeHerdr) Panes(context.Context) ([]herdr.Pane, error) { return f.panes, nil }
+
 func (f *fakeHerdr) Process(_ context.Context, pane string) (herdr.Process, error) {
 	if proc, ok := f.processes[pane]; ok {
 		return proc, nil
@@ -164,6 +168,7 @@ type fakeResolver struct {
 	checkout   git.Checkout
 	err        error
 	repos      []string
+	candidates [][]string
 	configured []home.Config
 }
 
@@ -171,8 +176,9 @@ func (f *fakeResolver) Configure(cfg home.Config) {
 	f.configured = append(f.configured, cfg)
 }
 
-func (f *fakeResolver) Resolve(_ context.Context, repo string) (git.Checkout, error) {
+func (f *fakeResolver) Resolve(_ context.Context, repo string, candidates ...string) (git.Checkout, error) {
 	f.repos = append(f.repos, repo)
+	f.candidates = append(f.candidates, candidates)
 	return f.checkout, f.err
 }
 
@@ -1656,4 +1662,25 @@ func TestConfiguringWhileHandoffsRunIsSafe(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+func TestProvisioningLooksForTheCloneWhereHerdrsPanesAre(t *testing.T) {
+	control := &fakeHerdr{panes: []herdr.Pane{
+		{PaneID: "w0:p1", CWD: "/Users/p/prutil"},
+		{PaneID: "w0:p2", CWD: "/Users/p", ForegroundCWD: "/Users/p/dummy-repo"},
+	}}
+	repos := &fakeResolver{checkout: git.Checkout{Root: "/Users/p/dummy-repo", Repo: "relloyd/prutil"}}
+	dispatcher, _ := dispatcherWithProvision(t, control, fakeGit{}, repos, &fakeFetcher{}, func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "claude"
+		cfg.Herdr.DryRun = true
+	})
+	req := request()
+	req.AllowProvision = true
+
+	_, err := dispatcher.Dispatch(context.Background(), req)
+
+	require.NoError(t, err)
+	require.Len(t, repos.candidates, 1)
+	assert.Equal(t, []string{"/Users/p/prutil", "/Users/p/dummy-repo"}, repos.candidates[0],
+		"where each pane is working now, which is its foreground directory when herdr knows it")
 }

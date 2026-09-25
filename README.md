@@ -561,8 +561,11 @@ the sandbox that could not be verified from here. If it did not, set
 `require_sandbox: false` and say what the agent reported.
 
 Explicit `repos` entries win. When none exists, prutil checks its private
-`repos.json` cache and then scans `discovery.roots`, validating every candidate
-against its origin remote before it can be used. Stale cache paths are ignored
+`repos.json` cache, then the directories your herdr panes are working in, and
+then scans `discovery.roots`, validating every candidate against its origin
+remote before it can be used. So a shell open in a clone is enough for prutil
+to find it, with nothing configured; the checkout it finds is remembered in
+`repos.json` after the pane has gone. A clone is preferred to a worktree of it. Stale cache paths are ignored
 and refreshed. GitHub poll intervals are clamped to fifteen seconds at the
 shortest, so a typo cannot turn a dashboard into a load test.
 

@@ -80,7 +80,9 @@ type Identifier interface {
 // RepositoryResolver finds the local checkout where a manual handoff can
 // create a worktree.
 type RepositoryResolver interface {
-	Resolve(ctx context.Context, repo string) (git.Checkout, error)
+	// Resolve finds repo's checkout, trying candidates, directories the reader
+	// is known to be working in, when nothing is configured or cached.
+	Resolve(ctx context.Context, repo string, candidates ...string) (git.Checkout, error)
 }
 
 // Request is one pull request's feedback, ready to be handed over.
@@ -551,7 +553,7 @@ func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Re
 		return d.fail(ctx, req, Result{}, errors.New("workspace provisioning is not configured"))
 	}
 
-	checkout, err := d.repos.Resolve(ctx, req.PR.Repo)
+	checkout, err := d.repos.Resolve(ctx, req.PR.Repo, d.paneDirs(ctx)...)
 	if err != nil {
 		return d.fail(ctx, req, Result{}, err)
 	}
@@ -757,6 +759,21 @@ func (d *Dispatcher) mayProvision(req Request) error {
 		}
 	}
 	return fmt.Errorf("%w: %s was opened by %s", ErrUntrustedAuthor, req.PR.Key(), author)
+}
+
+// paneDirs is where each of herdr's panes is working, for the resolver to try
+// when a repository's clone is not configured. It is a hint, so a herdr that
+// cannot list its panes costs nothing but the hint.
+func (d *Dispatcher) paneDirs(ctx context.Context) []string {
+	panes, err := d.herdr.Panes(ctx)
+	if err != nil {
+		return nil
+	}
+	dirs := make([]string, 0, len(panes))
+	for _, p := range panes {
+		dirs = append(dirs, p.Dir())
+	}
+	return dirs
 }
 
 // contain prepares the sandbox an agent prutil is about to start will run in,

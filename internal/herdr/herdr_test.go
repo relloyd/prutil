@@ -390,3 +390,18 @@ func TestPromptRefusesALineAnAgentWouldRunAsAShellCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestPanesListsWhereEveryPaneIsWorking(t *testing.T) {
+	runner := &fakeRunner{replies: map[string]reply{
+		"pane list": {out: `{"result":{"panes":[` +
+			`{"pane_id":"w0:p1","cwd":"/Users/p/prutil","foreground_cwd":"/Users/p/prutil","agent_status":"working"},` +
+			`{"pane_id":"w0:p2","cwd":"/Users/p","foreground_cwd":"/Users/p/dummy-repo","agent_status":"unknown"}]}}`},
+	}}
+
+	panes, err := herdr.New(runner).Panes(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, panes, 2)
+	assert.Equal(t, "/Users/p/dummy-repo", panes[1].Dir(), "where the shell is now, not where the pane started")
+	assert.Equal(t, "/Users/p", herdr.Pane{CWD: "/Users/p"}.Dir())
+}
