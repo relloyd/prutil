@@ -537,14 +537,20 @@ AWS token variables from shell and MCP environments. GitHub tokens stay
 available so `gh` can push and reply. agy (1.2.11) starts with
 `--sandbox`. Neither has a sandbox status command: prutil checks their flags
 and their **existing, user-owned settings**; it does not change vendor files
-or relocate sign-in. For Copilot, set `sandbox.allowBypass: false`,
+or relocate sign-in.
+
+**For Copilot**, set `sandbox.allowBypass: false`,
 `sandbox.userPolicy.network.allowLocalNetwork: false`, and include absolute
 paths to `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.config/herdr` and
-`~/.config/prutil` in `sandbox.userPolicy.filesystem.deniedPaths`. For agy,
+`~/.config/prutil` in `sandbox.userPolicy.filesystem.deniedPaths`.
+
+**For agy**,
 set `enableTerminalSandbox: true`, `toolPermission: "proceed-in-sandbox"`,
 and restricted `read_url(domain)` entries in `permissions.allow`; do not
 allow `unsandboxed` or wildcard URL rules. With a missing or permissive
-policy, automatic handoffs are refused until you configure it. These checks
+policy, automatic handoffs are refused until you configure it.
+
+These checks
 are **not proof of OS isolation**: a live agent must still verify secret
 reads, network access, and herdr socket denial on your machine.
 
