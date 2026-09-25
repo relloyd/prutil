@@ -46,6 +46,7 @@ checks.
 | `internal/git` | reading the repository and branch behind a directory, and finding a repository's local checkout |
 | `internal/herdr` | the `Controller` interface and the herdr CLI behind it |
 | `internal/handoff` | choosing the agent a pull request's feedback goes to, and sending it |
+| `internal/sandbox` | starting each kind of coding agent inside its vendor's sandbox, and asking whether one already running is; one `Profile` per kind |
 | `internal/home` | the application directory: configuration, watch state, handoff log, repository cache |
 | `internal/watch` | the polling schedule, as a state machine over readings somebody else took |
 | `internal/run` | starting a helper process and reporting one that failed |
@@ -351,6 +352,47 @@ puts a held pull request back on the automatic loop.
 A held handoff is an outcome like any other: `home.OutcomeHeld` in
 `handoffs.jsonl`, and a herdr notification through `dispatcher.Notify` under
 the reader's own `herdr.toast`, once per set of newest comment ids.
+
+## Sandboxes
+
+`internal/sandbox` holds one `Profile` per kind of agent. `Launch` writes the
+policy the agent's arguments refer to and returns them, with what the vendor
+says they give; `Inspect` asks about an agent already running. Claude Code's is
+complete. Copilot CLI and agy have entries with nothing filled in, in files of
+their own; `docs/security/tier2-handoff.md` is the brief for them, and
+`docs/security/prompt-injection.md` records what the Claude build found.
+
+The rules, again each one a thing that looks like a tidy-up and is not:
+
+- **A kind with no profile is not held to `security.require_sandbox`.** It is
+  started and handed work exactly as before. Requiring a sandbox prutil cannot
+  start would stop the loop dead for that kind.
+- **The evidence is the agent's command line, never prutil's memory.**
+  `Controller.Process` reads it from herdr. A list of the panes prutil started
+  would forget its own contained agents on every restart, and pass them over.
+- **Ask the vendor; do not read the policy.** Claude's `Launch` and `Inspect`
+  both run `claude … sandbox status` from the agent's directory, because the
+  answer includes the project's own settings and whatever the reader edited
+  into their policy. prutil does not interpret that file itself.
+- **The reader's policy is written once; a launch file is never rewritten.**
+  `home.CreateOnce` writes `sandbox/claude-settings.json` and prutil never
+  touches it again. Anything that moves or belongs to one pull request, the SSH
+  socket and the owner's git rules, goes into a launch file,
+  `sandbox/launch/<kind>-<hash>.json`, named by its contents so that a running
+  agent's command line names exactly what it read.
+- **An agent on the pull request that is not contained gets no neighbour.**
+  `pick` returns it apart from the passed, and `Dispatch` reports it rather than
+  answering it with `fallback: new`, which would put two agents on one branch.
+- **`Request.Manual` is the reader, not the watcher.** W and F set it, and may
+  use an agent that is not sandboxed; nothing automatic may.
+- **Git leaves Claude's sandbox over HTTPS, by owner-length rules.** SSH cannot
+  get out on macOS. The rules are owner-length for `insteadOf` and
+  `pushInsteadOf` both, because a reader's host-level rewrite to SSH is as long
+  as any host-level rule prutil could write.
+  `TestTheGitRulesWinAgainstAReadersSSHRewrite` runs real git to pin it.
+- **A prompt line may not begin with `!`.** Claude Code runs it as a shell
+  command without the model, and outside the sandbox. `herdr.Client.Prompt`
+  refuses one, whichever vendor the prompt is for.
 
 ## Desktop notifications
 

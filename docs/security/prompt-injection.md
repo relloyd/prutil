@@ -1,7 +1,9 @@
 # Prompt injection and the feedback loop
 
-Status: design only. Nothing here is built yet. The document records the threat,
-what was checked, and the order to build the defences in.
+Status: Tier 1 is built. Tier 2 is built for Claude Code; for Copilot CLI and
+agy it is still design, and [`tier2-handoff.md`](tier2-handoff.md) is the brief
+for building it. Tier 3 is design only. The document records the threat, what
+was checked, and the order the defences are built in.
 
 ## Summary
 
@@ -152,21 +154,22 @@ the agent itself.
 
 ## Vendor compatibility
 
-Claude Code was checked against version 2.1.273 installed here. Copilot CLI and
-Antigravity CLI are not installed on this machine, so their columns come from
-the vendors' current documentation. Confirm each row against the installed
-version before building on it.
+Claude Code was checked against version 2.1.273, and again against 2.1.282
+with a live sandboxed agent when Tier 2 was built. Copilot CLI and Antigravity
+CLI are not installed on this machine, so their columns come from the vendors'
+current documentation. Confirm each row against the installed version before
+building on it.
 
 | Capability | Claude Code | GitHub Copilot CLI | Antigravity CLI (`agy`) |
 | --- | --- | --- | --- |
 | OS sandbox on macOS | Seatbelt; shell commands | Seatbelt; shell commands, built-in searches, local MCP and LSP servers | `sandbox-exec`; shell commands |
-| Covers the agent's own file tools | no; permission rules govern them | no; the docs say file tools "run as part of Copilot CLI itself" | not documented; assume no |
+| Covers the agent's own file tools | in effect, yes: a `Read`/`Edit` deny rule reaches the sandbox too (2.1.282) | no; the docs say file tools "run as part of Copilot CLI itself" | not documented; assume no |
 | Enable at launch | `--settings <file>` carrying `sandbox.enabled` | `--sandbox` (this session only; public preview) | `--sandbox` |
 | Policy supplied at launch | yes, the whole `--settings` file | no; the `sandbox` key in `~/.copilot/settings.json`, or `COPILOT_HOME`, which moves the entire state directory | no; `~/.gemini/antigravity-cli/settings.json` |
 | Stop the model escaping | `sandbox.allowUnsandboxedCommands: false` | turn off "Allow sandbox bypass" (`/sandbox`, General tab) | add no `unsandboxed` allow rules; bypass needs approval |
 | Network allowlist | sandbox network settings | Network tab; `--allow-url` and `--deny-url` | domains allowed under `read_url` |
 | Deny tools at launch | `--disallowedTools` | `--deny-tool`, `--excluded-tools`, `--secret-env-vars` | only through settings `permissions` |
-| Report its sandbox state | `claude sandbox status`, one JSON line | nothing documented | nothing documented |
+| Report its sandbox state | `claude sandbox status`, one JSON line with `enabled` and `strictMode`; `--settings` before it asks about that file | nothing documented | nothing documented |
 | Headless, no tools, schema-checked output | `-p --tools "" --json-schema <schema>` | `-p --available-tools … --output-format json`; no schema flag | `-p --json-schema <schema>`; no documented way to disable tools, and headless mode ignores `permissions.allow` and can hang (issue #548, open) |
 | Hooks that can refuse a tool call | `PreToolUse` | `preToolUse`, `permissionRequest`; repository hooks load only in trusted folders | `hooks.json` |
 
@@ -175,6 +178,8 @@ Two things hold for all three:
 - **No vendor sandbox covers the agent's built-in file read and edit tools.**
   Any path that matters has to be denied twice: once in the sandbox policy, for
   shell commands, and once in the tool's permission rules, for its own tools.
+  Claude Code turned out to be the exception: its deny rules feed the sandbox
+  as well, so one rule does both. See 2b.
 - **Only Claude Code can say whether it is sandboxed.** For the other two,
   prutil can only rely on how it launched the agent itself.
 
@@ -404,72 +409,124 @@ than an accident.
 
 ## Tier 2: the agent runs inside its vendor's sandbox
 
-### 2a. Pass launch flags through herdr
+**Built for Claude Code. Copilot CLI and agy are not built yet.** The mechanism
+is vendor-neutral, and each kind of agent is one entry in `internal/sandbox`.
+[`tier2-handoff.md`](tier2-handoff.md) is the brief for adding the other two. It
+describes the implementation in the detail the follow-up needs. This section
+records the design and what building it found.
 
-Add `herdr.agent_args` to the configuration. `herdr.Controller.StartAgent`
-gains an `args` parameter, and `Client.StartAgent`
-(`internal/herdr/herdr.go:305`) appends `--` and the arguments. Every fake
-controller in the handoff and ui tests changes with it.
+### What was verified, and how
 
-When `agent_args` is not set, the default depends on `herdr.agent_kind`:
+Everything below was checked against Claude Code 2.1.282 and herdr 0.8.2 on
+macOS. A real agent was started with
+`herdr agent start … -- --settings <policy>` in a worktree laid out the way
+prutil lays them out, and ran probes from inside its sandbox.
 
-| `agent_kind` | Default `agent_args` |
+| Probe, from inside the sandbox | Result |
 | --- | --- |
-| `claude` | `["--settings", "<prutil home>/agent-settings.json"]` |
-| `copilot` | `["--sandbox"]`, plus the `--deny-tool` rules below |
-| `agy` | `["--sandbox"]` |
-| anything else | none; the README points at that agent's own sandbox flag |
+| Read a file outside the worktree | allowed: reads are broad by default |
+| Read a path named in a `Read(...)` deny rule, with `cat` | refused |
+| Write outside the worktree, then inside it | refused, then allowed |
+| `curl` to example.com, then to api.github.com | blocked by the proxy, then 200 |
+| `herdr pane list` | refused: the socket is out of reach |
+| `ssh-add -l`, with the socket allowlisted by its real path | reached the agent |
+| `gh api user`, with the keychain and trustd lookups allowed | worked |
+| `git commit` in a worktree, and `go test` | both worked |
+| `git ls-remote` over SSH | failed; see 2b |
 
-These flags apply only to agents prutil starts. An agent the reader started by
-hand keeps whatever the reader gave it, which is why 2c exists.
+Checked from outside the sandbox:
+
+- `herdr agent list` still showed kind `claude` with a live state.
+- `pane process-info` gave argv0 `claude` and the full command line.
+- `agent explain` matched the `live_prompt_box` rule.
+
+So a vendor sandbox leaves the agent a host process that herdr can see, which
+is the premise of this tier.
+
+### 2a. Launch arguments through herdr (built)
+
+`herdr.Controller.StartAgent` takes the agent's own arguments, and
+`Client.StartAgent` sends them after `--`. `Controller.Process` reads a pane's
+foreground command line and working directory from `pane process-info`.
+
+The arguments come from the kind's profile. The planned `herdr.agent_args`
+setting was not built. A hand-written argument list could undo the sandbox,
+and prutil could then no longer say what it had started. A profile keeps the
+arguments and the knowledge of what they do in one place.
+
+herdr itself refuses an argument it cannot encode safely for the target shell.
+It did so when a path carrying colour escape codes was passed by mistake. That
+is a second backstop behind prutil's own.
 
 ### 2b. A profile for each vendor
 
-The key names below come from each vendor's documentation at the time of
-writing. Confirm them against the installed version before shipping anything.
+A `sandbox.Profile` has two hooks:
 
-**Claude Code.** On first run, prutil writes `agent-settings.json` into its
-application directory. Use the same temporary-file-and-hard-link write that
-`Store.LoadOrCreateConfig` uses, with mode 0600. The reader can edit the file
-afterwards, and it stays out of Go code. In outline:
+- `Launch` writes whatever policy the arguments refer to, and returns the
+  arguments with the posture the vendor says they give.
+- `Inspect` asks about an agent that is already running.
 
-```json
-{
-  "sandbox": {
-    "enabled": true,
-    "allowUnsandboxedCommands": false,
-    "autoAllowBashIfSandboxed": true,
-    "network": {
-      "allowedDomains": ["github.com", "api.github.com", "*.githubusercontent.com",
-                         "proxy.golang.org", "sum.golang.org"],
-      "allowUnixSockets": ["<value of SSH_AUTH_SOCK>"]
-    }
-  },
-  "permissions": {
-    "deny": [
-      "Read(~/.ssh/id_*)", "Read(~/.aws/**)", "Read(~/.gnupg/**)", "Read(~/.netrc)",
-      "Read(~/.config/gh/**)", "Read(~/.config/prutil/**)", "Read(~/.config/herdr/**)",
-      "Edit(.github/workflows/**)", "Edit(.claude/**)", "Edit(.mcp.json)",
-      "Bash(herdr *)"
-    ]
-  }
-}
-```
+A kind with no `Launch` is started as it always was.
 
-Why each part is there:
+**Claude Code (built).** The profile keeps two files beneath the application
+directory:
 
-- **`allowUnsandboxedCommands: false`** stops the model asking its way out.
-- **`autoAllowBashIfSandboxed`** lets an unattended agent work without stopping
-  at a permission dialog. Without it, herdr would report the agent `blocked`
-  and prutil would stop there.
-- **The only unix socket allowed is the SSH agent's.** That keeps herdr's
-  socket out of reach, which is the lateral-movement fix. Confirm it by running
-  `herdr pane list` from the agent's shell: it must fail.
-- **Workflow files are denied** because a workflow changed on a branch runs
-  with the repository's secrets when it is pushed. Changes to CI belong to a
-  person.
-- **`.claude/**` and `.mcp.json` are denied** so that an injected agent cannot
-  loosen the configuration its next session starts with.
+- `sandbox/claude-settings.json` is the reader's policy. prutil writes it once,
+  on first use, with mode 0600, and never again. The defaults are in
+  `claudeDefaultPolicy`.
+- `sandbox/launch/claude-<hash>.json` is written for each start. It is the
+  reader's policy plus what only a launch can know. It is named by its contents
+  and never rewritten, so a running agent's command line names exactly what it
+  read.
+
+Before any agent starts, prutil runs `claude --settings <launch file> sandbox
+status` from the directory the agent will run in. That reports whether the file
+sandboxes the agent, and whether strictly. prutil acts on Claude's answer
+rather than on its own reading of the file.
+
+Building it overturned several parts of the plan:
+
+- **One deny rule, not two.** A `Read(...)` or `Edit(...)` deny rule is merged
+  into the sandbox's own read and write lists. It confines shell commands as
+  well as the file tools. The "deny every path twice" rule under *Vendor
+  compatibility* holds for the other vendors until shown otherwise, but not for
+  Claude.
+- **No `Bash(herdr *)` rule.** It matches only the command as typed, and
+  `bash probe.sh` walked straight past it. The herdr socket is kept out by
+  leaving it off `allowUnixSockets`, which the sandbox enforces.
+- **`~/.config/gh` stays readable.** gh cannot reply on a thread without it, and
+  the token is in the keychain regardless.
+- **The SSH socket is not in the reader's file.** On macOS, `SSH_AUTH_SOCK`
+  changes every boot and lives under `/var`, which is a link to `/private/var`,
+  and the sandbox matches real paths. The launch file lists the socket under
+  both names.
+- **gh needs two Mach lookups:** `com.apple.SecurityServer` for its token in the
+  keychain, and `com.apple.trustd` for Go's TLS verification. Without trustd,
+  gh reports its token as invalid.
+- **Git goes over HTTPS.** SSH cannot leave Claude's sandbox on macOS. The
+  sandbox's SOCKS proxy requires authentication, and the `nc -X 5`
+  ProxyCommand the sandbox gives SSH offers none; having socat installed does
+  not change which one it uses. So the launch file sends the pull request
+  owner's git traffic over HTTPS, with `gh auth git-credential` as the
+  credential helper. The rules travel as `GIT_CONFIG_COUNT` entries in the
+  session's environment, and the reader's own git configuration is never
+  touched.
+
+  The rules are owner-length, for `insteadOf` and `pushInsteadOf` both. git
+  takes the longest matching prefix, and a reader who rewrites
+  `https://github.com/` to SSH already has a host-level rule as long as any
+  that prutil could write.
+- **Worktrees and the Go cache were never a problem.** A commit in a worktree
+  writes to the main repository's `.git`, and `go test` writes under
+  `~/Library/Caches`. The sandbox allowed both.
+- **Strict mode protects the policy from the branch.** A `--settings` file with
+  `allowUnsandboxedCommands: false` makes Claude ignore the sandbox values in
+  the repository's own `.claude` settings, which belong to the branch under
+  review.
+
+**GitHub Copilot CLI and Antigravity CLI (not built).** The plans below come
+from vendor documentation and are unverified. `tier2-handoff.md` says what to
+check before building on them.
 
 **GitHub Copilot CLI.** There is no launch-time policy file. The README tells
 the reader to open `/sandbox` once and set these in `~/.copilot/settings.json`:
@@ -493,39 +550,57 @@ token in the environment. Some GitHub pages still say local sandboxing needs
   sandbox's outbound allowlist is built;
 - add no `unsandboxed` allow rules.
 
-### 2c. Automatic handoffs go only to contained agents
+### 2c. Automatic handoffs go only to contained agents (built)
 
-Add `security.require_sandbox`. It is on by default for every kind that has a
-sandbox. `Dispatcher.pick` (`internal/handoff/handoff.go:653`) then accepts an
-agent for an automatic handoff only when one of these holds:
+`security.require_sandbox` is on by default. It applies to kinds that have a
+profile. For those, `Dispatcher.pick` accepts an agent for an automatic handoff
+only when its vendor confirms the agent is contained. prutil reads the agent's
+command line from herdr and asks the profile about it, from the agent's own
+directory. The answer is cached for a minute.
 
-- **prutil started it with `agent_args`** in this session. The dispatcher
-  remembers the pane ids it started.
-- **For Claude only:** `claude sandbox status`, run with the agent's directory
-  as its working directory, reports `"enabled":true`. It is one short process
-  per candidate, cached briefly, the way `git.Client` caches what `Identify`
-  learns.
+That replaced the plan to remember which panes prutil had started. A list of
+panes would forget prutil's own contained agents on every restart, and then
+pass them over; the command line outlives a restart. An agent whose command
+line cannot be read is not contained.
 
-An unsandboxed agent the reader started by hand is passed over, and the
-`ErrNoAgent` detail says why. A reader who wants those agents used can turn the
-sandbox on in their own user settings. For Copilot CLI and `agy`, which cannot
-report their state, only agents prutil started qualify.
+An agent that is on the pull request but not contained is not answered with
+`fallback: new`. Starting a contained agent beside it would put two agents on
+one branch. The watcher reports it instead, naming the agent and `W` as the
+override. `W` and `F` can use the agent, because the reader chose it
+(`Request.Manual`).
 
-`W` remains the explicit override, as it already is for provisioning. Setting
-`require_sandbox: false` restores today's behaviour.
+When the requirement is on, provisioning also refuses a launch that Claude says
+does not sandbox the agent.
+
+### A shell escape the sandbox does not cover
+
+Claude Code runs an input line beginning with `!` as a shell command without
+involving the model. In 2.1.282 that command runs **outside the sandbox**, even
+in strict mode. From a sandboxed agent's bash mode, a write outside the
+worktree succeeded and herdr's socket answered.
+
+So `herdr.Client.Prompt` refuses any prompt with a line beginning `!`, beside
+its refusal of control characters. A sandboxed agent cannot type such a line
+itself, because herdr's socket is out of its reach.
 
 ### What tier 2 leaves open
 
-To push and to reply on threads, the agent still needs:
+To push and to reply on threads, a sandboxed Claude agent still has:
 
-- the SSH agent;
-- the gh token in the keychain;
-- network access to GitHub.
+- the gh token, through the keychain lookup;
+- network access to GitHub;
+- the SSH agent. git no longer uses it for the pull request's owner, and SSH
+  cannot leave the sandbox on macOS, but other platforms route SSH differently.
 
 An injected agent inside the sandbox can therefore still push to, or comment
-on, anything those credentials reach. That includes posting what it has read
-to a public issue. Tier 3b removes this. Until then, the zero-code steps below
+on, anything that token reaches. That includes posting what it has read to a
+public issue. Tier 3b removes this. Until then, the zero-code steps below
 narrow it.
+
+**Not yet verified: an authenticated push through the sandbox's HTTP proxy.**
+The rewrite, the credential helper and a dry-run push were all shown to work,
+but only from bash mode, which runs outside the sandbox. The first real `W`
+handoff settles it.
 
 ## Tier 2b (optional): one wrapper for every agent
 
@@ -689,19 +764,24 @@ These are worth taking now, whatever gets built:
 
 ## Order
 
-1. **Tier 1.** It closes the zero-click route and the terminal injection, and
-   touches:
+1. **Tier 1 (built).** It closes the zero-click route and the terminal
+   injection, and touches:
    - `internal/gh/{query,wire}.go` and new fixtures in `internal/gh/testdata/`;
    - `internal/model/{review,pr}.go`;
    - `internal/home/{config,config_template,home}.go`;
    - `internal/handoff/handoff.go`;
    - `internal/herdr/herdr.go`;
    - `internal/ui/{watch,watch_detail}.go`.
-2. **Tier 2.** It bounds what gets through, and touches:
-   - `internal/herdr/herdr.go`, for `StartAgent` arguments;
+2. **Tier 2 (built for Claude Code).** It bounds what gets through, and
+   touches:
+   - `internal/sandbox`, a package of its own, one profile per kind of agent;
+   - `internal/herdr/herdr.go`, for `StartAgent` arguments and `Process`;
    - `internal/handoff/handoff.go`, for `provision` and the `pick` filter;
-   - `internal/home`, for writing the settings file;
+   - `internal/home`, for `security.require_sandbox` and the file helpers;
    - `cmd/prutil/main.go`, for wiring.
+
+   Copilot CLI and agy follow as two functions each, in `copilot.go` and
+   `agy.go`; see `tier2-handoff.md`.
 3. **Tier 3a,** behind `security.reader`.
 4. **Tier 3b,** as its own change.
 5. **Tier 2b and containers** only if a need appears that the vendor sandboxes
@@ -736,18 +816,31 @@ These are worth taking now, whatever gets built:
 - a gemini review is still sent;
 - resolving the hostile thread releases the hold.
 
-**In each agent prutil starts,** run from the agent's own shell:
+**In each agent prutil starts,** from the agent's own shell. For Claude Code
+this was run against a live sandboxed agent; the results are in Tier 2 under
+*What was verified, and how*.
 
-- `herdr pane list` fails;
-- reading `~/.config/gh/hosts.yml` is refused;
-- `curl https://example.com` is refused;
-- `go test ./...`, `git commit` and a push to the pull request's branch
-  succeed;
-- afterwards, `herdr agent list` and `herdr agent explain` still show the
-  agent's kind and state.
+- `herdr pane list` fails. Verified for Claude.
+- A path the policy denies cannot be read. Verified for Claude, with `cat`.
+  `~/.config/gh/hosts.yml` turned out to be one gh needs, so it is no longer
+  denied; see 2b.
+- `curl https://example.com` is refused. Verified for Claude.
+- `go test ./...` and `git commit` succeed. Verified for Claude.
+- A push to the pull request's branch succeeds. For Claude this is unverified
+  from inside the sandbox; the first real `W` handoff settles it.
+- Afterwards, `herdr agent list` and `herdr agent explain` still show the
+  agent's kind and state. Verified for Claude.
 
-For Claude, `claude sandbox status` in a user-sandboxed checkout reports
-`"enabled":true`, and an unsandboxed agent is passed over with that reason.
+For Claude, `claude --settings <launch file> sandbox status` reports
+`"enabled":true` and `"strictMode":true`. The test
+`TestTheRealClaudeAcceptsThePolicyAsStrict` checks that against the installed
+binary when `PRUTIL_LIVE_CLAUDE=1` is set, without starting an agent.
+
+Run model-driven probes sparingly. A session that asks an agent to probe its
+own sandbox and push to GitHub reads like security testing, and a model's
+safeguards flagged two of the four probe sessions here. Bash mode avoids the
+model, but runs outside the sandbox, so it cannot stand in for a sandboxed
+command.
 
 ## Sources
 

@@ -429,6 +429,7 @@ security:
     - COLLABORATOR
   trusted_authors:
     - "gemini-code-assist[bot]"  # [bot] matches only a GitHub App
+  require_sandbox: true        # automatic handoffs only to sandboxed agents
 ```
 
 Discovery roots are walked four levels deep, and a checkout's origin remote is
@@ -503,6 +504,41 @@ actually read, so the first failed-check handoff after starting prutil waits
 one polling interval while it reads them. The same wait applies when GitHub
 refuses that read: not knowing who has commented leaves the automatic paths
 shut rather than open. `W` and `F` are your own key presses and do not wait.
+
+#### Sandboxed agents
+
+A Claude Code agent that prutil starts runs inside Claude's own sandbox. Its
+shell commands can write only inside its worktree, reach only the domains the
+policy allows, and cannot reach herdr's socket, so a talked-into agent cannot
+type into your other panes. It cannot ask its way out, either: the sandbox is
+strict. What it can still do is what the work needs: commit, run the tests,
+push, and reply on threads with gh.
+
+The policy is `sandbox/claude-settings.json` in prutil's directory. prutil
+writes it the first time it starts a Claude agent and never again, so it is
+yours to edit. Before each start, prutil asks Claude what the policy gives the
+agent, and refuses to start it if the answer is not sandboxed. Two things are
+added at each start rather than kept in your file:
+
+- the SSH agent's socket, which moves every time a Mac boots;
+- git rules that send the pull request owner's repositories over HTTPS, with
+  gh as the credential helper. SSH cannot get out of Claude's sandbox on macOS.
+  The rules apply to that agent's session only; your own git configuration,
+  including any rewrite of HTTPS to SSH, is not touched. If your organisation
+  enforces SSO, your gh token needs authorising for it, as your SSH key did.
+
+With `security.require_sandbox` on, which is the default, the watcher hands
+work only to a Claude agent that Claude confirms is sandboxed. A Claude agent
+you started by hand without a sandbox is passed over, with the reason and a
+reminder that `W` and `F` can still use it. prutil will not start a second
+agent beside it. Copilot CLI and agy are not sandboxed by prutil yet, and are
+handled as before.
+
+The WATCH history says what each handoff went to, for example
+`claude w3:p1 · sandboxed, strict`. After your first `W` on a test pull
+request, check that the agent's push reached GitHub: that is the one part of
+the sandbox that could not be verified from here. If it did not, set
+`require_sandbox: false` and say what the agent reported.
 
 Explicit `repos` entries win. When none exists, prutil checks its private
 `repos.json` cache and then scans `discovery.roots`, validating every candidate
