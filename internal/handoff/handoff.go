@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/relloyd/prutil/internal/herdr"
 	"github.com/relloyd/prutil/internal/home"
 	"github.com/relloyd/prutil/internal/model"
+	"github.com/relloyd/prutil/internal/sandbox"
 )
 
 // Failures a caller has to phrase differently from one another.
@@ -45,6 +47,10 @@ var (
 	// ErrAgentKindRequired means a manual handoff needs to create an agent but
 	// the configuration deliberately does not name a concrete agent kind.
 	ErrAgentKindRequired = errors.New("herdr.agent_kind is required to start a new agent")
+	// ErrUncontained means the only agent working on the pull request is not
+	// inside its vendor's sandbox, or that prutil would have started one whose
+	// policy does not put it there.
+	ErrUncontained = errors.New("no sandboxed agent is working on this pull request")
 	// ErrUntrustedAuthor means the pull request was opened by somebody outside
 	// the reader's trust boundary, so prutil will not check its head out.
 	ErrUntrustedAuthor = errors.New("prutil will not create a workspace over another author's branch")
@@ -93,6 +99,11 @@ type Request struct {
 	// AllowProvision means the reader explicitly pressed W and permits a
 	// no-agent handoff to create a worktree and start an agent.
 	AllowProvision bool
+	// Manual means a person asked for this handoff with a key press, rather
+	// than the watcher finding the work. It is what lets W and F use an agent
+	// that is not sandboxed: the reader chose that agent, while the watcher
+	// acts on its own and must not.
+	Manual bool
 	// CheckHandoff makes this a failed-check investigation rather than review
 	// feedback. It uses the separate check prompt and carries all failures.
 	CheckHandoff bool          // use the failed-check investigation prompt
@@ -125,6 +136,9 @@ type Result struct {
 	Tab         string
 	// Waited is how long prutil spent waiting for a working agent to settle.
 	Waited time.Duration
+	// Sandbox is what the agent's vendor said about its sandbox, in a phrase,
+	// or empty when prutil has no profile for its kind.
+	Sandbox string
 }
 
 // Dispatcher sends pull request feedback to a coding agent.
@@ -135,9 +149,22 @@ type Dispatcher struct {
 	fetch    git.PullRequestFetcher
 	cfg      home.HerdrConfig
 	security home.SecurityConfig
+	sandbox  Container
 	selfPane string
 	idleGap  time.Duration
 	sleep    func(ctx context.Context, d time.Duration) bool
+}
+
+// Container is the sandbox registry a dispatcher consults. sandbox.Sandbox is
+// the real one.
+type Container interface {
+	// Supports reports whether prutil can start this kind of agent contained.
+	Supports(kind string) bool
+	// Launch prepares one agent's policy and returns the arguments that start
+	// it contained, with the posture its vendor says they give.
+	Launch(ctx context.Context, kind string, t sandbox.Target) (sandbox.Launch, error)
+	// Inspect reports the posture of an agent already running in dir.
+	Inspect(ctx context.Context, kind, dir string, argv []string) (sandbox.Posture, error)
 }
 
 // Options wires a dispatcher to its collaborators.
@@ -153,6 +180,10 @@ type Options struct {
 	// Config supplies the prompt, the agent kind and the wait budget from
 	// Herdr, and the agent polling gap from Watch.
 	Config home.Config
+	// Sandbox knows how to start each kind of agent inside its vendor's
+	// sandbox and how to ask about one already running. Nil starts every agent
+	// as it always was started.
+	Sandbox Container
 	// SelfPane is the herdr pane prutil is itself running in, which must never
 	// be handed work: that pane is the reader's, and on a good day it is the
 	// terminal they are watching prutil in.
@@ -175,6 +206,7 @@ func New(opts Options) *Dispatcher {
 		fetch:    opts.Fetch,
 		cfg:      opts.Config.Herdr,
 		security: opts.Config.Security,
+		sandbox:  opts.Sandbox,
 		selfPane: opts.SelfPane,
 		idleGap:  opts.Config.Watch.IdleInterval.Duration(),
 		sleep:    sleep,
@@ -196,8 +228,16 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) (Result, error) 
 	pr := req.PR
 	pr.HeadOID = req.headOID()
 
-	best, passed, found := d.pick(ctx, agents, pr)
+	best, passed, uncontained, found := d.pick(ctx, agents, pr, !req.Manual)
 	if !found {
+		if len(uncontained) > 0 {
+			// An agent is on the pull request, just not sandboxed. Starting a
+			// contained one beside it would put two agents on one branch.
+			err := uncontainedAgents(pr, uncontained)
+			res := Result{Outcome: home.OutcomeNoAgent, Detail: err.Error()}
+			d.toast(ctx, req, err.Error())
+			return res, err
+		}
 		if req.AllowProvision || (d.cfg.Fallback == home.FallbackNew && d.canProvision()) {
 			return d.provision(ctx, agents, req)
 		}
@@ -209,6 +249,15 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) (Result, error) 
 
 	agent := best.agent
 	res := Result{Target: agent.Target(), Kind: agent.Kind, Dir: agent.Dir()}
+	if best.posture == nil && d.sandbox != nil && d.sandbox.Supports(agent.Kind) {
+		// A handoff the reader asked for skipped the check; ask anyway, so the
+		// log says what the work went to.
+		p := d.posture(ctx, agent)
+		best.posture = &p
+	}
+	if best.posture != nil {
+		res.Sandbox = best.posture.String()
+	}
 	return d.send(ctx, req, agent, best.note(pr), res, false)
 }
 
@@ -503,7 +552,14 @@ func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Re
 		note = staleWorkspaceNote(short(reused), head, req.PR.Number)
 	}
 
-	agent, err := d.herdr.StartAgent(ctx, name, d.cfg.AgentKind, session.RootPaneID, nil, startAgentTimeout)
+	agentArgs, posture, err := d.contain(ctx, req, session.RootPaneID, checkout.Root)
+	if err != nil {
+		return d.fail(ctx, req, res, err)
+	}
+	if posture != nil {
+		res.Sandbox = posture.String()
+	}
+	agent, err := d.herdr.StartAgent(ctx, name, d.cfg.AgentKind, session.RootPaneID, agentArgs, startAgentTimeout)
 	if err != nil {
 		return d.fail(ctx, req, res, err)
 	}
@@ -655,6 +711,75 @@ func (d *Dispatcher) mayProvision(req Request) error {
 	return fmt.Errorf("%w: %s was opened by %s", ErrUntrustedAuthor, req.PR.Key(), author)
 }
 
+// contain prepares the sandbox an agent prutil is about to start will run in,
+// and returns its arguments with the posture the vendor said they give. A kind
+// with no profile is started as it always was, with neither.
+//
+// The question is asked from the directory the agent will run in, which is
+// wherever the new pane's shell is, because that project's own settings are
+// part of what the agent gets. Where herdr cannot say, the repository's own
+// checkout is the nearest thing.
+func (d *Dispatcher) contain(ctx context.Context, req Request, pane, fallbackDir string) ([]string, *sandbox.Posture, error) {
+	kind := d.cfg.AgentKind
+	if d.sandbox == nil || !d.sandbox.Supports(kind) {
+		return nil, nil, nil
+	}
+	dir := fallbackDir
+	if proc, err := d.herdr.Process(ctx, pane); err == nil && proc.CWD != "" {
+		dir = proc.CWD
+	}
+	host, owner := repoHost(req.PR)
+	launch, err := d.sandbox.Launch(ctx, kind, sandbox.Target{Dir: dir, Host: host, Owner: owner})
+	if err != nil {
+		return nil, nil, fmt.Errorf("could not prepare the %s sandbox: %w", kind, err)
+	}
+	if !launch.Posture.Contained && d.security.RequireSandbox {
+		return nil, &launch.Posture, fmt.Errorf("%w: prutil would start %s with %s; "+
+			"fix its policy, or set security.require_sandbox: false", ErrUncontained, kind, launch.Posture.Detail)
+	}
+	return launch.Args, &launch.Posture, nil
+}
+
+// posture asks what an agent already running was launched into. Anything
+// prutil cannot establish reads as not contained, with the reason in Detail.
+func (d *Dispatcher) posture(ctx context.Context, agent herdr.Agent) sandbox.Posture {
+	proc, err := d.herdr.Process(ctx, agent.PaneID)
+	if err != nil {
+		return sandbox.Posture{Detail: "could not read how it was launched: " + err.Error()}
+	}
+	p, err := d.sandbox.Inspect(ctx, agent.Kind, agent.Dir(), proc.Argv)
+	if err != nil {
+		return sandbox.Posture{Detail: err.Error()}
+	}
+	return p
+}
+
+// repoHost is the GitHub host a pull request lives on, from its own URL, and
+// the owner of its repository.
+func repoHost(pr model.PullRequest) (host, owner string) {
+	if u, err := url.Parse(pr.URL); err == nil {
+		host = u.Host
+	}
+	owner, _, _ = strings.Cut(pr.Repo, "/")
+	return host, owner
+}
+
+// uncontainedAgents says which agents were passed over for not being inside
+// their vendor's sandbox, and how the reader gets past it.
+func uncontainedAgents(pr model.PullRequest, passed []candidate) error {
+	seen := make([]string, 0, len(passed))
+	for _, c := range passed {
+		why := "not sandboxed"
+		if c.posture != nil && c.posture.Detail != "" {
+			why = c.posture.Detail
+		}
+		seen = append(seen, agentLabel(c.agent)+" ("+why+")")
+	}
+	return fmt.Errorf("%w: %s is on %s but only a sandboxed agent is given work unasked; "+
+		"start it sandboxed, press W to use it anyway, or set security.require_sandbox: false",
+		ErrUncontained, strings.Join(seen, ", "), pr.Key())
+}
+
 // agentName derives a valid, stable herdr name from the pull request and adds
 // a short numeric suffix only when a live agent already holds that name.
 func agentName(pr model.PullRequest, agents []herdr.Agent) (string, error) {
@@ -715,6 +840,9 @@ type candidate struct {
 	// with commits of its own on top.
 	hasHead bool
 	score   int
+	// posture is what the agent's vendor said about its sandbox, when prutil
+	// asked.
+	posture *sandbox.Posture
 }
 
 // The evidence that a checkout is working on the pull request, and what each
@@ -731,8 +859,14 @@ const (
 // pick chooses the agent to hand the work to. It also returns the agents it
 // passed over in the pull request's repository, so that a handoff nobody can
 // take can say who was there and what they had checked out.
-func (d *Dispatcher) pick(ctx context.Context, agents []herdr.Agent, pr model.PullRequest) (candidate, []candidate, bool) {
-	var found, fallback, passed []candidate
+//
+// With automatic set and security.require_sandbox on, an agent of a kind
+// prutil can contain is accepted only once its vendor confirms it is
+// sandboxed. Those that are not are returned apart, uncontained, rather than
+// among the passed, because they are on the pull request and the caller must
+// not start another agent beside them.
+func (d *Dispatcher) pick(ctx context.Context, agents []herdr.Agent, pr model.PullRequest, automatic bool) (candidate, []candidate, []candidate, bool) {
+	var found, fallback, passed, uncontained []candidate
 	for _, agent := range agents {
 		if agent.PaneID != "" && agent.PaneID == d.selfPane {
 			continue
@@ -748,6 +882,18 @@ func (d *Dispatcher) pick(ctx context.Context, agents []herdr.Agent, pr model.Pu
 		c := d.assess(ctx, agent, checkout, pr)
 		if agent.Settled() {
 			c.score += scoreSettled
+		}
+		if c.score <= scoreSettled && d.cfg.Fallback != home.FallbackRepo {
+			passed = append(passed, c)
+			continue
+		}
+		if automatic && d.security.RequireSandbox && d.sandbox != nil && d.sandbox.Supports(agent.Kind) {
+			p := d.posture(ctx, agent)
+			c.posture = &p
+			if !p.Contained {
+				uncontained = append(uncontained, c)
+				continue
+			}
 		}
 		switch {
 		case c.score > scoreSettled:
@@ -765,7 +911,7 @@ func (d *Dispatcher) pick(ctx context.Context, agents []herdr.Agent, pr model.Pu
 		found = fallback
 	}
 	if len(found) == 0 {
-		return candidate{}, passed, false
+		return candidate{}, passed, uncontained, false
 	}
 
 	// Sorted rather than scanned so that two equally good agents are picked
@@ -776,7 +922,7 @@ func (d *Dispatcher) pick(ctx context.Context, agents []herdr.Agent, pr model.Pu
 		}
 		return found[i].agent.PaneID < found[j].agent.PaneID
 	})
-	return found[0], passed, true
+	return found[0], passed, uncontained, true
 }
 
 // assess asks git what one checkout in the pull request's repository is

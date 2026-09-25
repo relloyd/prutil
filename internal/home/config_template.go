@@ -114,6 +114,10 @@ func DefaultConfigTemplate() []byte {
 	out.WriteString("  # Extra logins. A name ending in [bot] matches only a GitHub App, so a\n")
 	out.WriteString("  # person who registers that name does not inherit its trust.\n")
 	writeSequence(&out, "trusted_authors", cfg.Security.TrustedAuthors)
+	out.WriteString("  # Hand work automatically only to agents their vendor's sandbox contains, and\n")
+	out.WriteString("  # refuse to start one whose policy does not sandbox it. Applies to Claude Code\n")
+	out.WriteString("  # today; W and F can still use an agent that is not sandboxed.\n")
+	_, _ = fmt.Fprintf(&out, "  require_sandbox: %t\n", cfg.Security.RequireSandbox)
 
 	return []byte(out.String())
 }

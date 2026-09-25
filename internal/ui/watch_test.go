@@ -1844,9 +1844,41 @@ func TestFInvestigatesWithoutAskingWhenNothingIsHeld(t *testing.T) {
 		"the confirmation is the hold's, not a second press on every investigation")
 }
 
-func TestACheckHandoffKnowsTheViewer(t *testing.T) {
-	// Provisioning refuses when prutil cannot tell whose pull request it is,
-	// so a check handoff built without the viewer could never create one.
+// lastRequest is the most recent handoff of the kind asked for.
+func lastRequest(t *testing.T, d *fakeDispatcher, check bool) handoff.Request {
+	t.Helper()
+	reqs := d.requests()
+	for i := len(reqs) - 1; i >= 0; i-- {
+		if reqs[i].CheckHandoff == check {
+			return reqs[i]
+		}
+	}
+	t.Fatalf("no %s handoff was dispatched", map[bool]string{true: "check", false: "review"}[check])
+	return handoff.Request{}
+}
+
+func TestOnlyAHandoffAPersonAskedForIsMarkedManual(t *testing.T) {
+	// Manual is what lets a handoff use an agent that is not sandboxed, so the
+	// watcher must never set it and every key press must.
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	assert.False(t, lastRequest(t, dispatcher, false).Manual, "the watcher found this work itself")
+
+	handOver(t, app)
+	assert.True(t, lastRequest(t, dispatcher, false).Manual, "W is the reader")
+
+	investigate(t, app, "F")
+	assert.True(t, lastRequest(t, dispatcher, true).Manual, "so is F")
+}
+
+func TestAnAutomaticCheckHandoffIsNotManualAndKnowsTheViewer(t *testing.T) {
+	// The check path built its request without the viewer, so from the day the
+	// author check landed it could never create a workspace: provisioning
+	// refuses when prutil cannot tell whose pull request it is.
 	app, _, _ := newTestApp(t, 120, 40)
 	dispatcher := dispatcherOf(t, app)
 	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
@@ -1859,9 +1891,15 @@ func TestACheckHandoffKnowsTheViewer(t *testing.T) {
 		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
 	}))
 
-	reqs := dispatcher.requests()
-	require.NotEmpty(t, reqs)
-	last := reqs[len(reqs)-1]
-	require.True(t, last.CheckHandoff)
-	assert.Equal(t, "relloyd", last.Viewer)
+	req := lastRequest(t, dispatcher, true)
+	assert.Equal(t, "relloyd", req.Viewer)
+	assert.False(t, req.Manual)
+}
+
+func TestTheHandoffHistoryNamesTheSandboxTheWorkWentTo(t *testing.T) {
+	line := handoffHistoryLine(testNow, home.Handoff{
+		At: testNow, Outcome: home.OutcomeSent, Kind: "claude", Target: "w3:p1", Sandbox: "sandboxed, strict",
+	})
+
+	assert.Equal(t, "just now · sent · claude w3:p1 · sandboxed, strict", line)
 }

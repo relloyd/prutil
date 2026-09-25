@@ -17,6 +17,7 @@ import (
 	"github.com/relloyd/prutil/internal/herdr"
 	"github.com/relloyd/prutil/internal/home"
 	"github.com/relloyd/prutil/internal/model"
+	"github.com/relloyd/prutil/internal/sandbox"
 )
 
 // maxPromptAttemptsInTests mirrors the dispatcher's own cap on submissions to
@@ -1370,4 +1371,226 @@ func TestAnAgentAlreadyCheckedOutOnSomebodyElsesBranchStillGetsTheWork(t *testin
 	require.NoError(t, err)
 	assert.Equal(t, home.OutcomeSent, res.Outcome)
 	assert.Equal(t, "w3:p1", res.Target)
+}
+
+// fakeContainer stands in for the sandbox registry.
+type fakeContainer struct {
+	supports  map[string]bool
+	launch    sandbox.Launch
+	launchErr error
+	launched  []sandbox.Target
+	// postures answers Inspect by the agent's command line, joined by spaces.
+	postures  map[string]sandbox.Posture
+	inspected []string
+}
+
+func (f *fakeContainer) Supports(kind string) bool { return f.supports[kind] }
+
+func (f *fakeContainer) Launch(_ context.Context, _ string, t sandbox.Target) (sandbox.Launch, error) {
+	f.launched = append(f.launched, t)
+	return f.launch, f.launchErr
+}
+
+func (f *fakeContainer) Inspect(_ context.Context, _ string, dir string, argv []string) (sandbox.Posture, error) {
+	f.inspected = append(f.inspected, dir+"|"+strings.Join(argv, " "))
+	return f.postures[strings.Join(argv, " ")], nil
+}
+
+var (
+	strict       = sandbox.Posture{Known: true, Contained: true, Strict: true, Detail: "claude sandbox on, from policy, strict"}
+	off          = sandbox.Posture{Known: true, Detail: "claude sandbox off"}
+	launchArgs   = []string{"--settings", "/home/p/sandbox/launch/claude-abc.json"}
+	launchedArgv = "claude --settings /home/p/sandbox/launch/claude-abc.json"
+)
+
+// claudeBox contains Claude and nothing else, as prutil does today.
+func claudeBox(launch sandbox.Posture) *fakeContainer {
+	return &fakeContainer{
+		supports: map[string]bool{"claude": true},
+		launch:   sandbox.Launch{Args: launchArgs, Posture: launch},
+		postures: map[string]sandbox.Posture{launchedArgv: strict, "claude": off},
+	}
+}
+
+func dispatcherWithSandbox(t *testing.T, control *fakeHerdr, checkouts handoff.Identifier, box handoff.Container, tune func(*home.Config)) *handoff.Dispatcher {
+	t.Helper()
+	cfg := home.DefaultConfig()
+	cfg.Herdr.Skill = "pr-triage"
+	cfg.Herdr.AgentKind = "claude"
+	if tune != nil {
+		tune(&cfg)
+	}
+	return handoff.New(handoff.Options{
+		Herdr:    control,
+		Git:      checkouts,
+		Repos:    &fakeResolver{checkout: git.Checkout{Root: "/work/prutil", Repo: "relloyd/prutil"}},
+		Fetch:    &fakeFetcher{},
+		Config:   cfg,
+		Sandbox:  box,
+		SelfPane: "w1:p3",
+		Sleep:    func(ctx context.Context, _ time.Duration) bool { return ctx.Err() == nil },
+	})
+}
+
+// provisioningControl is a herdr with no agents, where a new worktree's pane
+// sits in its own directory.
+func provisioningControl() *fakeHerdr {
+	return &fakeHerdr{
+		create:    herdr.WorktreeSession{WorkspaceID: "w8", TabID: "w8:t1", RootPaneID: "w8:p1"},
+		start:     herdr.Agent{Kind: "claude", Status: herdr.StatusIdle, CWD: "/work/prutil-42", PaneID: "w8:p1", Name: "pr-relloyd-prutil-42"},
+		processes: map[string]herdr.Process{"w8:p1": {Argv: []string{"-zsh"}, CWD: "/work/prutil-42"}},
+	}
+}
+
+func manual() handoff.Request {
+	req := request()
+	req.AllowProvision, req.Manual = true, true
+	return req
+}
+
+func TestAProvisionedClaudeAgentIsStartedInsideItsSandbox(t *testing.T) {
+	control, box := provisioningControl(), claudeBox(strict)
+	dispatcher := dispatcherWithSandbox(t, control, fakeGit{}, box, nil)
+
+	res, err := dispatcher.Dispatch(context.Background(), manual())
+
+	require.NoError(t, err)
+	require.Len(t, control.startArgs, 1)
+	assert.Equal(t, launchArgs, control.startArgs[0], "the profile's arguments reach the agent")
+	assert.Equal(t, []sandbox.Target{{Dir: "/work/prutil-42", Host: "github.com", Owner: "relloyd"}}, box.launched,
+		"the policy is checked from the new worktree, for the pull request's own repository")
+	assert.Equal(t, "sandboxed, strict", res.Sandbox)
+}
+
+func TestPrutilWillNotStartAnAgentItsPolicyDoesNotSandbox(t *testing.T) {
+	control := provisioningControl()
+	dispatcher := dispatcherWithSandbox(t, control, fakeGit{}, claudeBox(off), nil)
+
+	res, err := dispatcher.Dispatch(context.Background(), manual())
+
+	require.ErrorIs(t, err, handoff.ErrUncontained)
+	assert.Empty(t, control.started, "a policy that no longer sandboxes is caught before an agent starts")
+	assert.Contains(t, res.Detail, "claude sandbox off")
+	assert.Contains(t, res.Detail, "require_sandbox", "and the reader is told the way out")
+}
+
+func TestWithTheRequirementOffAnUnsandboxedPolicyStillStarts(t *testing.T) {
+	control := provisioningControl()
+	dispatcher := dispatcherWithSandbox(t, control, fakeGit{}, claudeBox(off), func(cfg *home.Config) {
+		cfg.Security.RequireSandbox = false
+	})
+
+	res, err := dispatcher.Dispatch(context.Background(), manual())
+
+	require.NoError(t, err)
+	assert.Equal(t, launchArgs, control.startArgs[0], "the reader's own policy is still the one used")
+	assert.Equal(t, "not sandboxed", res.Sandbox, "and the log says what it is")
+}
+
+func TestAKindPrutilHasNoProfileForIsStartedAsItAlwaysWas(t *testing.T) {
+	control := provisioningControl()
+	control.start.Kind = "copilot"
+	box := claudeBox(strict)
+	dispatcher := dispatcherWithSandbox(t, control, fakeGit{}, box, func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "copilot"
+	})
+
+	res, err := dispatcher.Dispatch(context.Background(), manual())
+
+	require.NoError(t, err)
+	assert.Nil(t, control.startArgs[0], "no arguments")
+	assert.Empty(t, box.launched)
+	assert.Empty(t, res.Sandbox, "and nothing claimed about a sandbox nobody asked about")
+}
+
+// onTheBranch is a herdr with one agent already on the pull request's branch,
+// launched as argv.
+func onTheBranch(kind string, argv ...string) (*fakeHerdr, fakeGit) {
+	control := &fakeHerdr{
+		agents:    []herdr.Agent{{Kind: kind, Status: herdr.StatusIdle, CWD: "/work/retry", PaneID: "w3:p1"}},
+		processes: map[string]herdr.Process{"w3:p1": {Argv: argv, CWD: "/work/retry"}},
+	}
+	return control, fakeGit{"/work/retry": {Repo: "relloyd/prutil", Branch: "feat/uploader-retry"}}
+}
+
+func TestTheWatcherPassesOverAnAgentThatIsNotSandboxedAndStartsNoOtherBesideIt(t *testing.T) {
+	control, checkouts := onTheBranch("claude", "claude")
+	dispatcher := dispatcherWithSandbox(t, control, checkouts, claudeBox(strict), nil)
+
+	res, err := dispatcher.Dispatch(context.Background(), request())
+
+	require.ErrorIs(t, err, handoff.ErrUncontained)
+	assert.Empty(t, control.prompted, "a hand-started agent outside its sandbox gets no work unasked")
+	assert.Empty(t, control.created,
+		"and fallback: new does not start a second agent on the same branch beside it")
+	assert.Equal(t, home.OutcomeNoAgent, res.Outcome)
+	assert.Contains(t, res.Detail, "w3:p1")
+	assert.Contains(t, res.Detail, "claude sandbox off")
+	assert.Contains(t, res.Detail, "press W", "the override is named")
+}
+
+func TestWUsesAnAgentThatIsNotSandboxedBecauseTheReaderChoseIt(t *testing.T) {
+	control, checkouts := onTheBranch("claude", "claude")
+	dispatcher := dispatcherWithSandbox(t, control, checkouts, claudeBox(strict), nil)
+	req := request()
+	req.Manual = true
+
+	res, err := dispatcher.Dispatch(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"w3:p1"}, control.prompted)
+	assert.Equal(t, "not sandboxed", res.Sandbox, "the log still says what the work went to")
+}
+
+func TestTheWatcherHandsWorkToAnAgentPrutilStartedSandboxedEvenAfterARestart(t *testing.T) {
+	// Nothing about this dispatcher remembers starting the agent: the command
+	// line herdr reports is the evidence, and it outlives prutil.
+	control, checkouts := onTheBranch("claude", strings.Fields(launchedArgv)...)
+	box := claudeBox(strict)
+	dispatcher := dispatcherWithSandbox(t, control, checkouts, box, nil)
+
+	res, err := dispatcher.Dispatch(context.Background(), request())
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"w3:p1"}, control.prompted)
+	assert.Equal(t, "sandboxed, strict", res.Sandbox)
+	assert.Equal(t, []string{"/work/retry|" + launchedArgv}, box.inspected,
+		"asked from the agent's own directory, with its own command line")
+}
+
+func TestAnAgentWhoseLaunchCannotBeReadIsNotTreatedAsSandboxed(t *testing.T) {
+	control, checkouts := onTheBranch("claude")
+	control.processes = nil
+	dispatcher := dispatcherWithSandbox(t, control, checkouts, claudeBox(strict), nil)
+
+	res, err := dispatcher.Dispatch(context.Background(), request())
+
+	require.ErrorIs(t, err, handoff.ErrUncontained)
+	assert.Contains(t, res.Detail, "could not read how it was launched")
+}
+
+func TestWithTheRequirementOffTheWatcherUsesAnyAgent(t *testing.T) {
+	control, checkouts := onTheBranch("claude", "claude")
+	dispatcher := dispatcherWithSandbox(t, control, checkouts, claudeBox(strict), func(cfg *home.Config) {
+		cfg.Security.RequireSandbox = false
+	})
+
+	_, err := dispatcher.Dispatch(context.Background(), request())
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"w3:p1"}, control.prompted)
+}
+
+func TestAKindWithNoProfileIsNotHeldToTheRequirement(t *testing.T) {
+	control, checkouts := onTheBranch("copilot", "copilot")
+	box := claudeBox(strict)
+	dispatcher := dispatcherWithSandbox(t, control, checkouts, box, func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = ""
+	})
+
+	_, err := dispatcher.Dispatch(context.Background(), request())
+
+	require.NoError(t, err, "requiring a sandbox prutil cannot start would stop the loop dead for that kind")
+	assert.Equal(t, []string{"w3:p1"}, control.prompted)
+	assert.Empty(t, box.inspected)
 }

@@ -378,6 +378,9 @@ func handoffHistoryLine(now time.Time, handoff home.Handoff) string {
 	if target != "" {
 		parts = append(parts, target)
 	}
+	if handoff.Sandbox != "" {
+		parts = append(parts, handoff.Sandbox)
+	}
 	if handoff.Detail != "" {
 		parts = append(parts, handoff.Detail)
 	}

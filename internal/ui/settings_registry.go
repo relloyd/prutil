@@ -704,6 +704,18 @@ func allSettings() []settingDescriptor {
 		// ---------------------------------------------------------------------
 		// SECURITY
 		// ---------------------------------------------------------------------
+		boolSetting(settingMeta{
+			id:      "security.require_sandbox",
+			section: "SECURITY",
+			title:   "Require a sandboxed agent",
+			detail: "Hand work automatically only to agents their vendor's sandbox contains, and refuse to start one " +
+				"whose policy does not sandbox it. Applies to Claude Code today. W and F can still use any agent.",
+			def:  "on",
+			path: []string{"security", "require_sandbox"},
+		}, field[bool]{
+			get: func(c *home.Config) bool { return c.Security.RequireSandbox },
+			set: func(c *home.Config, v bool) { c.Security.RequireSandbox = v },
+		}),
 		trustSetting(settingMeta{
 			id:      "security.trusted_associations",
 			section: "SECURITY",

@@ -138,6 +138,11 @@ type SecurityConfig struct {
 	// TrustedAuthors are extra logins that carry the same trust. An entry
 	// ending in [bot] matches only a GitHub App.
 	TrustedAuthors []string `yaml:"trusted_authors"`
+	// RequireSandbox keeps automatic handoffs to agents their vendor's
+	// sandbox contains, and stops prutil starting one whose policy does not
+	// sandbox it. It applies only to kinds prutil has a sandbox profile for,
+	// which today is Claude Code; the others are handled as they always were.
+	RequireSandbox bool `yaml:"require_sandbox"`
 }
 
 // TrustPolicy is the whole trust question as the model asks it: whose feedback
@@ -306,6 +311,7 @@ func defaultSecurity() SecurityConfig {
 	return SecurityConfig{
 		TrustedAssociations: []string{"OWNER", "COLLABORATOR"},
 		TrustedAuthors:      []string{"gemini-code-assist[bot]"},
+		RequireSandbox:      true,
 	}
 }
 
