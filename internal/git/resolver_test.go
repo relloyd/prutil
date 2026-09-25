@@ -358,3 +358,40 @@ func TestAnExplicitMappingStillWinsOverAPane(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, explicit, got.Root)
 }
+
+func TestNotFindingACloneSaysWhereItLookedAndWhatToDo(t *testing.T) {
+	base := t.TempDir()
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{}}
+	store := home.OpenIn(filepath.Join(base, "store"))
+
+	cases := []struct {
+		name       string
+		roots      []string
+		candidates []string
+		want       string
+	}{
+		{
+			name:       "a first-run configuration, with herdr's panes looked at",
+			candidates: []string{"/Users/p/prutil"},
+			want: "no local checkout found for relloyd/dummy-repo: no herdr pane is working in a clone of it " +
+				"and no discovery root is configured; add it under Explicit repository paths in the settings pane (s), or open a shell in its clone",
+		},
+		{
+			name:  "roots configured, but none holds it",
+			roots: []string{base},
+			want: "no local checkout found for relloyd/dummy-repo: none of the discovery roots holds one; " +
+				"add it under Explicit repository paths in the settings pane (s), or open a shell in its clone",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := home.DefaultConfig()
+			cfg.Discovery.Roots = tc.roots
+
+			_, err := git.NewResolver(id, cfg, store).Resolve(context.Background(), "relloyd/dummy-repo", tc.candidates...)
+
+			require.ErrorIs(t, err, git.ErrCheckoutNotFound)
+			assert.Equal(t, tc.want, err.Error())
+		})
+	}
+}

@@ -154,7 +154,24 @@ func (r *Resolver) Resolve(ctx context.Context, repo string, candidates ...strin
 		return checkout, nil
 	}
 
-	return Checkout{}, fmt.Errorf("%w for %s", ErrCheckoutNotFound, want)
+	return Checkout{}, fmt.Errorf("%w for %s: %s", ErrCheckoutNotFound, want, notFoundHint(cfg, len(candidates)))
+}
+
+// notFoundHint says where prutil looked and how the reader tells it where the
+// clone is. The bare "no local checkout found" named neither, and a reader who
+// has never set repos or discovery.roots has no reason to know they exist.
+func notFoundHint(cfg home.Config, candidates int) string {
+	var looked []string
+	if candidates > 0 {
+		looked = append(looked, "no herdr pane is working in a clone of it")
+	}
+	if len(cfg.Discovery.Roots) == 0 {
+		looked = append(looked, "no discovery root is configured")
+	} else {
+		looked = append(looked, "none of the discovery roots holds one")
+	}
+	return strings.Join(looked, " and ") +
+		"; add it under Explicit repository paths in the settings pane (s), or open a shell in its clone"
 }
 
 // among finds repo in the candidate directories. The main working tree of a
