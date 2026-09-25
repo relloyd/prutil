@@ -1,9 +1,10 @@
 # Prompt injection and the feedback loop
 
-Status: Tier 1 is built. Tier 2 is built for Claude Code; for Copilot CLI and
-agy it is still design, and [`tier2-handoff.md`](tier2-handoff.md) is the brief
-for building it. Tier 3 is design only. The document records the threat, what
-was checked, and the order the defences are built in.
+Status: Tier 1 is built. Tier 2 has profiles for Claude Code, Copilot CLI and
+agy; only Claude's isolation has been verified with a live agent. Copilot and
+agy check settings and argv, but still need live probes from
+[`tier2-handoff.md`](tier2-handoff.md). Tier 3 is design only. This document
+records the threat, what was checked, and the order the defences are built in.
 
 ## Summary
 
@@ -155,29 +156,29 @@ the agent itself.
 ## Vendor compatibility
 
 Claude Code was checked against version 2.1.273, and again against 2.1.282
-with a live sandboxed agent when Tier 2 was built. Copilot CLI and Antigravity
-CLI are not installed on this machine, so their columns come from the vendors'
-current documentation. Confirm each row against the installed version before
-building on it.
+with a live sandboxed agent when Tier 2 was built. Copilot CLI 1.0.88 and agy
+1.2.11 were inspected locally for their flags and settings keys; their OS
+isolation has **not** been tested with a live agent. Rows not specifically
+confirmed by CLI help or binary inspection remain documentation-based.
 
 | Capability | Claude Code | GitHub Copilot CLI | Antigravity CLI (`agy`) |
 | --- | --- | --- | --- |
 | OS sandbox on macOS | Seatbelt; shell commands | Seatbelt; shell commands, built-in searches, local MCP and LSP servers | `sandbox-exec`; shell commands |
-| Covers the agent's own file tools | in effect, yes: a `Read`/`Edit` deny rule reaches the sandbox too (2.1.282) | no; the docs say file tools "run as part of Copilot CLI itself" | not documented; assume no |
-| Enable at launch | `--settings <file>` carrying `sandbox.enabled` | `--sandbox` (this session only; public preview) | `--sandbox` |
+| Covers the agent's own file tools | in effect, yes: a `Read`/`Edit` deny rule reaches the sandbox too (2.1.282) | no OS isolation; 1.0.88 help says built-in edits follow policy on a best-effort basis | not documented; assume no |
+| Enable at launch | `--settings <file>` carrying `sandbox.enabled` | `--experimental --sandbox` (the switch is described in 1.0.88 `help sandbox` but omitted from `--help`) | `--sandbox` (in 1.2.11 `--help`) |
 | Policy supplied at launch | yes, the whole `--settings` file | no; the `sandbox` key in `~/.copilot/settings.json`, or `COPILOT_HOME`, which moves the entire state directory | no; `~/.gemini/antigravity-cli/settings.json` |
-| Stop the model escaping | `sandbox.allowUnsandboxedCommands: false` | turn off "Allow sandbox bypass" (`/sandbox`, General tab) | add no `unsandboxed` allow rules; bypass needs approval |
-| Network allowlist | sandbox network settings | Network tab; `--allow-url` and `--deny-url` | domains allowed under `read_url` |
-| Deny tools at launch | `--disallowedTools` | `--deny-tool`, `--excluded-tools`, `--secret-env-vars` | only through settings `permissions` |
+| Stop the model escaping | `sandbox.allowUnsandboxedCommands: false` | `sandbox.allowBypass: false` | `toolPermission: "proceed-in-sandbox"`; 1.2.11 reports `unsandboxed` allow rules are invalid and ignored |
+| Network allowlist | sandbox network settings | `userPolicy.network.allowOutbound` is a boolean for sandboxed commands; `--allow-url`/`--deny-url` govern URL tool permissions, not an OS-level domain allowlist | domains allowed under `read_url` (not live-probed) |
+| Deny tools at launch | `--disallowedTools` | 1.0.88 `--deny-tool` supports `write(path)` but **not** `read(path)` or recursive path globs; `--secret-env-vars` excludes named tokens from shell/MCP environments | only through settings `permissions` |
 | Report its sandbox state | `claude sandbox status`, one JSON line with `enabled` and `strictMode`; `--settings` before it asks about that file | nothing documented | nothing documented |
 | Headless, no tools, schema-checked output | `-p --tools "" --json-schema <schema>` | `-p --available-tools … --output-format json`; no schema flag | `-p --json-schema <schema>`; no documented way to disable tools, and headless mode ignores `permissions.allow` and can hang (issue #548, open) |
 | Hooks that can refuse a tool call | `PreToolUse` | `preToolUse`, `permissionRequest`; repository hooks load only in trusted folders | `hooks.json` |
 
-Two things hold for all three:
-
-- **No vendor sandbox covers the agent's built-in file read and edit tools.**
-  Any path that matters has to be denied twice: once in the sandbox policy, for
-  shell commands, and once in the tool's permission rules, for its own tools.
+For Copilot and agy, OS containment of their file tools cannot be assumed.
+Copilot's file-tool policy is explicitly best-effort, and its `--deny-tool`
+does not provide a protected-path read rule in this version. Do not treat
+their profile's `Contained` posture as proof that a secret file cannot be
+read: live probes with their own file tools are required.
   Claude Code turned out to be the exception: its deny rules feed the sandbox
   as well, so one rule does both. See 2b.
 - **Only Claude Code can say whether it is sandboxed.** For the other two,
@@ -409,11 +410,10 @@ than an accident.
 
 ## Tier 2: the agent runs inside its vendor's sandbox
 
-**Built for Claude Code. Copilot CLI and agy are not built yet.** The mechanism
-is vendor-neutral, and each kind of agent is one entry in `internal/sandbox`.
-[`tier2-handoff.md`](tier2-handoff.md) is the brief for adding the other two. It
-describes the implementation in the detail the follow-up needs. This section
-records the design and what building it found.
+**Profiles exist for all three vendors; only Claude has live isolation
+evidence.** The mechanism is vendor-neutral, and each kind of agent is one
+entry in `internal/sandbox`. [`tier2-handoff.md`](tier2-handoff.md) gives the
+live-probe procedure still needed for Copilot and agy.
 
 ### What was verified, and how
 
@@ -433,6 +433,18 @@ prutil lays them out, and ran probes from inside its sandbox.
 | `gh api user`, with the keychain and trustd lookups allowed | worked |
 | `git commit` in a worktree, and `go test` | both worked |
 | `git ls-remote` over SSH | failed; see 2b |
+
+Copilot CLI 1.0.88 and agy 1.2.11 have **no live-agent probe results** yet:
+
+| Probe | Copilot CLI | agy |
+| --- | --- | --- |
+| CLI accepts sandbox launch switch | `--sandbox` documented in `help sandbox`; empty-prompt invocation parsed it | `--sandbox` listed in help; empty-prompt invocation parsed it |
+| Shell denied a protected secret read | not run | not run |
+| Agent's own file tool denied a protected secret read | not run; policy documented as best-effort | not run |
+| Write outside worktree denied, inside allowed | not run | not run |
+| Network blocks unlisted hosts and allows GitHub | not run; sandbox policy exposes no domain allowlist | not run |
+| herdr socket inaccessible from sandbox | not run | not run |
+| gh API, git commit/test, authenticated dry-run push | not run | not run |
 
 Checked from outside the sandbox:
 
@@ -524,31 +536,30 @@ Building it overturned several parts of the plan:
   the repository's own `.claude` settings, which belong to the branch under
   review.
 
-**GitHub Copilot CLI and Antigravity CLI (not built).** The plans below come
-from vendor documentation and are unverified. `tier2-handoff.md` says what to
-check before building on them.
+**GitHub Copilot CLI (profile built, live probes pending).** Launch passes
+`--experimental --sandbox` and `--secret-env-vars` for common AWS token
+names. GitHub tokens must remain available for `gh` to push and reply;
+Tier 3b is needed to take them out of the agent. Inspect checks
+`--experimental --sandbox` in argv. Both read the reader's
+`$COPILOT_HOME/settings.json` (or `~/.copilot/settings.json`) without writing
+it. Containment is reported only when `allowBypass` and `allowLocalNetwork`
+are explicitly false and `deniedPaths` names the secret and prutil/herdr
+directories. Missing policy is *not* counted as contained. Neither the
+vendor's sandbox status nor strictness can be measured directly: `Strict`
+describes the no-bypass setting, not live verification. `--deny-tool` cannot
+deny a file *read* by path in 1.0.88, so the earlier plan to add those flags
+was not implementable. Domain-limited outbound network is likewise not an
+OS sandbox setting in this release; the profile cannot claim that guarantee.
 
-**GitHub Copilot CLI.** There is no launch-time policy file. The README tells
-the reader to open `/sandbox` once and set these in `~/.copilot/settings.json`:
-
-- sandbox bypass off;
-- the working directory read-write;
-- the same secret paths denied;
-- outbound network limited to GitHub and the module proxy.
-
-Copilot's file tools are not sandboxed, so `agent_args` also carries a
-`--deny-tool` rule for each protected path, plus `--secret-env-vars` for any
-token in the environment. Some GitHub pages still say local sandboxing needs
-`--experimental`. Check on the installed version.
-
-**Antigravity CLI.** In `~/.gemini/antigravity-cli/settings.json`:
-
-- set `enableTerminalSandbox` to `true`;
-- set `toolPermission` to `"proceed-in-sandbox"`, so sandboxed commands run
-  without stopping and anything else asks;
-- allow only the domains the work needs under `read_url`, which is also how the
-  sandbox's outbound allowlist is built;
-- add no `unsandboxed` allow rules.
+**Antigravity CLI (profile built, live probes pending).** Launch passes
+`--sandbox`; Inspect checks argv, rejecting
+`--dangerously-skip-permissions`. Both read
+`~/.gemini/antigravity-cli/settings.json` without changing it. Containment
+requires `enableTerminalSandbox: true`, `toolPermission:
+"proceed-in-sandbox"`, and limited `read_url(domain)` rules, with no
+`unsandboxed` or wildcard URL allow rules. Missing policy is not counted as
+contained. `Strict` stays false because a person may approve a bypass.
+There is no launch-time settings flag or vendor status command in 1.2.11.
 
 ### 2c. Automatic handoffs go only to contained agents (built)
 
@@ -772,7 +783,7 @@ These are worth taking now, whatever gets built:
    - `internal/handoff/handoff.go`;
    - `internal/herdr/herdr.go`;
    - `internal/ui/{watch,watch_detail}.go`.
-2. **Tier 2 (built for Claude Code).** It bounds what gets through, and
+2. **Tier 2 (profiles built; Copilot and agy live probes pending).** It bounds what gets through, and
    touches:
    - `internal/sandbox`, a package of its own, one profile per kind of agent;
    - `internal/herdr/herdr.go`, for `StartAgent` arguments and `Process`;
@@ -780,8 +791,8 @@ These are worth taking now, whatever gets built:
    - `internal/home`, for `security.require_sandbox` and the file helpers;
    - `cmd/prutil/main.go`, for wiring.
 
-   Copilot CLI and agy follow as two functions each, in `copilot.go` and
-   `agy.go`; see `tier2-handoff.md`.
+   Copilot CLI and agy use settings-derived postures in `copilot.go` and
+   `agy.go`; see `tier2-handoff.md` for their remaining validation.
 3. **Tier 3a,** behind `security.reader`.
 4. **Tier 3b,** as its own change.
 5. **Tier 2b and containers** only if a need appears that the vendor sandboxes

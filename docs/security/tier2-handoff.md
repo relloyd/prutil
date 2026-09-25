@@ -1,10 +1,12 @@
 # Tier 2 handoff: sandboxing Copilot CLI and Antigravity CLI
 
-This is the brief for continuing Tier 2 of
+This was the brief for continuing Tier 2 of
 [`prompt-injection.md`](prompt-injection.md) on a machine where GitHub Copilot
 CLI (`copilot`) and Antigravity CLI (`agy`) are installed. It was written by the
-session that built Tier 2 for Claude Code, and it assumes you have none of that
-session's context. It is meant to be enough to finish the job.
+session that built Tier 2 for Claude Code. The Copilot and agy profiles have
+since been implemented using settings checks, but their live sandbox probes
+remain outstanding; see [`prompt-injection.md`](prompt-injection.md) for their
+current status and limitations.
 
 ## The job
 
@@ -13,15 +15,14 @@ handoffs, it gives work only to Claude agents that Claude confirms are
 contained. Make it do the same for `copilot` and `agy`.
 
 The design keeps this inside one package. Each kind of agent is a `Profile` in
-`internal/sandbox`. The entries for `copilot` and `agy` already exist, in
-`copilot.go` and `agy.go`, with their two hooks left nil. Filling those two
-functions in each is the work. Nothing outside `internal/sandbox` should need
-to change, unless a vendor needs something Claude did not. If one does, the
-places are named below.
+`internal/sandbox`. The entries for `copilot` and `agy` in `copilot.go` and `agy.go` now have
+`Launch` and `Inspect` hooks. The remaining work is live validation of their
+isolation and, if the probes expose gaps, a corresponding correction to the
+profiles and policies. The original implementation checklist below is kept as
+a reference for those probes.
 
-Until a hook is filled in, that kind is started exactly as before, and
-`security.require_sandbox` does not apply to it. Nothing is broken on your
-machine in the meantime.
+With `security.require_sandbox` on, missing vendor policies now prevent
+automatic handoffs for both kinds until the reader configures them.
 
 ## Read first
 

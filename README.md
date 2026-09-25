@@ -527,12 +527,26 @@ added at each start rather than kept in your file:
   including any rewrite of HTTPS to SSH, is not touched. If your organisation
   enforces SSO, your gh token needs authorising for it, as your SSH key did.
 
-With `security.require_sandbox` on, which is the default, the watcher hands
-work only to a Claude agent that Claude confirms is sandboxed. A Claude agent
-you started by hand without a sandbox is passed over, with the reason and a
-reminder that `W` and `F` can still use it. prutil will not start a second
-agent beside it. Copilot CLI and agy are not sandboxed by prutil yet, and are
-handled as before.
+With `security.require_sandbox` on, which is the default, automatic handoffs
+to Claude, Copilot CLI, and agy require a contained agent. prutil passes over
+an uncontained agent on the pull request rather than starting another beside
+it; `W` and `F` can still hand work to it explicitly.
+
+Copilot CLI (1.0.88) starts with `--experimental --sandbox` and strips common
+AWS token variables from shell and MCP environments. GitHub tokens stay
+available so `gh` can push and reply. agy (1.2.11) starts with
+`--sandbox`. Neither has a sandbox status command: prutil checks their flags
+and their **existing, user-owned settings**; it does not change vendor files
+or relocate sign-in. For Copilot, set `sandbox.allowBypass: false`,
+`sandbox.userPolicy.network.allowLocalNetwork: false`, and include absolute
+paths to `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.config/herdr` and
+`~/.config/prutil` in `sandbox.userPolicy.filesystem.deniedPaths`. For agy,
+set `enableTerminalSandbox: true`, `toolPermission: "proceed-in-sandbox"`,
+and restricted `read_url(domain)` entries in `permissions.allow`; do not
+allow `unsandboxed` or wildcard URL rules. With a missing or permissive
+policy, automatic handoffs are refused until you configure it. These checks
+are **not proof of OS isolation**: a live agent must still verify secret
+reads, network access, and herdr socket denial on your machine.
 
 The WATCH history says what each handoff went to, for example
 `claude w3:p1 · sandboxed, strict`. After your first `W` on a test pull

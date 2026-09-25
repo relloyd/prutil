@@ -8,10 +8,10 @@
 // lives, and whether the vendor can say that it is on. A Profile holds those
 // answers for one kind of agent, and Sandbox is the registry prutil consults.
 //
-// Claude Code has a complete profile. GitHub Copilot CLI and Antigravity CLI
-// have entries with nothing filled in, in copilot.go and agy.go, because
-// neither is installed on the machine this was built on;
-// docs/security/tier2-handoff.md is the brief for filling them in.
+// Claude Code verifies its policy with the vendor's status command. Copilot
+// and agy have no equivalent: their profiles infer posture from launch
+// arguments and the reader's settings, refusing to claim containment when
+// required settings are absent.
 package sandbox
 
 import (
@@ -31,7 +31,8 @@ type Posture struct {
 	// Known says the vendor answered. An agent nobody could ask about is not
 	// a contained one, and is never treated as one.
 	Known bool
-	// Contained says the vendor's own CLI confirmed the sandbox is on.
+	// Contained says the vendor confirmed the sandbox or its launch switch
+	// and effective policy establish containment.
 	Contained bool
 	// Strict says the agent cannot run a command outside the sandbox, not
 	// even with a person's approval.
@@ -69,9 +70,7 @@ type Target struct {
 type Launch struct {
 	// Args are the agent's own command-line arguments.
 	Args []string
-	// Posture is what the vendor said those arguments give the agent, asked
-	// before it starts. A profile that can verify its policy does; one that
-	// cannot reports a posture that is not Known.
+	// Posture is what could be established before starting the agent.
 	Posture Posture
 }
 

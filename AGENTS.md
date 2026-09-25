@@ -355,12 +355,13 @@ the reader's own `herdr.toast`, once per set of newest comment ids.
 
 ## Sandboxes
 
-`internal/sandbox` holds one `Profile` per kind of agent. `Launch` writes the
-policy the agent's arguments refer to and returns them, with what the vendor
-says they give; `Inspect` asks about an agent already running. Claude Code's is
-complete. Copilot CLI and agy have entries with nothing filled in, in files of
-their own; `docs/security/tier2-handoff.md` is the brief for them, and
-`docs/security/prompt-injection.md` records what the Claude build found.
+`internal/sandbox` holds one `Profile` per kind of agent. `Launch` returns
+the agent's arguments with what can be established before it starts; `Inspect`
+checks one already running. Claude Code has a vendor status command. Copilot
+CLI and agy have profiles that check their launch flags and user-owned settings
+instead; a missing or permissive policy is not counted as contained.
+`docs/security/prompt-injection.md` records what was verified for each vendor
+and what still needs live probes.
 
 The rules, again each one a thing that looks like a tidy-up and is not:
 

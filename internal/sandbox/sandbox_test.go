@@ -100,16 +100,16 @@ func at(doc map[string]any, path ...string) any {
 	return v
 }
 
-func TestOnlyClaudeCanBeStartedContainedSoFar(t *testing.T) {
+func TestOnlyKnownAgentKindsCanBeStartedContained(t *testing.T) {
 	s, _ := newSandbox(t, &fakeClaude{reply: statusStrict})
 
 	assert.True(t, s.Supports("claude"))
-	assert.False(t, s.Supports("copilot"), "an entry with nothing filled in yet")
-	assert.False(t, s.Supports("agy"))
+	assert.True(t, s.Supports("copilot"))
+	assert.True(t, s.Supports("agy"))
 	assert.False(t, s.Supports("codex"), "no entry at all")
 	assert.False(t, (*sandbox.Sandbox)(nil).Supports("claude"), "no registry means nothing is contained")
 
-	_, err := s.Launch(context.Background(), "copilot", target(t.TempDir()))
+	_, err := s.Launch(context.Background(), "codex", target(t.TempDir()))
 	require.ErrorIs(t, err, sandbox.ErrUnsupported)
 }
 
@@ -354,7 +354,7 @@ func TestInspectRemembersAnAnswerBrieflyAndAFailureNotAtAll(t *testing.T) {
 func TestAKindThatCannotBeAskedIsNeverCountedAsContained(t *testing.T) {
 	s, _ := newSandbox(t, &fakeClaude{reply: statusStrict})
 
-	p, err := s.Inspect(context.Background(), "copilot", "/wt", []string{"copilot", "--sandbox"})
+	p, err := s.Inspect(context.Background(), "codex", "/wt", []string{"codex", "--sandbox"})
 	require.NoError(t, err)
 	assert.False(t, p.Known)
 	assert.False(t, p.Contained)
