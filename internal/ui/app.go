@@ -1466,14 +1466,16 @@ func (a *App) watchWindow() int {
 }
 
 // watchLineCount is how many lines the expanded WATCH page holds for the
-// selected pull request. It counts rows rather than rendering them, which
-// matters because the scroll arithmetic asks on every key press.
+// selected pull request, wrapped at the width the detail pane draws it at. It
+// counts wrapped rows rather than rendering them, which matters because the
+// scroll arithmetic asks on every key press.
 func (a *App) watchLineCount() int {
 	pr, ok := a.selectedPR()
 	if !ok {
 		return 0
 	}
-	return len(a.watchPageRows(pr))
+	_, detailWidth := a.paneWidths()
+	return len(a.watchPageLines(pr, detailWidth))
 }
 
 // listRows is how many pull request rows fit in a body of the given height.

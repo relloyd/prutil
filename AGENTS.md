@@ -264,6 +264,12 @@ The two watch renderers share `watchFacts` and differ only in phrasing, because
 the compact section packs onto one line what the expanded page gives a line
 each. Rendering goes through `watchRow`, plain text and a style, so counting
 the page is counting a slice; the scroll arithmetic asks on every key press.
+Rows wrap rather than truncate: `wrapRow` splits one into the lines it takes,
+continuation indented. The page wraps in full, and `watchLineCount` must count
+`watchPageLines` at the width `paneWidths` gives the detail pane, the same one
+it is drawn at, or scrolling stops short of an entry that wrapped. The compact
+section wraps an entry to `compactWrapLines` at most, and to whatever its
+budget has left, so the checks beneath it still fit.
 
 ## The trust boundary
 

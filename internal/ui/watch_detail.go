@@ -114,6 +114,47 @@ func (a *App) renderWatchRow(row watchRow, width int) string {
 	}
 }
 
+// compactWrapLines is how many lines one entry in the compact WATCH section may
+// take. The section shares the pane with the checks, so an entry longer than
+// that is cut short with an ellipsis; the expanded page shows it in full.
+const compactWrapLines = 3
+
+// wrapIndent is how far a wrapped entry's continuation lines are indented, so
+// that they do not read as the start of the next entry.
+const wrapIndent = 2
+
+// minWrapWidth is the narrowest text that is worth wrapping. Below it, a
+// column of fragments is harder to read than one truncated line.
+const minWrapWidth = 12
+
+// wrapRow splits one row into the lines it takes at width, keeping any
+// indentation the row already has. maxLines of zero means as many as it needs;
+// otherwise the last line ends in an ellipsis when text was dropped.
+func wrapRow(row watchRow, width, maxLines int) []watchRow {
+	if row.blank || row.heading {
+		return []watchRow{row}
+	}
+	body := strings.TrimLeft(row.text, " ")
+	lead := row.text[:len(row.text)-len(body)]
+	room := width - len(lead) - wrapIndent
+	if room < minWrapWidth {
+		return []watchRow{row}
+	}
+	if maxLines <= 0 {
+		maxLines = int(^uint(0) >> 1)
+	}
+	lines := wrapLines(body, room, maxLines)
+	out := make([]watchRow, 0, len(lines))
+	for i, line := range lines {
+		indent := lead
+		if i > 0 {
+			indent += strings.Repeat(" ", wrapIndent)
+		}
+		out = append(out, watchRow{text: indent + line, style: row.style})
+	}
+	return out
+}
+
 // renderWatchRows turns a run of rows into lines.
 func (a *App) renderWatchRows(rows []watchRow, width int) []string {
 	out := make([]string, 0, len(rows))
@@ -132,13 +173,22 @@ func (a *App) watchDetail(pr model.PullRequest, width, budget int, selected bool
 	}
 
 	lines := []string{a.sectionHeading("WATCH", selected)}
-	lines = append(lines, a.renderWatchRow(a.compactState(facts), width))
+	// The state line is always shown, and may take a second line when the
+	// budget has room for one.
+	for _, row := range wrapRow(a.compactState(facts), width, max(min(2, budget-1), 1)) {
+		lines = append(lines, a.renderWatchRow(row, width))
+	}
 
+	// An entry the budget cuts short is wrapped to what is left, so it ends in
+	// an ellipsis rather than stopping mid-sentence.
 	for _, row := range a.compactRows(facts) {
-		if len(lines) >= budget {
+		left := budget - len(lines)
+		if left <= 0 {
 			break
 		}
-		lines = append(lines, a.renderWatchRow(row, width))
+		for _, line := range wrapRow(row, width, min(compactWrapLines, left)) {
+			lines = append(lines, a.renderWatchRow(line, width))
+		}
 	}
 	return lines
 }
@@ -263,9 +313,21 @@ func (a *App) watchPageRows(pr model.PullRequest) []watchRow {
 	return rows
 }
 
+// watchPageLines is the expanded page wrapped to width, one row per line
+// drawn. The scroll arithmetic counts these rather than the rows, at the same
+// width, or it would stop short of an entry that wrapped.
+func (a *App) watchPageLines(pr model.PullRequest, width int) []watchRow {
+	rows := a.watchPageRows(pr)
+	out := make([]watchRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, wrapRow(row, width, 0)...)
+	}
+	return out
+}
+
 // renderWatchPage draws the expanded page, scrolled to watchOffset.
 func (a *App) renderWatchPage(pr model.PullRequest, width, height int) []string {
-	rows := a.watchPageRows(pr)
+	rows := a.watchPageLines(pr, width)
 	if len(rows) == 0 {
 		return a.centeredNotice("nothing to show for WATCH", width, a.styles.Meta)
 	}
