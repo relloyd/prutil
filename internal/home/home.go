@@ -390,6 +390,9 @@ type Handoff struct {
 	Tab         string `json:"tab,omitempty"`
 	Detail      string `json:"detail,omitempty"`
 	Prompt      string `json:"prompt,omitempty"`
+	// Sandbox is what the agent's vendor said about its sandbox, such as
+	// "sandboxed, strict", or empty when prutil has no profile for its kind.
+	Sandbox string `json:"sandbox,omitempty"`
 }
 
 // Handoff outcomes, as recorded in the log.

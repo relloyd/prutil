@@ -27,6 +27,7 @@ import (
 	"github.com/relloyd/prutil/internal/handoff"
 	"github.com/relloyd/prutil/internal/herdr"
 	"github.com/relloyd/prutil/internal/home"
+	"github.com/relloyd/prutil/internal/sandbox"
 	"github.com/relloyd/prutil/internal/ui"
 )
 
@@ -171,7 +172,7 @@ func newDispatcher(cfg home.Config, store *home.Store) (*handoff.Dispatcher, err
 	// store is nil whenever the application directory could not be opened.
 	// NewResolver absorbs that: discovery still runs, its result is simply not
 	// remembered.
-	return handoff.New(handoff.Options{
+	opts := handoff.Options{
 		Herdr:  control,
 		Git:    checkouts,
 		Repos:  git.NewResolver(checkouts, cfg, store),
@@ -181,5 +182,26 @@ func newDispatcher(cfg home.Config, store *home.Store) (*handoff.Dispatcher, err
 		// is how prutil knows never to hand work to the terminal it is itself
 		// running in.
 		SelfPane: os.Getenv("HERDR_PANE_ID"),
-	}), nil
+	}
+	// Assigned only when there is one: a nil *sandbox.Sandbox in the
+	// interface field would not be a nil interface.
+	if box := newSandbox(store); box != nil {
+		opts.Sandbox = box
+	}
+	return handoff.New(opts), nil
+}
+
+// newSandbox builds the registry of sandbox profiles, whose policies live in
+// the application directory. Without one there is nowhere to keep a policy,
+// and agents are started as they were before Tier 2.
+func newSandbox(store *home.Store) *sandbox.Sandbox {
+	if store == nil {
+		return nil
+	}
+	userHome, _ := os.UserHomeDir()
+	return sandbox.New(sandbox.Options{Env: sandbox.Env{
+		Dir:         store.Path("sandbox"),
+		Home:        userHome,
+		SSHAuthSock: os.Getenv("SSH_AUTH_SOCK"),
+	}})
 }

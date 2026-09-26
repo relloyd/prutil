@@ -41,7 +41,15 @@ func Look(bin, help string) (*Cmd, error) {
 
 // Run implements Runner.
 func (c *Cmd) Run(ctx context.Context, args ...string) ([]byte, error) {
+	return c.RunIn(ctx, "", args...)
+}
+
+// RunIn runs the binary with dir as its working directory, or prutil's own
+// when dir is empty. Some answers depend on where they are asked: a coding
+// agent's settings include the project it is started in.
+func (c *Cmd) RunIn(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, c.Path, args...)
+	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

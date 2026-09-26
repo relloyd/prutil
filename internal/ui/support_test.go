@@ -400,6 +400,8 @@ type fakeDispatcher struct {
 	err    error
 	dry    bool
 	toasts []fakeToast
+	// configured is every configuration the settings pane handed over.
+	configured []home.Config
 }
 
 // fakeToast is one herdr notification the app asked for.
@@ -419,6 +421,18 @@ func (f *fakeDispatcher) DryRun() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.dry
+}
+
+func (f *fakeDispatcher) Configure(cfg home.Config) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.configured = append(f.configured, cfg)
+}
+
+func (f *fakeDispatcher) configurations() []home.Config {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]home.Config(nil), f.configured...)
 }
 
 func (f *fakeDispatcher) Notify(_ context.Context, title, body string) {

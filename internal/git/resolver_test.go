@@ -268,3 +268,130 @@ func TestDiscoveryFindsACheckoutWithinTheDepthItWalks(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, nested, got.Root)
 }
+
+func TestAMappingSavedAfterStartupIsFoundWithoutARestart(t *testing.T) {
+	base := t.TempDir()
+	clone := filepath.Join(base, "dummy-repo")
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{
+		clone: {Root: clone, Repo: "relloyd/dummy-repo", Branch: "main"},
+	}}
+	resolver := git.NewResolver(id, home.DefaultConfig(), home.OpenIn(filepath.Join(base, "store")))
+
+	_, err := resolver.Resolve(context.Background(), "relloyd/dummy-repo")
+	require.ErrorIs(t, err, git.ErrCheckoutNotFound, "nothing is mapped at startup")
+
+	cfg := home.DefaultConfig()
+	cfg.Repos["relloyd/dummy-repo"] = clone
+	resolver.Configure(cfg)
+	cfg.Repos["relloyd/dummy-repo"] = "/somewhere/else"
+
+	got, err := resolver.Resolve(context.Background(), "relloyd/dummy-repo")
+	require.NoError(t, err, "the mapping the settings pane saved is the one used")
+	assert.Equal(t, clone, got.Root, "and the caller editing its own copy afterwards changes nothing")
+}
+
+// clones makes directories that look like a clone (a .git directory) and a
+// linked worktree (a .git file), which is the distinction candidates rank by.
+func clones(t *testing.T, base string) (clone, worktree string) {
+	t.Helper()
+	clone, worktree = filepath.Join(base, "dummy-repo"), filepath.Join(base, "prutil-dummy-1")
+	require.NoError(t, os.MkdirAll(filepath.Join(clone, ".git"), 0o755))
+	require.NoError(t, os.MkdirAll(worktree, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+clone+"/.git/worktrees/x\n"), 0o644))
+	return clone, worktree
+}
+
+func TestAPanesCheckoutIsFoundWhenNothingIsConfiguredAndRemembered(t *testing.T) {
+	base := t.TempDir()
+	clone, _ := clones(t, base)
+	other := filepath.Join(base, "prutil")
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{
+		clone: {Root: clone, Repo: "relloyd/dummy-repo", Branch: "main"},
+		other: {Root: other, Repo: "relloyd/prutil", Branch: "main"},
+	}}
+	store := home.OpenIn(filepath.Join(base, "store"))
+
+	got, err := git.NewResolver(id, home.DefaultConfig(), store).
+		Resolve(context.Background(), "relloyd/dummy-repo", other, "/not/a/repo", clone)
+
+	require.NoError(t, err, "a first-run configuration has no roots, and a shell was sitting in the clone")
+	assert.Equal(t, clone, got.Root)
+	cache, err := store.LoadRepoCache()
+	require.NoError(t, err)
+	entry, ok := cache.Lookup("relloyd/dummy-repo")
+	require.True(t, ok, "remembered, so it is found again once that pane has gone")
+	assert.Equal(t, clone, entry.Path)
+}
+
+func TestTheMainCloneIsPreferredToAWorktreeOfIt(t *testing.T) {
+	base := t.TempDir()
+	clone, worktree := clones(t, base)
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{
+		clone:    {Root: clone, Repo: "relloyd/dummy-repo", Branch: "main"},
+		worktree: {Root: worktree, Repo: "relloyd/dummy-repo", Branch: "prutil/dummy-repo-1"},
+	}}
+
+	got, err := git.NewResolver(id, home.DefaultConfig(), home.OpenIn(filepath.Join(base, "store"))).
+		Resolve(context.Background(), "relloyd/dummy-repo", worktree, clone)
+	require.NoError(t, err)
+	assert.Equal(t, clone, got.Root, "a worktree prutil made is a poor base for the next one")
+
+	got, err = git.NewResolver(id, home.DefaultConfig(), home.OpenIn(filepath.Join(base, "store2"))).
+		Resolve(context.Background(), "relloyd/dummy-repo", worktree)
+	require.NoError(t, err)
+	assert.Equal(t, worktree, got.Root, "but a worktree is still taken when it is all there is")
+}
+
+func TestAnExplicitMappingStillWinsOverAPane(t *testing.T) {
+	base := t.TempDir()
+	clone, _ := clones(t, base)
+	explicit := filepath.Join(base, "explicit")
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{
+		clone:    {Root: clone, Repo: "relloyd/dummy-repo"},
+		explicit: {Root: explicit, Repo: "relloyd/dummy-repo"},
+	}}
+	cfg := home.DefaultConfig()
+	cfg.Repos["relloyd/dummy-repo"] = explicit
+
+	got, err := git.NewResolver(id, cfg, home.OpenIn(filepath.Join(base, "store"))).
+		Resolve(context.Background(), "relloyd/dummy-repo", clone)
+	require.NoError(t, err)
+	assert.Equal(t, explicit, got.Root)
+}
+
+func TestNotFindingACloneSaysWhereItLookedAndWhatToDo(t *testing.T) {
+	base := t.TempDir()
+	id := &fakeIdentifier{checkouts: map[string]git.Checkout{}}
+	store := home.OpenIn(filepath.Join(base, "store"))
+
+	cases := []struct {
+		name       string
+		roots      []string
+		candidates []string
+		want       string
+	}{
+		{
+			name:       "a first-run configuration, with herdr's panes looked at",
+			candidates: []string{"/Users/p/prutil"},
+			want: "no local checkout found for relloyd/dummy-repo: no herdr pane is working in a clone of it " +
+				"and no discovery root is configured; add it under Explicit repository paths in the settings pane (s), or open a shell in its clone",
+		},
+		{
+			name:  "roots configured, but none holds it",
+			roots: []string{base},
+			want: "no local checkout found for relloyd/dummy-repo: none of the discovery roots holds one; " +
+				"add it under Explicit repository paths in the settings pane (s), or open a shell in its clone",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := home.DefaultConfig()
+			cfg.Discovery.Roots = tc.roots
+
+			_, err := git.NewResolver(id, cfg, store).Resolve(context.Background(), "relloyd/dummy-repo", tc.candidates...)
+
+			require.ErrorIs(t, err, git.ErrCheckoutNotFound)
+			assert.Equal(t, tc.want, err.Error())
+		})
+	}
+}

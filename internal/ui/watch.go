@@ -37,6 +37,9 @@ type dispatcher interface {
 	Dispatch(ctx context.Context, req handoff.Request) (handoff.Result, error)
 	DryRun() bool
 	Notify(ctx context.Context, title, body string)
+	// Configure hands over the configuration saved in the settings pane, for
+	// the next handoff to be made by.
+	Configure(cfg home.Config)
 }
 
 // armed reports whether a pull request is being watched.
@@ -266,7 +269,12 @@ func (a *App) failedCheckHandoff(msg handoffMsg) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
-		msg.result, msg.err = hand.Dispatch(ctx, handoff.Request{PR: msg.pr, CheckHandoff: true, HeadOID: msg.headOID, Checks: msg.checks, AllowProvision: msg.allowProvision})
+		msg.result, msg.err = hand.Dispatch(ctx, handoff.Request{
+			PR: msg.pr, CheckHandoff: true, HeadOID: msg.headOID, Checks: msg.checks,
+			AllowProvision: msg.allowProvision, Viewer: msg.viewer,
+			// force is the reader's own key press, F or W on a failed check.
+			Manual: msg.force,
+		})
 		return msg
 	}
 }
@@ -533,6 +541,7 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 			open:    len(feedback),
 			fresh:   len(fresh),
 			threads: model.Digest(feedback),
+			viewer:  msg.review.Viewer,
 		}),
 		status(fmt.Sprintf("%s has %d new review %s · handing it to an agent…",
 			msg.key, len(fresh), plural(len(fresh), "comment"))),
@@ -822,7 +831,11 @@ func (a *App) handoffOf(msg handoffMsg) tea.Cmd {
 
 // sender closes over the dispatcher so that a command can run off the update
 // loop without reaching back into the app.
-func (a *App) sender(allowProvision bool) func(context.Context, handoffMsg) handoffMsg {
+//
+// manual is the reader pressing W. On the review path that is the only
+// handoff a person asks for, and it is also the only one allowed to create a
+// workspace, so the one flag answers both.
+func (a *App) sender(manual bool) func(context.Context, handoffMsg) handoffMsg {
 	hand := a.hand
 	return func(ctx context.Context, msg handoffMsg) handoffMsg {
 		msg.result, msg.err = hand.Dispatch(ctx, handoff.Request{
@@ -831,7 +844,8 @@ func (a *App) sender(allowProvision bool) func(context.Context, handoffMsg) hand
 			NewCount:        msg.fresh,
 			Threads:         msg.threads,
 			Viewer:          msg.viewer,
-			AllowProvision:  allowProvision,
+			AllowProvision:  manual,
+			Manual:          manual,
 		})
 		return msg
 	}
@@ -888,6 +902,7 @@ func (a *App) applyHandoff(msg handoffMsg) error {
 		Tab:         msg.result.Tab,
 		Detail:      msg.result.Detail,
 		Prompt:      msg.result.Prompt,
+		Sandbox:     msg.result.Sandbox,
 	}
 	if a.store != nil {
 		if err := a.store.AppendHandoff(record); err != nil {

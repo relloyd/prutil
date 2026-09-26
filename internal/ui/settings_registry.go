@@ -704,6 +704,18 @@ func allSettings() []settingDescriptor {
 		// ---------------------------------------------------------------------
 		// SECURITY
 		// ---------------------------------------------------------------------
+		boolSetting(settingMeta{
+			id:      "security.require_sandbox",
+			section: "SECURITY",
+			title:   "Require a sandboxed agent",
+			detail: "Hand work automatically only to agents their vendor's sandbox contains, and refuse to start one " +
+				"whose policy does not sandbox it. Applies to Claude Code today. W and F can still use any agent.",
+			def:  "on",
+			path: []string{"security", "require_sandbox"},
+		}, field[bool]{
+			get: func(c *home.Config) bool { return c.Security.RequireSandbox },
+			set: func(c *home.Config, v bool) { c.Security.RequireSandbox = v },
+		}),
 		trustSetting(settingMeta{
 			id:      "security.trusted_associations",
 			section: "SECURITY",
@@ -800,14 +812,20 @@ func (a *App) saveSequence(path []string, items []string, apply func(c *home.Con
 // applySetting runs a write and applies apply to the running configuration only
 // afterwards. With nowhere to write, the running configuration is all there is,
 // so it applies straight away.
+//
+// The dispatcher is told as soon as a.homeCfg moves. It reads its own copy on
+// another goroutine, and until it is told, a saved agent kind, fallback,
+// prompt, repository path or trust list is a setting the pane says is saved
+// and every handoff ignores.
 func (a *App) applySetting(apply func(c *home.Config), write func() error) error {
-	if a.store == nil {
-		apply(&a.homeCfg)
-		return nil
-	}
-	if err := write(); err != nil {
-		return err
+	if a.store != nil {
+		if err := write(); err != nil {
+			return err
+		}
 	}
 	apply(&a.homeCfg)
+	if a.hand != nil {
+		a.hand.Configure(a.homeCfg)
+	}
 	return nil
 }

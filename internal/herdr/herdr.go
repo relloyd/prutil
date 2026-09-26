@@ -67,12 +67,45 @@ type Controller interface {
 	CreateWorktree(ctx context.Context, root, branch, label string) (WorktreeSession, error)
 	// OpenWorktree asks herdr to open an existing worktree in herdr.
 	OpenWorktree(ctx context.Context, root, path, branch, label string) (WorktreeSession, error)
-	// StartAgent launches a supported agent in a shell pane and waits for it to settle.
-	StartAgent(ctx context.Context, name, kind, pane string, timeout time.Duration) (Agent, error)
+	// StartAgent launches a supported agent in a shell pane and waits for it to
+	// settle. args reach the agent's own command line, after herdr's.
+	StartAgent(ctx context.Context, name, kind, pane string, args []string, timeout time.Duration) (Agent, error)
+	// Process reports the command running in the foreground of a pane, and
+	// where: how an agent there was launched, or where its shell is.
+	Process(ctx context.Context, pane string) (Process, error)
+	// Panes lists every pane herdr has open, agent or not.
+	Panes(ctx context.Context) ([]Pane, error)
 	// Prompt submits text to an agent, followed by Enter.
 	Prompt(ctx context.Context, target, text string) error
 	// Notify shows a toast in the herdr UI.
 	Notify(ctx context.Context, title, body string) error
+}
+
+// Pane is one terminal herdr has open, whatever is running in it.
+type Pane struct {
+	PaneID string `json:"pane_id"`
+	// CWD is where the pane was started, and ForegroundCWD where its
+	// foreground process is now.
+	CWD           string `json:"cwd"`
+	ForegroundCWD string `json:"foreground_cwd"`
+}
+
+// Dir is the directory the pane is working in now, where herdr can say.
+func (p Pane) Dir() string {
+	if p.ForegroundCWD != "" {
+		return p.ForegroundCWD
+	}
+	return p.CWD
+}
+
+// Process is the command in the foreground of a pane, as herdr reports it.
+type Process struct {
+	// Argv is the command line, the program first. It is how an agent already
+	// running was launched, which is the only evidence of its sandbox that
+	// survives prutil restarting.
+	Argv []string
+	// CWD is where it is running.
+	CWD string
 }
 
 // Agent is one recognised coding agent occupying a pane.
@@ -298,11 +331,36 @@ func (c *Client) OpenWorktree(ctx context.Context, root, path, branch, label str
 // has thought about yet, cannot reopen the route. Deliberately not a dependency
 // on the model package: this is about what may cross the wire to herdr, and it
 // should keep answering even if nothing upstream does.
+//
+// It also refuses a prompt with a line that begins with "!". Claude Code runs
+// such a line as a shell command without the model, and Copilot CLI documents
+// the same escape; with Claude Code 2.1.282 the command runs outside the
+// sandbox, strict mode notwithstanding, so it is a way out of Tier 2 as well as
+// into the terminal. prutil's own prompts never begin that way, but a template
+// a reader writes might begin with {{.Title}}, which the pull request's author
+// chose, and model.SafeLine keeps a value on one line without saying what the
+// line may start with. Every line is checked rather than only the first, in
+// case a line is ever submitted on its own.
 func (c *Client) Prompt(ctx context.Context, target, text string) error {
 	if r, bad := controlRune(text); bad {
 		return fmt.Errorf("refusing to send a prompt containing %q: it could be read as a terminal escape", r)
 	}
+	if line, bad := shellEscapeLine(text); bad {
+		return fmt.Errorf("refusing to send a prompt with a line beginning %q: an agent runs such a line "+
+			"as a shell command, outside its sandbox", line)
+	}
 	return c.call(ctx, nil, "agent", "prompt", target, text)
+}
+
+// shellEscapeLine finds a line whose first visible character is "!", and
+// returns the start of it.
+func shellEscapeLine(text string) (string, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		if trimmed := strings.TrimLeft(line, " \t"); strings.HasPrefix(trimmed, "!") {
+			return trimmed[:min(len(trimmed), 24)], true
+		}
+	}
+	return "", false
 }
 
 // controlRune finds the first character that has no business in a prompt, and
@@ -336,10 +394,19 @@ func (c *Client) Notify(ctx context.Context, title, body string) error {
 // StartAgent launches a supported agent in a pane that is already sitting at
 // an interactive shell prompt. herdr returns only once it has detected the
 // agent in that same pane and considers it ready for input.
-func (c *Client) StartAgent(ctx context.Context, name, kind, pane string, timeout time.Duration) (Agent, error) {
+//
+// agentArgs go after "--", which is where herdr stops reading its own options
+// and starts passing them to the agent. That is how an agent is started inside
+// its vendor's sandbox: the sandbox confines what the agent runs, not the agent
+// itself, so the agent stays the pane's foreground process and herdr still
+// recognises it.
+func (c *Client) StartAgent(ctx context.Context, name, kind, pane string, agentArgs []string, timeout time.Duration) (Agent, error) {
 	args := []string{"agent", "start", name, "--kind", kind, "--pane", pane}
 	if timeout > 0 {
 		args = append(args, "--timeout", strconv.Itoa(int(timeout.Milliseconds())))
+	}
+	if len(agentArgs) > 0 {
+		args = append(append(args, "--"), agentArgs...)
 	}
 	var result struct {
 		Agent Agent `json:"agent"`
@@ -348,6 +415,38 @@ func (c *Client) StartAgent(ctx context.Context, name, kind, pane string, timeou
 		return Agent{}, err
 	}
 	return result.Agent, nil
+}
+
+// Process implements Controller. A pane can have several foreground
+// processes in its group; the first is the one herdr names the pane after.
+func (c *Client) Process(ctx context.Context, pane string) (Process, error) {
+	var result struct {
+		ProcessInfo struct {
+			Foreground []struct {
+				Argv []string `json:"argv"`
+				CWD  string   `json:"cwd"`
+			} `json:"foreground_processes"`
+		} `json:"process_info"`
+	}
+	if err := c.call(ctx, &result, "pane", "process-info", "--pane", pane); err != nil {
+		return Process{}, err
+	}
+	if len(result.ProcessInfo.Foreground) == 0 {
+		return Process{}, fmt.Errorf("herdr reported no foreground process in pane %s", pane)
+	}
+	first := result.ProcessInfo.Foreground[0]
+	return Process{Argv: first.Argv, CWD: first.CWD}, nil
+}
+
+// Panes implements Controller.
+func (c *Client) Panes(ctx context.Context) ([]Pane, error) {
+	var result struct {
+		Panes []Pane `json:"panes"`
+	}
+	if err := c.call(ctx, &result, "pane", "list"); err != nil {
+		return nil, err
+	}
+	return result.Panes, nil
 }
 
 // call runs one herdr command and unwraps its envelope into result, which may

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -1842,4 +1844,194 @@ func TestFInvestigatesWithoutAskingWhenNothingIsHeld(t *testing.T) {
 
 	assert.Equal(t, before+1, checkHandoffs(dispatcher),
 		"the confirmation is the hold's, not a second press on every investigation")
+}
+
+// lastRequest is the most recent handoff of the kind asked for.
+func lastRequest(t *testing.T, d *fakeDispatcher, check bool) handoff.Request {
+	t.Helper()
+	reqs := d.requests()
+	for i := len(reqs) - 1; i >= 0; i-- {
+		if reqs[i].CheckHandoff == check {
+			return reqs[i]
+		}
+	}
+	t.Fatalf("no %s handoff was dispatched", map[bool]string{true: "check", false: "review"}[check])
+	return handoff.Request{}
+}
+
+func TestOnlyAHandoffAPersonAskedForIsMarkedManual(t *testing.T) {
+	// Manual is what lets a handoff use an agent that is not sandboxed, so the
+	// watcher must never set it and every key press must.
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	assert.False(t, lastRequest(t, dispatcher, false).Manual, "the watcher found this work itself")
+
+	handOver(t, app)
+	assert.True(t, lastRequest(t, dispatcher, false).Manual, "W is the reader")
+
+	investigate(t, app, "F")
+	assert.True(t, lastRequest(t, dispatcher, true).Manual, "so is F")
+}
+
+func TestAnAutomaticCheckHandoffIsNotManualAndKnowsTheViewer(t *testing.T) {
+	// The check path built its request without the viewer, so from the day the
+	// author check landed it could never create a workspace: provisioning
+	// refuses when prutil cannot tell whose pull request it is.
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+	key := model.Key{Repo: "relloyd/prutil", Number: 42}
+
+	send(t, app, press("w"))
+	poll(t, app)
+	pump(t, app, send(t, app, checksMsg{
+		gen: app.gen, key: key, checkHandoff: true, headOID: "sha-new",
+		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
+	}))
+
+	req := lastRequest(t, dispatcher, true)
+	assert.Equal(t, "relloyd", req.Viewer)
+	assert.False(t, req.Manual)
+}
+
+func TestTheHandoffHistoryNamesTheSandboxTheWorkWentTo(t *testing.T) {
+	line := handoffHistoryLine(testNow, home.Handoff{
+		At: testNow, Outcome: home.OutcomeSent, Kind: "claude", Target: "w3:p1", Sandbox: "sandboxed, strict",
+	})
+
+	assert.Equal(t, "just now · sent · claude w3:p1 · sandboxed, strict", line)
+}
+
+func TestTheWatchersOwnHandoffKnowsTheViewer(t *testing.T) {
+	// Provisioning refuses a pull request it cannot tell is the reader's own,
+	// so a watcher handoff without the viewer turned every fallback: new into
+	// "prutil will not create a workspace over another author's branch", for
+	// the reader's own pull requests.
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	dispatcher.result = handoff.Result{Outcome: home.OutcomeSent, Target: "w2:p1", Kind: "claude"}
+
+	send(t, app, press("w"))
+	poll(t, app)
+
+	req := lastRequest(t, dispatcher, false)
+	assert.Equal(t, "relloyd", req.Viewer)
+	assert.False(t, req.Manual)
+}
+
+// longRefusal is the kind of handoff detail that used to be cut off at the
+// pane's edge: the sentence that says why is the part at the end.
+const longRefusal = "prutil will not create a workspace over another author's branch: " +
+	"relloyd/prutil#42 was opened by somebody-else, so press W to use an agent you started yourself"
+
+// detailColumn returns the detail pane's side of each screen line, which is
+// everything after the list pane's border.
+func detailColumn(screen string) []string {
+	var out []string
+	for _, line := range strings.Split(screen, "\n") {
+		if _, right, ok := strings.Cut(line, "│"); ok {
+			out = append(out, strings.TrimRight(right, " "))
+		}
+	}
+	return out
+}
+
+func openWatchPage(t *testing.T, app *App) {
+	t.Helper()
+	send(t, app, press("l"))
+	send(t, app, press("k"))
+	send(t, app, press("l"))
+	require.Equal(t, detailWatchPage, app.page)
+}
+
+func TestTheWatchPageWrapsALongEntryRatherThanCuttingItOff(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	require.NoError(t, app.store.AppendHandoff(home.Handoff{
+		At: testNow.Add(-time.Minute), PR: "relloyd/prutil#42", Outcome: home.OutcomeFailed, Detail: longRefusal,
+	}))
+	loadHandoffHistory(t, app, samplePRs()[0].Key())
+	send(t, app, press("w"))
+	openWatchPage(t, app)
+
+	column := detailColumn(plain(app.render()))
+	joined := strings.Join(column, " ")
+	for _, word := range strings.Fields("was opened by somebody-else, so press W to use an agent you started yourself") {
+		assert.Contains(t, joined, word, "the end of the sentence is on screen")
+	}
+	assert.NotContains(t, joined, "…", "nothing on the page is cut short")
+
+	_, width := app.paneWidths()
+	start := slices.IndexFunc(column, func(l string) bool { return strings.Contains(l, "prutil will not") })
+	require.GreaterOrEqual(t, start, 0)
+	assert.True(t, strings.HasPrefix(column[start+1], "  "), "a continuation is indented: %q", column[start+1])
+	for _, line := range column {
+		assert.LessOrEqual(t, ansi.StringWidth(line), width, "every line fits the pane: %q", line)
+	}
+}
+
+func TestScrollingTheWatchPageReachesTheLastWrappedLine(t *testing.T) {
+	// The scroll arithmetic counts lines without drawing them. Counted as rows,
+	// a page of wrapped entries would stop scrolling before its end.
+	app, _, _ := newTestApp(t, 120, 14)
+	key := samplePRs()[0].Key()
+	for i := range 6 {
+		app.recordWatchActivity(key, fmt.Sprintf("entry %d: %s", i, longRefusal))
+	}
+	send(t, app, press("w"))
+	openWatchPage(t, app)
+
+	_, width := app.paneWidths()
+	pr, _ := app.selectedPR()
+	require.Greater(t, app.watchLineCount(), len(app.watchPageRows(pr)), "entries wrapped")
+	assert.Equal(t, len(app.watchPageLines(pr, width)), app.watchLineCount(),
+		"counted at the width the page is drawn at")
+
+	for range app.watchLineCount() + 5 {
+		send(t, app, press("j"))
+	}
+	joined := strings.Join(detailColumn(plain(app.render())), " ")
+	assert.Contains(t, joined, "HANDOFFS", "the end of the page can be reached")
+}
+
+func TestTheCompactSectionWrapsAnEntryToThreeLinesAtMost(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := samplePRs()[0].Key()
+	send(t, app, press("w"))
+	app.recordWatchActivity(key, strings.Repeat(longRefusal+" ", 3))
+
+	pr, _ := app.selectedPR()
+	_, width := app.paneWidths()
+	lines := app.watchDetail(pr, width, 20, false)
+
+	var entry []string
+	for _, line := range lines {
+		plainLine := ansi.Strip(line)
+		if strings.Contains(plainLine, "prutil will not") || (len(entry) > 0 && strings.HasPrefix(plainLine, "  ")) {
+			entry = append(entry, plainLine)
+		} else if len(entry) > 0 {
+			break
+		}
+	}
+	require.Len(t, entry, compactWrapLines, "long enough to need more than it may take")
+	assert.True(t, strings.HasSuffix(entry[len(entry)-1], "…"), "so the last line says it was cut: %q", entry[len(entry)-1])
+}
+
+func TestTheCompactSectionStaysWithinItsBudgetWhenEntriesWrap(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	key := samplePRs()[0].Key()
+	send(t, app, press("w"))
+	for range 5 {
+		app.recordWatchActivity(key, longRefusal)
+	}
+
+	pr, _ := app.selectedPR()
+	_, width := app.paneWidths()
+	for budget := 2; budget <= 12; budget++ {
+		lines := app.watchDetail(pr, width, budget, false)
+		assert.LessOrEqual(t, len(lines), budget, "budget %d leaves room for the checks", budget)
+	}
 }

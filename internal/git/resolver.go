@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/relloyd/prutil/internal/home"
 )
@@ -31,8 +32,10 @@ var ErrCheckoutNotFound = errors.New("no local checkout found")
 // Resolver maps owner/name repositories to local checkout roots.
 type Resolver struct {
 	id    Identifier
-	cfg   home.Config
 	store CacheStore
+
+	mu  sync.Mutex
+	cfg home.Config
 }
 
 // NewResolver builds a repository resolver over a git identifier, runtime
@@ -44,7 +47,22 @@ func NewResolver(id Identifier, cfg home.Config, store CacheStore) *Resolver {
 	if noStore(store) {
 		store = noopCache{}
 	}
-	return &Resolver{id: id, cfg: cfg, store: store}
+	return &Resolver{id: id, cfg: cfg.Clone(), store: store}
+}
+
+// Configure replaces the repos mappings and discovery roots the resolver
+// reads, from the next Resolve on, so that a checkout the reader has just
+// mapped in the settings pane is found without restarting prutil.
+func (r *Resolver) Configure(cfg home.Config) {
+	r.mu.Lock()
+	r.cfg = cfg.Clone()
+	r.mu.Unlock()
+}
+
+func (r *Resolver) config() home.Config {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cfg
 }
 
 // noStore reports a cache there is no point calling, in either of the two
@@ -77,8 +95,17 @@ func (noopCache) SaveRepoCache(home.RepoCache) error { return nil }
 func (noopCache) MergeRepoCache(home.RepoCache) error { return nil }
 
 // Resolve returns a validated checkout for repo in owner/name form, consulting
-// explicit config mappings first, then cache, then discovery roots.
-func (r *Resolver) Resolve(ctx context.Context, repo string) (Checkout, error) {
+// explicit config mappings first, then the cache, then candidates, then the
+// discovery roots.
+//
+// candidates are directories the caller already knows the reader is working
+// in, such as herdr's panes. They come before the discovery roots because they
+// cost one identification each rather than a walk, and because a first-run
+// configuration has no roots at all: without them, provisioning failed for
+// everyone the first time, beside a shell that was sitting in the clone. Each
+// is validated against its origin remote like any other, and a match is
+// cached, so it is found again after that pane has gone.
+func (r *Resolver) Resolve(ctx context.Context, repo string, candidates ...string) (Checkout, error) {
 	if r.id == nil {
 		return Checkout{}, fmt.Errorf("repository resolver needs a git identifier")
 	}
@@ -87,8 +114,9 @@ func (r *Resolver) Resolve(ctx context.Context, repo string) (Checkout, error) {
 	if err != nil {
 		return Checkout{}, err
 	}
+	cfg := r.config()
 
-	if configuredPath, ok := explicitPathFor(want, r.cfg.Repos); ok {
+	if configuredPath, ok := explicitPathFor(want, cfg.Repos); ok {
 		return r.resolveConfigured(ctx, want, configuredPath)
 	}
 
@@ -106,11 +134,15 @@ func (r *Resolver) Resolve(ctx context.Context, repo string) (Checkout, error) {
 		}
 	}
 
-	if len(r.cfg.Discovery.Roots) == 0 {
-		return Checkout{}, fmt.Errorf("%w for %s", ErrCheckoutNotFound, want)
+	if checkout, found := r.among(ctx, want, candidates); found {
+		cache.Set(want, checkout.Root)
+		if err := r.saveCache(cache); err != nil {
+			return Checkout{}, err
+		}
+		return checkout, nil
 	}
 
-	for _, root := range r.cfg.Discovery.Roots {
+	for _, root := range cfg.Discovery.Roots {
 		checkout, found := r.discover(ctx, want, root)
 		if !found {
 			continue
@@ -122,7 +154,60 @@ func (r *Resolver) Resolve(ctx context.Context, repo string) (Checkout, error) {
 		return checkout, nil
 	}
 
-	return Checkout{}, fmt.Errorf("%w for %s", ErrCheckoutNotFound, want)
+	return Checkout{}, fmt.Errorf("%w for %s: %s", ErrCheckoutNotFound, want, notFoundHint(cfg, len(candidates)))
+}
+
+// notFoundHint says where prutil looked and how the reader tells it where the
+// clone is. The bare "no local checkout found" named neither, and a reader who
+// has never set repos or discovery.roots has no reason to know they exist.
+func notFoundHint(cfg home.Config, candidates int) string {
+	var looked []string
+	if candidates > 0 {
+		looked = append(looked, "no herdr pane is working in a clone of it")
+	}
+	if len(cfg.Discovery.Roots) == 0 {
+		looked = append(looked, "no discovery root is configured")
+	} else {
+		looked = append(looked, "none of the discovery roots holds one")
+	}
+	return strings.Join(looked, " and ") +
+		"; add it under Explicit repository paths in the settings pane (s), or open a shell in its clone"
+}
+
+// among finds repo in the candidate directories. The main working tree of a
+// clone is preferred over a linked worktree of it: a pane may be sitting in a
+// worktree prutil made itself, and that is a poor base for the worktrees it
+// makes next. A linked worktree is still taken when it is all there is, as
+// discovery would.
+func (r *Resolver) among(ctx context.Context, want string, candidates []string) (Checkout, bool) {
+	var linked Checkout
+	seen := make(map[string]bool, len(candidates))
+	for _, dir := range candidates {
+		if dir == "" || seen[filepath.Clean(dir)] {
+			continue
+		}
+		seen[filepath.Clean(dir)] = true
+		checkout, ok := r.matchCheckout(ctx, want, dir)
+		if !ok || seen["root:"+checkout.Root] {
+			continue
+		}
+		seen["root:"+checkout.Root] = true
+		if isMainWorkingTree(checkout.Root) {
+			return checkout, true
+		}
+		if linked.Root == "" {
+			linked = checkout
+		}
+	}
+	return linked, linked.Root != ""
+}
+
+// isMainWorkingTree reports whether root is a clone's own working tree, which
+// holds a .git directory, rather than a linked worktree, which holds a .git
+// file pointing back at it.
+func isMainWorkingTree(root string) bool {
+	info, err := os.Stat(filepath.Join(root, ".git"))
+	return err == nil && info.IsDir()
 }
 
 func (r *Resolver) resolveConfigured(ctx context.Context, repo, configuredPath string) (Checkout, error) {

@@ -429,6 +429,7 @@ security:
     - COLLABORATOR
   trusted_authors:
     - "gemini-code-assist[bot]"  # [bot] matches only a GitHub App
+  require_sandbox: true        # automatic handoffs only to sandboxed agents
 ```
 
 Discovery roots are walked four levels deep, and a checkout's origin remote is
@@ -504,9 +505,67 @@ one polling interval while it reads them. The same wait applies when GitHub
 refuses that read: not knowing who has commented leaves the automatic paths
 shut rather than open. `W` and `F` are your own key presses and do not wait.
 
+#### Sandboxed agents
+
+A Claude Code agent that prutil starts runs inside Claude's own sandbox. Its
+shell commands can write only inside its worktree, reach only the domains the
+policy allows, and cannot reach herdr's socket, so a talked-into agent cannot
+type into your other panes. It cannot ask its way out, either: the sandbox is
+strict. What it can still do is what the work needs: commit, run the tests,
+push, and reply on threads with gh.
+
+The policy is `sandbox/claude-settings.json` in prutil's directory. prutil
+writes it the first time it starts a Claude agent and never again, so it is
+yours to edit. Before each start, prutil asks Claude what the policy gives the
+agent, and refuses to start it if the answer is not sandboxed. Two things are
+added at each start rather than kept in your file:
+
+- the SSH agent's socket, which moves every time a Mac boots;
+- git rules that send the pull request owner's repositories over HTTPS, with
+  gh as the credential helper. SSH cannot get out of Claude's sandbox on macOS.
+  The rules apply to that agent's session only; your own git configuration,
+  including any rewrite of HTTPS to SSH, is not touched. If your organisation
+  enforces SSO, your gh token needs authorising for it, as your SSH key did.
+
+With `security.require_sandbox` on, which is the default, automatic handoffs
+to Claude, Copilot CLI, and agy require a contained agent. prutil passes over
+an uncontained agent on the pull request rather than starting another beside
+it; `W` and `F` can still hand work to it explicitly.
+
+Copilot CLI (1.0.88) starts with `--experimental --sandbox` and strips common
+AWS token variables from shell and MCP environments. GitHub tokens stay
+available so `gh` can push and reply. agy (1.2.11) starts with
+`--sandbox`. Neither has a sandbox status command: prutil checks their flags
+and their **existing, user-owned settings**; it does not change vendor files
+or relocate sign-in.
+
+**For Copilot**, set `sandbox.allowBypass: false`,
+`sandbox.userPolicy.network.allowLocalNetwork: false`, and include absolute
+paths to `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.config/herdr` and
+`~/.config/prutil` in `sandbox.userPolicy.filesystem.deniedPaths`.
+
+**For agy**,
+set `enableTerminalSandbox: true`, `toolPermission: "proceed-in-sandbox"`,
+and restricted `read_url(domain)` entries in `permissions.allow`; do not
+allow `unsandboxed` or wildcard URL rules. With a missing or permissive
+policy, automatic handoffs are refused until you configure it.
+
+These checks
+are **not proof of OS isolation**: a live agent must still verify secret
+reads, network access, and herdr socket denial on your machine.
+
+The WATCH history says what each handoff went to, for example
+`claude w3:p1 · sandboxed, strict`. A sandboxed Claude agent's push goes over
+HTTPS through the sandbox's proxy; that has been checked with a real handoff,
+from finding the clone to the agent's reply on the thread. If a push fails for
+you, set `require_sandbox: false` and say what the agent reported.
+
 Explicit `repos` entries win. When none exists, prutil checks its private
-`repos.json` cache and then scans `discovery.roots`, validating every candidate
-against its origin remote before it can be used. Stale cache paths are ignored
+`repos.json` cache, then the directories your herdr panes are working in, and
+then scans `discovery.roots`, validating every candidate against its origin
+remote before it can be used. So a shell open in a clone is enough for prutil
+to find it, with nothing configured; the checkout it finds is remembered in
+`repos.json` after the pane has gone. A clone is preferred to a worktree of it. Stale cache paths are ignored
 and refreshed. GitHub poll intervals are clamped to fifteen seconds at the
 shortest, so a typo cannot turn a dashboard into a load test.
 

@@ -938,3 +938,19 @@ func settingByID(t *testing.T, id string) settingDescriptor {
 	t.Fatalf("no setting registered as %q", id)
 	return settingDescriptor{}
 }
+
+func TestASavedSettingIsHandedToTheDispatcher(t *testing.T) {
+	// The dispatcher keeps its own copy of the configuration, so a setting the
+	// pane had saved used to change nothing about a handoff until a restart.
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	openSettingsPane(t, app)
+	cursorOn(t, app, "security.require_sandbox")
+
+	send(t, app, press("space"))
+
+	configs := dispatcher.configurations()
+	require.NotEmpty(t, configs, "the save is handed over")
+	assert.False(t, configs[len(configs)-1].Security.RequireSandbox)
+	assert.False(t, app.homeCfg.Security.RequireSandbox, "and matches what the pane is showing")
+}
