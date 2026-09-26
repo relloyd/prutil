@@ -433,6 +433,7 @@ prutil lays them out, and ran probes from inside its sandbox.
 | `gh api user`, with the keychain and trustd lookups allowed | worked |
 | `git commit` in a worktree, and `go test` | both worked |
 | `git ls-remote` over SSH | failed; see 2b |
+| A real handoff: commit, push over HTTPS, reply with gh | all worked; see *End to end* below |
 
 Copilot CLI 1.0.88 and agy 1.2.11 have **no live-agent probe results** yet:
 
@@ -608,10 +609,15 @@ on, anything that token reaches. That includes posting what it has read to a
 public issue. Tier 3b removes this. Until then, the zero-code steps below
 narrow it.
 
-**Not yet verified: an authenticated push through the sandbox's HTTP proxy.**
-The rewrite, the credential helper and a dry-run push were all shown to work,
-but only from bash mode, which runs outside the sandbox. The first real `W`
-handoff settles it.
+**End to end, verified.** On a scratch repository, with nothing configured but
+`herdr.agent_kind: claude`, prutil found the clone from a herdr pane, created a
+worktree, and started Claude with its launch file (`pane process-info` showed
+`claude --settings …/sandbox/launch/claude-<hash>.json`). The handoff log
+recorded it `sandboxed, strict`. Within a minute the agent had committed the
+change the review asked for, pushed it to the pull request's branch over HTTPS
+through the sandbox's proxy, and replied on the thread with the agent marker.
+A second handoff ten minutes later went to the same agent, recognised as
+contained from its command line alone.
 
 ## Tier 2b (optional): one wrapper for every agent
 
@@ -837,8 +843,8 @@ this was run against a live sandboxed agent; the results are in Tier 2 under
   denied; see 2b.
 - `curl https://example.com` is refused. Verified for Claude.
 - `go test ./...` and `git commit` succeed. Verified for Claude.
-- A push to the pull request's branch succeeds. For Claude this is unverified
-  from inside the sandbox; the first real `W` handoff settles it.
+- A push to the pull request's branch succeeds. Verified for Claude, by a real
+  handoff; see Tier 2, *End to end, verified*.
 - Afterwards, `herdr agent list` and `herdr agent explain` still show the
   agent's kind and state. Verified for Claude.
 

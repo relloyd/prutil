@@ -317,10 +317,9 @@ Correct them against the discovery output.
 
 ## Still open from the Claude build
 
-- **An authenticated push through Claude's sandbox proxy is unverified.** The
-  rewrite and the helper were shown to work, and so was a dry-run push, but
-  only from bash mode, which runs outside the sandbox. The first real `W` on
-  the machine this was built on settles it.
+- **Settled since: an authenticated push through Claude's sandbox proxy
+  works.** A real handoff on the machine this was built on provisioned a
+  sandboxed agent, which pushed its commit over HTTPS and replied with gh.
 - **`herdr.agent_args` was deliberately not built.** A hand-written argument
   list could undo the sandbox. If one is ever needed, let it add to a profile's
   arguments, and verify the result, rather than replace them.

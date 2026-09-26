@@ -555,10 +555,10 @@ are **not proof of OS isolation**: a live agent must still verify secret
 reads, network access, and herdr socket denial on your machine.
 
 The WATCH history says what each handoff went to, for example
-`claude w3:p1 · sandboxed, strict`. After your first `W` on a test pull
-request, check that the agent's push reached GitHub: that is the one part of
-the sandbox that could not be verified from here. If it did not, set
-`require_sandbox: false` and say what the agent reported.
+`claude w3:p1 · sandboxed, strict`. A sandboxed Claude agent's push goes over
+HTTPS through the sandbox's proxy; that has been checked with a real handoff,
+from finding the clone to the agent's reply on the thread. If a push fails for
+you, set `require_sandbox: false` and say what the agent reported.
 
 Explicit `repos` entries win. When none exists, prutil checks its private
 `repos.json` cache, then the directories your herdr panes are working in, and
