@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -54,6 +55,15 @@ type fakeClient struct {
 	// comments records every AddComment call.
 	commentCalls []commentRecord
 	commentErr   error
+	// lookups is what LookupPullRequest answers, keyed by pull request, and
+	// lookupErr what it fails with instead. viewer is the login it reports.
+	lookups   map[model.Key]gh.Lookup
+	lookupErr error
+	// adopted is every pull request AdoptedPullRequests can find, keyed by node
+	// id, and adoptedIDs records every batch it was asked for.
+	adopted    map[string]model.PullRequest
+	adoptedErr error
+	adoptedIDs [][]string
 }
 
 type commentRecord struct {
@@ -177,6 +187,35 @@ func (f *fakeClient) AddComment(_ context.Context, subjectID string, body string
 	}
 	f.commentCalls = append(f.commentCalls, commentRecord{subjectID: subjectID, body: body})
 	return nil
+}
+
+func (f *fakeClient) LookupPullRequest(_ context.Context, key model.Key) (gh.Lookup, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lookupErr != nil {
+		return gh.Lookup{}, f.lookupErr
+	}
+	got, ok := f.lookups[key]
+	if !ok {
+		return gh.Lookup{}, errors.New("not found")
+	}
+	return got, nil
+}
+
+func (f *fakeClient) AdoptedPullRequests(_ context.Context, ids []string) ([]model.PullRequest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adoptedIDs = append(f.adoptedIDs, append([]string(nil), ids...))
+	if f.adoptedErr != nil {
+		return nil, f.adoptedErr
+	}
+	out := make([]model.PullRequest, 0, len(ids))
+	for _, id := range ids {
+		if pr, ok := f.adopted[id]; ok {
+			out = append(out, pr)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeClient) comments() []commentRecord {

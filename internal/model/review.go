@@ -252,12 +252,16 @@ type Hold struct {
 	// Unknown is true when a thread came back with fewer participants than it
 	// holds comments, so who spoke in it could not be established at all.
 	Unknown bool
+	// OtherAgents names whoever posted an agent's reply that is not the
+	// viewer's, which means another prutil is handing this pull request's
+	// feedback to an agent of its own. See OtherAgentReplies.
+	OtherAgents []string
 }
 
 // Held reports whether anything about the pull request stops an automatic
 // handoff.
 func (h Hold) Held() bool {
-	return len(h.Authors) > 0 || len(h.Hidden) > 0 || h.Unknown
+	return len(h.Authors) > 0 || len(h.Hidden) > 0 || h.Unknown || len(h.OtherAgents) > 0
 }
 
 // HoldFor asks both questions about every unresolved thread on a pull request:
@@ -272,7 +276,59 @@ func (h Hold) Held() bool {
 func HoldFor(threads []ReviewThread, policy TrustPolicy) Hold {
 	hold := untrusted(threads, policy)
 	hold.Hidden = hiddenAuthors(threads, policy)
+	seen := make(map[string]bool)
+	for _, reply := range OtherAgentReplies(threads, policy.Viewer) {
+		hold.OtherAgents = appendName(hold.OtherAgents, seen, reply.Login)
+	}
 	return hold
+}
+
+// AgentReply is the newest comment on an unresolved thread when it carries
+// AgentCommentMarker and somebody other than the viewer wrote it.
+type AgentReply struct {
+	Login     string
+	CommentID string
+}
+
+// OtherAgentReplies finds the threads whose last word is an agent's reply
+// posted under somebody else's account.
+//
+// Two prutils watching one pull request would otherwise hand each other's
+// replies to their agents forever. Each honours the marker only in its own
+// viewer's comment, which is what keeps a reviewer from typing it to take their
+// feedback off the list, so to the other instance the reply is new feedback
+// from a person, and its answer is new feedback to the first.
+//
+// A reply found here holds the pull request rather than being filtered out.
+// The marker is text anybody can type, so what it may do in a stranger's hands
+// is limited to what a hold does: stop the automatic path and ask the reader,
+// who can still send the work with a second press. It cannot take feedback off
+// the counts on screen.
+//
+// Only the newest comment answers, as it does for the viewer's own marker: a
+// thread somebody has replied to since is not one the other agent is still
+// answering. An empty viewer is somebody prutil could not identify, so every
+// marker counts, since not knowing whose reply it was is not knowing it was
+// ours.
+func OtherAgentReplies(threads []ReviewThread, viewer string) []AgentReply {
+	var out []AgentReply
+	for _, thread := range threads {
+		if thread.Resolved || thread.LatestPending {
+			continue
+		}
+		body, by := thread.LatestBody, thread.LatestBy
+		if body == "" {
+			body, by = thread.Body, thread.Opener
+		}
+		if !IsAgentComment(body) {
+			continue
+		}
+		if viewer != "" && by != "" && strings.EqualFold(by, viewer) {
+			continue
+		}
+		out = append(out, AgentReply{Login: by, CommentID: thread.LatestID})
+	}
+	return out
 }
 
 // untrusted names everyone outside the boundary who has spoken, and reports

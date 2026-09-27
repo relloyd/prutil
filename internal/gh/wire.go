@@ -28,6 +28,29 @@ type detailResponse struct {
 	} `json:"repository"`
 }
 
+// adoptedResponse mirrors the data envelope returned by adoptedQuery. A node
+// the token can no longer see comes back null, which decodes to a node with no
+// repository and is dropped by toPullRequest.
+type adoptedResponse struct {
+	Nodes []*prNode `json:"nodes"`
+}
+
+// lookupResponse mirrors the data envelope returned by lookupQuery. The pull
+// request is a pointer because GitHub answers a number the repository does not
+// have with a null and an error, and a null alone for one the token cannot see.
+type lookupResponse struct {
+	Viewer struct {
+		Login string `json:"login"`
+	} `json:"viewer"`
+	Repository *struct {
+		PullRequest *struct {
+			prNode
+			IsCrossRepository   bool `json:"isCrossRepository"`
+			MaintainerCanModify bool `json:"maintainerCanModify"`
+		} `json:"pullRequest"`
+	} `json:"repository"`
+}
+
 // repoBatchResponse mirrors the data envelope returned by a batched per-repo
 // query. Its aliases are generated at request time, so the envelope decodes
 // into a map keyed by alias rather than into a struct.

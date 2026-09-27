@@ -1339,6 +1339,38 @@ func TestProvisioningFollowsTrustedAuthors(t *testing.T) {
 	assert.Equal(t, home.OutcomeDryRun, res.Outcome)
 }
 
+func TestProvisioningFollowsAnAdoption(t *testing.T) {
+	req := request()
+	req.PR.Author = "alice"
+	req.AdoptedAuthor = "Alice"
+
+	res, err := provisioning(t, req, nil)
+
+	require.NoError(t, err, "adopting the pull request is the reader agreeing to run alice's branch")
+	assert.Equal(t, home.OutcomeDryRun, res.Outcome)
+}
+
+func TestAnAdoptionIsAGrantToThePersonTheReaderAgreedTo(t *testing.T) {
+	cases := []struct {
+		name   string
+		author string
+	}{
+		{name: "the pull request now names somebody else", author: "mallory"},
+		{name: "GitHub no longer has the account", author: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := request()
+			req.PR.Author = tc.author
+			req.AdoptedAuthor = "alice"
+
+			_, err := provisioning(t, req, nil)
+
+			require.ErrorIs(t, err, handoff.ErrUntrustedAuthor)
+		})
+	}
+}
+
 func TestProvisioningRefusesWhenItCannotTellWhoTheAuthorIs(t *testing.T) {
 	cases := []struct {
 		name string

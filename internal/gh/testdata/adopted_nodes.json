@@ -1,0 +1,59 @@
+{
+  "data": {
+    "nodes": [
+      {
+        "__typename": "PullRequest",
+        "id": "PR_A12",
+        "number": 12,
+        "title": "Make the widget spin",
+        "url": "https://github.com/acme/widgets/pull/12",
+        "author": { "login": "alice" },
+        "isDraft": false,
+        "state": "OPEN",
+        "createdAt": "2026-09-01T09:00:00Z",
+        "updatedAt": "2026-09-09T16:00:00Z",
+        "mergeable": "MERGEABLE",
+        "reviewDecision": "REVIEW_REQUIRED",
+        "approvals": { "totalCount": 0 },
+        "additions": 40,
+        "deletions": 2,
+        "changedFiles": 3,
+        "headRefName": "feat/spin",
+        "baseRefName": "main",
+        "repository": { "nameWithOwner": "acme/widgets" },
+        "comments": { "totalCount": 1 },
+        "reviewThreads": { "totalCount": 2 },
+        "commits": {
+          "nodes": [
+            { "commit": { "oid": "a12a12", "statusCheckRollup": { "state": "FAILURE" } } }
+          ]
+        }
+      },
+      null,
+      {
+        "__typename": "PullRequest",
+        "id": "PR_B3",
+        "number": 3,
+        "title": "Retire the old widget",
+        "url": "https://github.com/acme/widgets/pull/3",
+        "author": { "login": "bob" },
+        "isDraft": false,
+        "state": "MERGED",
+        "createdAt": "2026-08-20T09:00:00Z",
+        "updatedAt": "2026-09-08T10:00:00Z",
+        "mergeable": "UNKNOWN",
+        "reviewDecision": "APPROVED",
+        "approvals": { "totalCount": 1 },
+        "additions": 1,
+        "deletions": 90,
+        "changedFiles": 4,
+        "headRefName": "chore/retire",
+        "baseRefName": "main",
+        "repository": { "nameWithOwner": "acme/widgets" },
+        "comments": { "totalCount": 0 },
+        "reviewThreads": { "totalCount": 0 },
+        "commits": { "nodes": [ { "commit": { "oid": "b3b3b3", "statusCheckRollup": null } } ] }
+      }
+    ]
+  }
+}

@@ -108,7 +108,18 @@ func (a *App) toggleWatch() tea.Cmd {
 	if !a.armed(key) && a.active != viewOpen {
 		return status("watching is available only for open pull requests")
 	}
+	if !a.armed(key) {
+		if why := a.watchCaution(key); why != "" && !a.confirms(key, confirmWatch) {
+			return status(fmt.Sprintf("%s · press %s again to watch it anyway", why, a.keys.Watch.Help().Key))
+		}
+	}
 	armed := a.state.ToggleArmed(key.String())
+	if armed {
+		// Arming is the reader saying they have seen the other agents' replies
+		// that are there now, so those stop the watch no longer. A new one
+		// will.
+		a.state.Mutate(key.String()).AcceptedAgentReplies = slices.Clone(a.runtimeOf(key).agentReplies)
+	}
 	if err := a.saveState(); err != nil {
 		return status(err.Error())
 	}
@@ -261,7 +272,7 @@ func (a *App) applyFailedChecks(key model.Key, headOID string, checks []model.Ch
 	entry.handing = true
 	a.setWatchOperation(key, "handing failed checks to an agent")
 	a.recordWatchActivity(key, fmt.Sprintf("found %d failed %s", len(failed), plural(len(failed), "check")))
-	return tea.Batch(a.failedCheckHandoff(handoffMsg{pr: pr, check: true, headOID: headOID, checks: failed, allowProvision: allowProvision, force: force, viewer: a.viewer}), a.spin.Tick)
+	return tea.Batch(a.failedCheckHandoff(handoffMsg{pr: pr, check: true, headOID: headOID, checks: failed, allowProvision: allowProvision, force: force, viewer: a.viewer, adoptedAuthor: a.adoptedAuthor(key)}), a.spin.Tick)
 }
 
 func (a *App) failedCheckHandoff(msg handoffMsg) tea.Cmd {
@@ -271,7 +282,7 @@ func (a *App) failedCheckHandoff(msg handoffMsg) tea.Cmd {
 		defer cancel()
 		msg.result, msg.err = hand.Dispatch(ctx, handoff.Request{
 			PR: msg.pr, CheckHandoff: true, HeadOID: msg.headOID, Checks: msg.checks,
-			AllowProvision: msg.allowProvision, Viewer: msg.viewer,
+			AllowProvision: msg.allowProvision, Viewer: msg.viewer, AdoptedAuthor: msg.adoptedAuthor,
 			// force is the reader's own key press, F or W on a failed check.
 			Manual: msg.force,
 		})
@@ -497,9 +508,10 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	feedback := msg.review.Feedback(a.homeCfg.Watch.ReviewFilter())
 	entry := a.mutate(msg.key)
 	entry.feedback, entry.hasFeedback = len(feedback), true
-	entry.hold, entry.holdKnown = msg.review.Hold(a.homeCfg.TrustPolicy()), true
+	entry.hold, entry.holdKnown = msg.review.Hold(a.trustPolicyFor(msg.key)), true
 	a.viewer = msg.review.Viewer
 	entry.holdMark = holdMarkOf(msg.review.Threads)
+	entry.agentReplies = replyIDs(model.OtherAgentReplies(msg.review.Threads, msg.review.Viewer))
 	a.engine.Precise(msg.key, len(feedback), false, now)
 	activity := fmt.Sprintf("review feedback: %d %s awaiting",
 		len(feedback), plural(len(feedback), "thread"))
@@ -507,6 +519,10 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 		activity = "manual discovery: " + activity
 	}
 	a.recordWatchActivity(msg.key, activity)
+
+	if !msg.manual && a.contended(msg.key) {
+		return a.stopForOtherAgent(msg.key, entry.hold)
+	}
 
 	fresh := model.Unhandled(feedback, a.state.Get(msg.key.String()).NotifiedThreads)
 	if len(fresh) == 0 || entry.handing {
@@ -537,11 +553,12 @@ func (a *App) applyReview(msg watchReviewMsg) tea.Cmd {
 	a.recordWatchActivity(msg.key, activity)
 	return tea.Batch(
 		a.handoffOf(handoffMsg{
-			pr:      pr,
-			open:    len(feedback),
-			fresh:   len(fresh),
-			threads: model.Digest(feedback),
-			viewer:  msg.review.Viewer,
+			pr:            pr,
+			open:          len(feedback),
+			fresh:         len(fresh),
+			threads:       model.Digest(feedback),
+			viewer:        msg.review.Viewer,
+			adoptedAuthor: a.adoptedAuthor(msg.key),
 		}),
 		status(fmt.Sprintf("%s has %d new review %s · handing it to an agent…",
 			msg.key, len(fresh), plural(len(fresh), "comment"))),
@@ -573,6 +590,90 @@ func (a *App) holdFeedback(pr model.PullRequest, hold model.Hold, count int, nou
 
 	line := fmt.Sprintf("%s: %s held, %s · W to send it anyway", key, held, why)
 	return tea.Batch(status(line), a.announceHold(pr, held, why))
+}
+
+// replyIDs names the comments behind a set of other agents' replies.
+func replyIDs(replies []model.AgentReply) []string {
+	ids := make([]string, 0, len(replies))
+	for _, reply := range replies {
+		ids = append(ids, reply.CommentID)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// contended reports whether another agent has replied on an armed pull request
+// since the reader last chose to watch it.
+func (a *App) contended(key model.Key) bool {
+	if !a.armed(key) {
+		return false
+	}
+	accepted := a.state.Get(key.String()).AcceptedAgentReplies
+	for _, id := range a.runtimeOf(key).agentReplies {
+		if !slices.Contains(accepted, id) {
+			return true
+		}
+	}
+	return false
+}
+
+// stopForOtherAgent stops watching a pull request another agent has started
+// replying on.
+//
+// The hold alone would stop this instance answering the other agent's replies,
+// which is the loop. What it would not stop is two agents taking turns on one
+// branch for as long as reviewers keep commenting, each pushing over the other.
+// Which of them should carry on is the reader's call, so the watch stops and
+// says why, and w asks them before it starts again.
+func (a *App) stopForOtherAgent(key model.Key, hold model.Hold) tea.Cmd {
+	why := "another agent is replying as " + english(hold.OtherAgents)
+	a.state.SetArmed(key.String(), false)
+	saveErr := a.saveState()
+	tick := a.syncWatch()
+	a.clearWatch(key, "stopped watching: "+why)
+
+	pr, _ := a.prByKey(key)
+	if a.store != nil {
+		_ = a.store.AppendHandoff(home.Handoff{
+			At:      a.now(),
+			PR:      key.String(),
+			URL:     pr.URL,
+			Outcome: home.OutcomeHeld,
+			Detail:  "stopped watching: " + why,
+		})
+	}
+
+	line := fmt.Sprintf("stopped watching %s: %s · w to watch it again", key, why)
+	if saveErr != nil {
+		line += " · " + saveErr.Error()
+	}
+	cmds := []tea.Cmd{tick, status(line)}
+	if a.hand != nil {
+		hand, title := a.hand, key.String()+": stopped watching"
+		cmds = append(cmds, func() tea.Msg {
+			hand.Notify(context.Background(), title, why+" · w to watch it again")
+			return nil
+		})
+	}
+	return tea.Batch(cmds...)
+}
+
+// watchCaution is what the reader is told before watching a pull request that
+// somebody else may also be working on, or the empty string when nobody is
+// known to be. Watching one hands its feedback to an agent unasked, and two
+// people's agents answering the same feedback is the situation to avoid.
+func (a *App) watchCaution(key model.Key) string {
+	var why []string
+	if author := a.adoptedAuthor(key); author != "" {
+		why = append(why, "it was opened by "+author+", who may still be working on it")
+	}
+	if hold := a.runtimeOf(key).hold; len(hold.OtherAgents) > 0 {
+		why = append(why, "another agent is replying as "+english(hold.OtherAgents))
+	}
+	if len(why) == 0 {
+		return ""
+	}
+	return key.String() + ": " + strings.Join(why, "; ")
 }
 
 // announceHold raises the herdr notification a held handoff would have raised
@@ -633,6 +734,9 @@ func holdReason(hold model.Hold) string {
 	}
 	if hold.Unknown {
 		why = append(why, "threads prutil could not read in full")
+	}
+	if len(hold.OtherAgents) > 0 {
+		why = append(why, "another agent replying as "+english(hold.OtherAgents))
 	}
 	// Semicolons rather than "and": each clause can already name several people
 	// with an "and" of its own, and two levels of them read as one list.
@@ -788,6 +892,7 @@ func (a *App) dispatch(pr model.PullRequest) tea.Cmd {
 	client, send := a.client, a.sender(true)
 	notified := a.state.Get(pr.Key().String()).NotifiedThreads
 	budget, filter := a.handoffBudget(), a.homeCfg.Watch.ReviewFilter()
+	adopted := a.adoptedAuthor(pr.Key())
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
@@ -803,11 +908,12 @@ func (a *App) dispatch(pr model.PullRequest) tea.Cmd {
 
 		feedback := review.Feedback(filter)
 		msg := handoffMsg{
-			pr:      pr,
-			open:    len(feedback),
-			fresh:   len(model.Unhandled(feedback, notified)),
-			threads: model.Digest(feedback),
-			viewer:  review.Viewer,
+			pr:            pr,
+			open:          len(feedback),
+			fresh:         len(model.Unhandled(feedback, notified)),
+			threads:       model.Digest(feedback),
+			viewer:        review.Viewer,
+			adoptedAuthor: adopted,
 		}
 		if len(feedback) == 0 {
 			msg.nothing = true
@@ -844,6 +950,7 @@ func (a *App) sender(manual bool) func(context.Context, handoffMsg) handoffMsg {
 			NewCount:        msg.fresh,
 			Threads:         msg.threads,
 			Viewer:          msg.viewer,
+			AdoptedAuthor:   msg.adoptedAuthor,
 			AllowProvision:  manual,
 			Manual:          manual,
 		})
@@ -1007,9 +1114,10 @@ func (a *App) watchSeg(pr model.PullRequest) seg {
 // disarmFinished stops watching every pull request in prs that has merged or
 // closed, and reports what it turned off.
 //
-// It is the only thing that ever disarms without the reader pressing w, and it
-// waits for positive evidence: a row GitHub has returned whose state is no
-// longer open. Absence from the open list would be the wrong signal, because
+// It is one of three things that disarm without the reader pressing w; the
+// others are applyAdoptedLoad releasing an adopted pull request that finished,
+// and stopForOtherAgent. Like them it waits for positive evidence: here, a row
+// GitHub has returned whose state is no longer open. Absence from the open list would be the wrong signal, because
 // that list is narrowed by the configured query and limit, so a pull request
 // can drop out of it while still being open and still worth watching.
 //
@@ -1165,6 +1273,10 @@ type handoffMsg struct {
 	// which is how the dispatcher tells the reader's own pull request from
 	// somebody else's before it checks a head out.
 	viewer string
+	// adoptedAuthor is who the reader agreed to trust on this pull request by
+	// adopting it, read from the state when the handoff was decided on rather
+	// than from inside the command, which runs off the update loop.
+	adoptedAuthor string
 	// nothing means there was no open feedback to send, so no agent was asked.
 	nothing bool
 	result  handoff.Result

@@ -48,6 +48,7 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 	identity := fitSegs(max(inner-lenOf(age)-1, 1), " ",
 		a.styles.dot(a.rollupFor(pr)),
 		a.watchSeg(pr),
+		a.adoptedSeg(pr),
 		seg{text: "#" + fmt.Sprint(pr.Number), style: a.styles.Number},
 		seg{text: pr.Repo, style: a.styles.Repo},
 	)
@@ -64,6 +65,7 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 		{text: truncatePlain(pr.BaseRef, branchWidth), style: a.styles.Branch},
 	}
 	branchSegs = append(branchSegs, a.styles.badges(pr)...)
+	branchSegs = append(branchSegs, a.authorSeg(pr))
 
 	metaSegs := []seg{{text: a.checksSummary(pr), style: a.styles.Meta}}
 	if review := a.styles.reviewBadge(pr); review.text != "" {

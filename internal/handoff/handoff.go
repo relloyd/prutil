@@ -99,6 +99,12 @@ type Request struct {
 	// preceded this handoff reported it. Empty means prutil does not know, and
 	// provision treats not knowing as not the reader's own.
 	Viewer string
+	// AdoptedAuthor is the author the reader agreed to trust on this pull
+	// request by adopting it, empty for one they have not. It passes the
+	// provisioning gate for that author on this pull request alone, and only
+	// while GitHub still names the same author: a grant to a person is not a
+	// grant to whoever holds the pull request now.
+	AdoptedAuthor string
 	// AllowProvision means the reader explicitly pressed W and permits a
 	// no-agent handoff to create a worktree and start an agent.
 	AllowProvision bool
@@ -734,7 +740,9 @@ func safeChecks(checks []model.Check, prURL string) []model.Check {
 // execution from the branch under review before a model has read a word of it.
 //
 // The default search lists only the reader's own pull requests, but -query can
-// list anyone's, and herdr.fallback: new provisions without being asked.
+// list anyone's, and herdr.fallback: new provisions without being asked. An
+// adopted pull request passes for its author, because adopting it is the
+// reader making exactly this decision, one pull request at a time.
 //
 // This is not the trust gate. That one asks who has commented; this asks whose
 // code prutil is about to run. A reader can still hand work to an agent they
@@ -748,6 +756,11 @@ func (d *Dispatcher) mayProvision(req Request) error {
 		return fmt.Errorf("%w: %s has no author prutil can identify", ErrUntrustedAuthor, req.PR.Key())
 	}
 	if viewer := strings.TrimSpace(req.Viewer); viewer != "" && strings.EqualFold(author, viewer) {
+		return nil
+	}
+	if adopted := strings.TrimSpace(req.AdoptedAuthor); adopted != "" && strings.EqualFold(author, adopted) {
+		// The reader adopted this pull request, and adopting it is where they
+		// agreed to run its author's branch.
 		return nil
 	}
 	for _, trusted := range d.security.TrustedAuthors {

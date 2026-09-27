@@ -29,6 +29,8 @@ type keyMap struct {
 	TriggerReview key.Binding
 	Notify        key.Binding
 	NextTab       key.Binding
+	Adopt         key.Binding
+	Release       key.Binding
 	Settings      key.Binding
 	Help          key.Binding
 	Quit          key.Binding
@@ -100,6 +102,14 @@ func defaultKeys() keyMap {
 		NextTab: key.NewBinding(
 			key.WithKeys("tab"),
 			key.WithHelp("tab", "open/closed"),
+		),
+		Adopt: key.NewBinding(
+			key.WithKeys("+"),
+			key.WithHelp("+", "adopt a PR"),
+		),
+		Release: key.NewBinding(
+			key.WithKeys("-"),
+			key.WithHelp("-", "release adopted PR"),
 		),
 		// s for settings, and , because that is where the settings are in
 		// every macOS application.
@@ -212,6 +222,10 @@ func (k keyMap) helpSections(mouse bool) []helpSection {
 				detail: "Copy the selected pull request's URL, or the selected check's, to the clipboard."},
 			{binding: k.NextTab, title: "switch open / closed",
 				detail: "Switch between your open and your recently closed pull requests."},
+			{binding: k.Adopt, title: "adopt a pull request",
+				detail: "Take on a pull request somebody else opened, by URL or owner/repo#12. It joins your open list, and its author is trusted on it alone. It is not watched until you press w."},
+			{binding: k.Release, title: "release an adopted pull request",
+				detail: "Stop working on the selected adopted pull request: it stops being watched, and its author stops being trusted on it. Press twice to confirm."},
 		}},
 		{title: "Refreshing", entries: []helpEntry{
 			{binding: k.Refresh, title: "refresh",

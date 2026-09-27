@@ -104,6 +104,8 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `R` | trigger an AI review on the selected open pull request by posting the configured comment |
 | `N` | check the selected open pull request for new review feedback and notify an existing agent |
 | `tab` | switch between your open and your recently closed pull requests |
+| `+` | adopt a pull request somebody else opened, by URL or `owner/repo#12`: it joins your open list and its author is trusted on it |
+| `-` | release the selected adopted pull request: it stops being watched and its author stops being trusted on it. press twice to confirm |
 | `s` or `,` | open settings: configure notifications, polling intervals, review triggers, and coding agent settings |
 | `?` | open the shortcut overlay: type to filter, `enter` to run the highlighted shortcut, `esc` or `?` to close |
 | `q` or `ctrl+c` | quit |
@@ -204,11 +206,14 @@ the active ones is read again.
 
 A watched pull request stops being watched on its own once prutil sees it
 merged or closed in the recently closed view, and says which ones it retired.
-That is the only thing besides `w` that ever disarms, and it waits to be shown
-a finished pull request rather than inferring one: the open list is narrowed by
-`-query` and `-limit`, so a pull request can drop out of it and still be open.
-Until that view is next loaded a finished pull request stays armed, counted in
-the hollow half of the tally; nothing polls it, so it costs no requests.
+It waits to be shown a finished pull request rather than inferring one: the
+open list is narrowed by `-query` and `-limit`, so a pull request can drop out
+of it and still be open. Until that view is next loaded a finished pull request
+stays armed, counted in the hollow half of the tally; nothing polls it, so it
+costs no requests. The only other things that disarm without `w` are an
+adopted pull request finishing, and another agent replying on one you watch;
+both are described under [Adopting somebody else's pull
+request](#adopting-somebody-elses-pull-request).
 
 From then on prutil watches that pull request for review feedback, and when
 some appears it gives it to a coding agent through
@@ -479,10 +484,10 @@ prutil also will not create a workspace over a branch that is not yours. `W`
 and the automatic `fallback: new` path check out `pull/<number>/head` and start
 an agent in it, and an agent started in somebody else's checkout loads that
 repository's own settings, hooks and instruction files — hooks run outside any
-sandbox. Only your own pull requests and `trusted_authors` are provisioned
-over; `-query` can list anyone's, which is when this matters. An agent you have
-already checked out there yourself still takes the work, because that is your
-own choice rather than prutil's.
+sandbox. Only your own pull requests, ones you have adopted with `+`, and
+`trusted_authors` are provisioned over; `-query` can list anyone's, which is
+when this matters. An agent you have already checked out there yourself still
+takes the work, because that is your own choice rather than prutil's.
 
 A held pull request holds its failed checks with it, because the agent a check
 investigation starts reads the same pull request. Resolving the thread on
@@ -568,6 +573,44 @@ to find it, with nothing configured; the checkout it finds is remembered in
 `repos.json` after the pane has gone. A clone is preferred to a worktree of it. Stale cache paths are ignored
 and refreshed. GitHub poll intervals are clamped to fifteen seconds at the
 shortest, so a typo cannot turn a dashboard into a load test.
+
+## Adopting somebody else's pull request
+
+Taking over work somebody else started is common enough to have a key. `+`
+opens a prompt: paste the pull request's URL, or type `owner/repo#12`, and press
+`enter`. prutil looks it up and shows whose it is, its branch, and whether its
+head is in a fork that will not let you push; `enter` again adopts it, and
+`esc` backs out.
+
+An adopted pull request sits in the open list with your own, sorted with them,
+and is marked `⇄` with `by <author>` on its row. The header counts them —
+`⇄ 2 adopted` — so one you have forgotten about is never out of sight. prutil
+remembers them between runs, reading them back by id on every load, and
+releases one on its own once it has merged or closed.
+
+Adopting a pull request trusts its author on that pull request and nowhere else.
+Their review comments there are not held, and prutil will create a workspace
+over their branch when you ask it to, exactly as it does for your own. It does
+not add them to `trusted_authors`, and a pull request whose author GitHub has
+since renamed or lost is not one you agreed to, so it is treated as a stranger's
+again. Everybody else commenting on it goes through the trust boundary as
+usual.
+
+It is not watched until you press `w`, and `w` asks twice, naming the author:
+whoever opened it may still have a prutil of their own watching it. Two
+watchers on one pull request would each see the other's agent replies as fresh
+feedback from a person and answer them, forever. So an agent's reply that
+somebody other than you posted — it carries `<!-- prutil:agent -->` — holds the
+pull request, on your own pull requests as well as adopted ones. The first time
+one appears on a pull request you are watching, prutil stops watching it, says
+so, and records it in the handoff log; `w` asks before starting again, and once
+you have said yes, only a newer reply from another agent stops it. `W` and `F`
+still work after a second press. Only one of the two sides needs this for the
+exchange to stop, so it works against an older prutil too.
+
+`-` releases the selected adopted pull request after a second press: it stops
+being watched, its author stops being trusted on it, and it leaves the list
+unless it is also one of yours.
 
 ## Views
 

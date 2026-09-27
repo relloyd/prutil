@@ -408,6 +408,59 @@ ask about and both keys act on what is known. Blocking a key press on a round
 trip is the worse trade, but it is a difference from the automatic paths rather
 than an accident.
 
+### 1f. Adoption is a grant to one person on one pull request
+
+`+` adopts a pull request somebody else opened: the reader is taking the work
+over. Both gates above would otherwise stop them: 1a holds every thread the
+author has spoken in unless their association is trusted, and 1d refuses to
+provision over their branch at all. Adding the author to `trusted_authors` would
+answer both, for every pull request that person ever opens, in every
+repository, for good. That is a wider grant than the decision the reader made.
+
+So adopting records the author's login beside the pull request in the watch
+state (`home.Adoption`), and that record is the grant:
+
+- `App.trustPolicyFor` adds the login to the policy's authors for that pull
+  request and no other. Everybody else who comments there still goes through
+  1a. Hidden text (1b) still holds the adopted author's comments, as it holds
+  the viewer's own.
+- `handoff.Request.AdoptedAuthor` carries it to `mayProvision`, which passes
+  only while GitHub still names the same author. A pull request whose author
+  has been renamed or deleted is not the one the reader agreed to.
+- The lookup comes first. The adopt pane shows whose pull request it is, and
+  says what adopting it means, before the second `enter` records anything.
+- `-` releases the adoption and the grant with it. So does the pull request
+  merging, closing, or ceasing to be visible, when the open list is next loaded.
+
+Adopting never arms the pull request. `w` on an adopted one asks for a second
+press naming the author, because they may still be working on it.
+
+### 1g. Two prutils on one pull request
+
+Adoption made this likely rather than theoretical: the author may still run a
+prutil of their own, watching the same pull request.
+
+`AgentCommentMarker` is honoured only in the viewer's own comment, so that a
+reviewer cannot type it to take their feedback off the list. The consequence
+is that each instance reads the other's agent replies as new feedback from a
+person, which may well be a trusted one. Each hands the reply to its agent, and
+each agent's answer is new feedback to the other. Nothing in 1a stops it.
+
+`model.OtherAgentReplies` finds an unresolved thread whose newest comment
+carries the marker and was written by somebody other than the viewer, and
+`HoldFor` turns it into `Hold.OtherAgents`. It holds rather than filters, for
+the same reason as 1a: the marker is text anybody can type, and what it may do
+in a stranger's hands is limited to what a hold does. It stops the automatic
+paths and asks the reader. It cannot remove feedback from the counts on screen.
+
+The hold alone breaks the loop, and only one side needs it: an older prutil
+answers once, and the newer one holds. It does not stop two agents taking
+turns on one branch for as long as reviewers keep commenting. So the first time
+the watcher sees such a reply on an armed pull request, `stopForOtherAgent`
+disarms it, records `OutcomeHeld`, and notifies. `w` asks before arming again,
+and arming records the replies that were there (`AcceptedAgentReplies`), so
+only a newer one stops the watch a second time.
+
 ## Tier 2: the agent runs inside its vendor's sandbox
 
 **Profiles exist for all three vendors; only Claude has live isolation

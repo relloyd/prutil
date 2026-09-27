@@ -233,6 +233,50 @@ func TestCompactDropsEntriesThatRememberNothingWorthKeeping(t *testing.T) {
 	assert.Contains(t, state.PRs, "a/b#3", "one with threads handed off stays, so they are not sent twice")
 }
 
+func TestAnAdoptionIsRememberedAndSurvivesCompaction(t *testing.T) {
+	store := home.OpenIn(t.TempDir())
+	state := home.NewState()
+	at := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	state.Adopt("acme/widgets#12", home.Adoption{NodeID: "PR_A12", Author: "alice", At: at})
+
+	state.Compact()
+	require.NoError(t, store.SaveState(state))
+	loaded, err := store.LoadState()
+	require.NoError(t, err)
+
+	got, ok := loaded.Adoption("acme/widgets#12")
+	require.True(t, ok, "an adoption is worth keeping even when nothing is armed")
+	assert.Equal(t, home.Adoption{NodeID: "PR_A12", Author: "alice", At: at}, got)
+	assert.Equal(t, []string{"acme/widgets#12"}, loaded.AdoptedKeys())
+	assert.False(t, loaded.Armed("acme/widgets#12"), "adopting does not arm")
+}
+
+func TestReleasingAnAdoptionForgetsEverythingThatOnlyMadeSenseWhileItStood(t *testing.T) {
+	state := home.NewState()
+	state.Adopt("acme/widgets#12", home.Adoption{NodeID: "PR_A12", Author: "alice"})
+	state.SetArmed("acme/widgets#12", true)
+	state.Mutate("acme/widgets#12").AcceptedAgentReplies = []string{"C1"}
+	state.RecordHandoff("acme/widgets#12", map[string]string{"T1": "C1"}, time.Now())
+
+	require.True(t, state.Release("acme/widgets#12"))
+	state.Compact()
+
+	assert.NotContains(t, state.PRs, "acme/widgets#12", "nothing is left to keep the entry in the file")
+	assert.False(t, state.Release("acme/widgets#12"), "releasing twice releases nothing")
+	assert.False(t, state.Release("relloyd/prutil#42"), "nor does releasing one never adopted")
+}
+
+func TestDisarmingForgetsTheAgentRepliesTheReaderAccepted(t *testing.T) {
+	state := home.NewState()
+	state.SetArmed("a/b#1", true)
+	state.Mutate("a/b#1").AcceptedAgentReplies = []string{"C1"}
+
+	state.ToggleArmed("a/b#1")
+
+	assert.Empty(t, state.Get("a/b#1").AcceptedAgentReplies,
+		"watching again is a new decision, asked about again")
+}
+
 func TestSavingReplacesTheFileRatherThanLeavingATemporaryOneBehind(t *testing.T) {
 	dir := t.TempDir()
 	store := home.OpenIn(dir)
