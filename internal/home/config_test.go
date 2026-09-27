@@ -1,6 +1,8 @@
 package home_test
 
 import (
+	"time"
+
 	"reflect"
 	"strings"
 	"testing"
@@ -286,4 +288,20 @@ func assertIndependent(t *testing.T, a, b reflect.Value, path string) {
 		}
 		assert.NotEqual(t, a.Pointer(), b.Pointer(), "%s is shared with the clone", path)
 	}
+}
+
+func TestAutoWatchShipsOffWithAFiveMinuteInterval(t *testing.T) {
+	cfg := home.DefaultConfig()
+
+	assert.False(t, cfg.Watch.AutoWatch)
+	assert.False(t, cfg.Watch.AutoWatchDrafts)
+	assert.Equal(t, home.Duration(5*time.Minute), cfg.Watch.AutoWatchInterval)
+}
+
+func TestTheWrittenTemplateNamesAutoWatch(t *testing.T) {
+	template := string(home.DefaultConfigTemplate())
+
+	assert.Contains(t, template, "auto_watch: false")
+	assert.Contains(t, template, "auto_watch_drafts: false")
+	assert.Contains(t, template, "auto_watch_interval: 5m")
 }

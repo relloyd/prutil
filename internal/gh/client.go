@@ -51,6 +51,8 @@ type Client interface {
 	// LookupPullRequest reads one pull request by repository and number,
 	// whoever opened it, for the reader deciding whether to adopt it.
 	LookupPullRequest(ctx context.Context, key model.Key) (Lookup, error)
+	// Viewer returns the login prutil is authenticated as.
+	Viewer(ctx context.Context) (string, error)
 	// AdoptedPullRequests reads the pull requests the reader has adopted, by
 	// the node ids remembered when they were adopted, open or not. One request
 	// covers up to watchNodeLimit of them. A pull request the token can no
@@ -617,6 +619,22 @@ func (c *CLI) LookupPullRequest(ctx context.Context, key model.Key) (Lookup, err
 		Fork:                node.IsCrossRepository,
 		MaintainerCanModify: node.MaintainerCanModify,
 	}, nil
+}
+
+// Viewer implements Client.
+func (c *CLI) Viewer(ctx context.Context) (string, error) {
+	var resp struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
+	}
+	if err := c.graphql(ctx, viewerQuery, nil, &resp); err != nil {
+		return "", err
+	}
+	if resp.Viewer.Login == "" {
+		return "", fmt.Errorf("github did not say who prutil is signed in as")
+	}
+	return resp.Viewer.Login, nil
 }
 
 // AdoptedPullRequests implements Client.

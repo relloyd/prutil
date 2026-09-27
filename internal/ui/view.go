@@ -96,7 +96,7 @@ func (a *App) renderHeader() []string {
 	left += a.styles.Mode.Render(a.modeText())
 	// Watching is a mode that outlives a session, so the header says how much
 	// of it is on rather than leaving the reader to scroll the list for dots.
-	left += a.styles.Watch.Render(a.watchNote())
+	left += a.styles.Watch.Render(a.watchNote() + a.autoWatchNote())
 	// Adopted pull requests are counted beside the watched ones, because an
 	// adoption outlives the session just as a watch does, and somebody else's
 	// pull request is the last one a reader should lose track of.

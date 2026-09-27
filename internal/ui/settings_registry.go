@@ -423,6 +423,45 @@ func allSettings() []settingDescriptor {
 			get: func(c *home.Config) bool { return c.Watch.SelfReview },
 			set: func(c *home.Config, v bool) { c.Watch.SelfReview = v },
 		}),
+		boolSetting(settingMeta{
+			id:      "watch.auto_watch",
+			section: "WATCHING & POLLING",
+			title:   "Auto-watch new pull requests",
+			detail: "Watch every pull request you open from now on without pressing w. Those already open are " +
+				"left alone, and one you stop watching stays stopped. The open list is re-read on the interval below to find them.",
+			def:   "off",
+			path:  []string{"watch", "auto_watch"},
+			label: "Auto-watch",
+			after: func(a *App) tea.Cmd { return a.setAutoWatch() },
+		}, field[bool]{
+			get: func(c *home.Config) bool { return c.Watch.AutoWatch },
+			set: func(c *home.Config, v bool) { c.Watch.AutoWatch = v },
+		}),
+		boolSetting(settingMeta{
+			id:      "watch.auto_watch_drafts",
+			section: "WATCHING & POLLING",
+			title:   "Auto-watch drafts",
+			detail: "Auto-watch a draft as soon as it is opened. Off, a draft is watched once it is marked ready " +
+				"for review, since its checks failing is usually you still pushing.",
+			def:   "off",
+			path:  []string{"watch", "auto_watch_drafts"},
+			label: "Auto-watching drafts",
+		}, field[bool]{
+			get: func(c *home.Config) bool { return c.Watch.AutoWatchDrafts },
+			set: func(c *home.Config, v bool) { c.Watch.AutoWatchDrafts = v },
+		}),
+		durationSetting(settingMeta{
+			id:      "watch.auto_watch_interval",
+			section: "WATCHING & POLLING",
+			title:   "Auto-watch interval",
+			detail:  "How often the open list is re-read for new pull requests while auto-watch is on. Each read is one search.",
+			def:     "5m",
+			path:    []string{"watch", "auto_watch_interval"},
+			after:   func(a *App) tea.Cmd { return a.scheduleAutoWatch() },
+		}, field[home.Duration]{
+			get: func(c *home.Config) home.Duration { return c.Watch.AutoWatchInterval },
+			set: func(c *home.Config, v home.Duration) { c.Watch.AutoWatchInterval = v },
+		}, time.Minute, time.Minute),
 		durationSetting(settingMeta{
 			id:      "watch.active_interval",
 			section: "WATCHING & POLLING",

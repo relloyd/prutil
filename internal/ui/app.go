@@ -244,6 +244,9 @@ type App struct {
 	// from a spent run carries an older number and is dropped, so a run that
 	// has ended cannot restart itself.
 	autoSeq int
+	// autoWatchSeq names the wait before the open list is next re-read for
+	// new pull requests, the same way autoSeq names a run of ticks.
+	autoWatchSeq int
 
 	// store and state hold which pull requests are armed for watching, and
 	// storeErr explains a store that could not be opened.
@@ -587,9 +590,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.view == viewOpen && msg.own != nil {
 			a.own = msg.own
 		}
+		if msg.viewer != "" && a.viewer == "" {
+			a.viewer = msg.viewer
+		}
 		a.applyPRs(msg.view, msg.prs, msg.unavailable)
 		adopted := a.applyAdoptedLoad(msg)
+		// Auto-watch arms after watchAfterLoad has synced the engine, and
+		// syncs it again for what it armed.
 		watching := tea.Batch(a.watchAfterLoad(msg.view), adopted)
+		watching = tea.Batch(watching, a.applyAutoWatch(msg))
 		notices := a.noticeAfterLoad(msg)
 		history := a.loadSelectedHandoffHistory()
 		if msg.partial {
@@ -613,6 +622,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		state := &a.views[msg.view]
 		state.loading = false
 		state.err = msg.err
+		if msg.view == viewOpen {
+			// A refused read must not end the search for new pull requests.
+			return a, a.scheduleAutoWatch()
+		}
 		return a, nil
 
 	case closedFinishErrMsg:
@@ -709,6 +722,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case adoptLookupMsg:
 		a.applyAdoptLookup(msg)
 		return a, nil
+
+	case autoWatchTickMsg:
+		return a, a.autoWatchTick(msg)
 
 	case adoptPullsMsg:
 		a.applyAdoptPulls(msg)
@@ -1212,7 +1228,7 @@ func (a *App) load(v view) tea.Cmd {
 // alone: the reader's own list is the one thing this load must not lose.
 func (a *App) loadOpen(gen int) tea.Cmd {
 	client, query, limit, at := a.client, a.query, a.limit, a.now()
-	ids := a.adoptedIDs()
+	ids, readViewer := a.adoptedIDs(), a.readViewer()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		defer cancel()
@@ -1221,6 +1237,12 @@ func (a *App) loadOpen(gen int) tea.Cmd {
 			return errMsg{gen: gen, view: viewOpen, err: err}
 		}
 		msg := prsMsg{gen: gen, view: viewOpen, prs: prs, at: at, own: make(map[model.Key]bool, len(prs))}
+		if readViewer {
+			// Auto-watch cannot tell the reader's pull requests from anybody
+			// else's until it knows who they are. Not knowing leaves it idle
+			// for this load rather than failing it.
+			msg.viewer, _ = client.Viewer(ctx)
+		}
 		for _, pr := range prs {
 			msg.own[pr.Key()] = true
 		}
@@ -1616,6 +1638,9 @@ type (
 		// vanished are the node ids of adopted pull requests GitHub answered
 		// with nothing, because the account can no longer see them.
 		vanished []string
+		// viewer is who prutil is signed in as, when the load was asked to
+		// find out.
+		viewer string
 	}
 	errMsg struct {
 		gen  int

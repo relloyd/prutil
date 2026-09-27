@@ -69,6 +69,10 @@ type fakeClient struct {
 	searches  map[string][]model.PullRequest
 	searchErr error
 	queries   []string
+	// viewer is the login Viewer answers with, and viewerCalls how often it
+	// was asked.
+	viewer      string
+	viewerCalls int
 }
 
 type commentRecord struct {
@@ -196,6 +200,16 @@ func (f *fakeClient) AddComment(_ context.Context, subjectID string, body string
 	}
 	f.commentCalls = append(f.commentCalls, commentRecord{subjectID: subjectID, body: body})
 	return nil
+}
+
+func (f *fakeClient) Viewer(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.viewerCalls++
+	if f.viewer == "" {
+		return "", errors.New("not signed in")
+	}
+	return f.viewer, nil
 }
 
 func (f *fakeClient) LookupPullRequest(_ context.Context, key model.Key) (gh.Lookup, error) {

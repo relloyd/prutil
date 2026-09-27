@@ -11,6 +11,10 @@ import (
 // repositories are excluded because nothing can be done about those PRs.
 const DefaultSearchQuery = "is:open is:pr author:@me archived:false sort:created-desc"
 
+// viewerQuery asks who prutil is signed in as, which the review read also
+// learns but only once a pull request has been read.
+const viewerQuery = `query { viewer { login } }`
+
 // OthersInRepoQuery is the search behind browsing one repository for a pull
 // request to adopt: what is open there, opened by anybody but the viewer, whose
 // own are already in the list. repo must satisfy model.ValidRepo, since a space

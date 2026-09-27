@@ -984,3 +984,22 @@ func TestAdoptedPullRequestsSplitsMoreThanAHundredAcrossRequests(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, runner.callCount(), "GitHub caps nodes(ids:) at a hundred")
 }
+
+func TestViewerSaysWhoPrutilIsSignedInAs(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{[]byte(`{"data":{"viewer":{"login":"relloyd"}}}`)}}
+	client := gh.New(runner, 1)
+
+	got, err := client.Viewer(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, "relloyd", got)
+}
+
+func TestViewerRefusesAnAnswerWithNobodyInIt(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{[]byte(`{"data":{"viewer":{"login":""}}}`)}}
+	client := gh.New(runner, 1)
+
+	_, err := client.Viewer(context.Background())
+
+	require.Error(t, err, "an empty login is nobody, and must not match an author")
+}
