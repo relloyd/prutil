@@ -192,7 +192,7 @@ func TestAdoptingSaysWhenTheReferenceCannotBeRead(t *testing.T) {
 
 	lookUp(t, app, "not a pull request")
 
-	assert.Equal(t, model.ErrNotAReference.Error(), app.adopt.problem)
+	assert.Equal(t, "type owner/repo to browse it, or paste a pull request's URL", app.adopt.problem)
 }
 
 func TestAdoptingSaysWhenGitHubCannotFindIt(t *testing.T) {

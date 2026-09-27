@@ -11,6 +11,14 @@ import (
 // repositories are excluded because nothing can be done about those PRs.
 const DefaultSearchQuery = "is:open is:pr author:@me archived:false sort:created-desc"
 
+// OthersInRepoQuery is the search behind browsing one repository for a pull
+// request to adopt: what is open there, opened by anybody but the viewer, whose
+// own are already in the list. repo must satisfy model.ValidRepo, since a space
+// in it would add qualifiers of its own.
+func OthersInRepoQuery(repo string) string {
+	return "is:open is:pr repo:" + repo + " -author:@me archived:false sort:updated-desc"
+}
+
 // openPRFields is the headline field set of an open pull request. It is a
 // fragment because three documents select it: the search behind the open list,
 // and the two ways of reading a pull request somebody else opened, by number

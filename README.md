@@ -104,7 +104,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `R` | trigger an AI review on the selected open pull request by posting the configured comment |
 | `N` | check the selected open pull request for new review feedback and notify an existing agent |
 | `tab` | switch between your open and your recently closed pull requests |
-| `+` | adopt a pull request somebody else opened, by URL or `owner/repo#12`: it joins your open list and its author is trusted on it |
+| `+` | adopt a pull request somebody else opened: pick a recent repository and one of its pull requests, or paste a URL. it joins your open list and its author is trusted on it |
 | `-` | release the selected adopted pull request: it stops being watched and its author stops being trusted on it. press twice to confirm |
 | `s` or `,` | open settings: configure notifications, polling intervals, review triggers, and coding agent settings |
 | `?` | open the shortcut overlay: type to filter, `enter` to run the highlighted shortcut, `esc` or `?` to close |
@@ -577,10 +577,16 @@ shortest, so a typo cannot turn a dashboard into a load test.
 ## Adopting somebody else's pull request
 
 Taking over work somebody else started is common enough to have a key. `+`
-opens a prompt: paste the pull request's URL, or type `owner/repo#12`, and press
-`enter`. prutil looks it up and shows whose it is, its branch, and whether its
-head is in a fork that will not let you push; `enter` again adopts it, and
-`esc` backs out.
+opens a prompt that starts on a list of repositories: the ones you have browsed
+or adopted from before, most recent first, then every repository in your open
+and closed lists. Type to filter it, or type an `owner/repo` it does not offer,
+and press `enter` to see what other people have open there. Pick one, filter
+by title or author, or type its number, and `enter` looks it up: prutil shows
+whose it is, its branch, and whether its head is in a fork that will not let
+you push. `enter` once more adopts it. `esc` steps back a stage at a time.
+
+Pasting a pull request's URL, or typing `owner/repo#12`, skips straight to that
+last step from anywhere in the prompt.
 
 An adopted pull request sits in the open list with your own, sorted with them,
 and is marked `⇄` with `by <author>` on its row. The header counts them —

@@ -2,6 +2,7 @@ package home
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -12,6 +13,33 @@ import (
 // file can be read and edited by hand.
 type State struct {
 	PRs map[string]*PRState `json:"prs"`
+	// Repos are the repositories the reader has browsed or adopted from in the
+	// adopt pane, most recent first, so that the next time they are one key
+	// press away rather than a name to type.
+	Repos []RecentRepo `json:"recent_repos,omitempty"`
+}
+
+// RecentRepo is one repository the reader has used in the adopt pane.
+type RecentRepo struct {
+	Repo string    `json:"repo"`
+	At   time.Time `json:"at"`
+}
+
+// recentRepoLimit caps the recent repositories. It is a shortlist, and the
+// pane adds every repository the lists already hold beneath it.
+const recentRepoLimit = 20
+
+// TouchRepo moves a repository to the front of the recent ones, adding it when
+// it is new and dropping the oldest past the cap.
+func (s *State) TouchRepo(repo string, at time.Time) {
+	repos := make([]RecentRepo, 0, len(s.Repos)+1)
+	repos = append(repos, RecentRepo{Repo: repo, At: at})
+	for _, got := range s.Repos {
+		if !strings.EqualFold(got.Repo, repo) {
+			repos = append(repos, got)
+		}
+	}
+	s.Repos = repos[:min(len(repos), recentRepoLimit)]
 }
 
 // PRState is what is remembered about one pull request.

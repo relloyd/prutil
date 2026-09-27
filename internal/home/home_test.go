@@ -2,6 +2,7 @@ package home_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -484,4 +485,39 @@ func TestAWatchStateThatCannotBeOpenedIsNotMovedAside(t *testing.T) {
 	assert.NoFileExists(t, path+home.CorruptSuffix)
 	assert.NoDirExists(t, path+home.CorruptSuffix)
 	assert.Zero(t, loaded.State.ArmedCount(), "and still started, with nothing armed")
+}
+
+func TestTouchingARepositoryMovesItToTheFrontOnce(t *testing.T) {
+	state := home.NewState()
+	at := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	state.TouchRepo("acme/widgets", at)
+	state.TouchRepo("acme/gadgets", at.Add(time.Minute))
+
+	state.TouchRepo("ACME/widgets", at.Add(2*time.Minute))
+
+	require.Len(t, state.Repos, 2, "the same repository however it is capitalised")
+	assert.Equal(t, "ACME/widgets", state.Repos[0].Repo)
+	assert.Equal(t, at.Add(2*time.Minute), state.Repos[0].At)
+}
+
+func TestRecentRepositoriesAreCapped(t *testing.T) {
+	state := home.NewState()
+	for i := range 30 {
+		state.TouchRepo(fmt.Sprintf("acme/r%d", i), time.Now())
+	}
+
+	assert.Len(t, state.Repos, 20)
+	assert.Equal(t, "acme/r29", state.Repos[0].Repo, "the oldest are the ones dropped")
+}
+
+func TestRecentRepositoriesSurviveARestart(t *testing.T) {
+	store := home.OpenIn(t.TempDir())
+	state := home.NewState()
+	state.TouchRepo("acme/widgets", time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
+
+	require.NoError(t, store.SaveState(state))
+	loaded, err := store.LoadState()
+
+	require.NoError(t, err)
+	assert.Equal(t, state.Repos, loaded.Repos)
 }

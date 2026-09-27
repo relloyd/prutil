@@ -710,6 +710,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.applyAdoptLookup(msg)
 		return a, nil
 
+	case adoptPullsMsg:
+		a.applyAdoptPulls(msg)
+		return a, nil
+
 	case notifyTickMsg:
 		return a, a.pollNotifications()
 
@@ -1381,6 +1385,9 @@ func (a *App) itemCount() int {
 
 // busy reports whether anything is still loading, which drives the spinner.
 func (a *App) busy() bool {
+	if a.adopt.loading || a.adopt.looking != (model.Key{}) {
+		return true
+	}
 	for i := range a.views {
 		if a.views[i].loading || a.views[i].enriching {
 			return true

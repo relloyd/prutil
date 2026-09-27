@@ -82,3 +82,8 @@ func TestEveryWayOfReadingAnOpenPullRequestSelectsTheSameFields(t *testing.T) {
 	}
 	assert.Contains(t, adoptedQuery, "state", "only the adopted read can learn one has merged")
 }
+
+func TestBrowsingARepositoryLeavesOutTheViewersOwn(t *testing.T) {
+	assert.Equal(t, "is:open is:pr repo:acme/widgets -author:@me archived:false sort:updated-desc",
+		OthersInRepoQuery("acme/widgets"))
+}

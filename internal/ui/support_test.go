@@ -64,6 +64,11 @@ type fakeClient struct {
 	adopted    map[string]model.PullRequest
 	adoptedErr error
 	adoptedIDs [][]string
+	// searches answers ListPullRequests for a query other than the open
+	// list's, and searchErr fails it; queries records every query asked.
+	searches  map[string][]model.PullRequest
+	searchErr error
+	queries   []string
 }
 
 type commentRecord struct {
@@ -82,9 +87,13 @@ func newFakeClient(prs []model.PullRequest, checks map[model.Key][]model.Check) 
 
 func (f *fakeClient) Ping(context.Context) error { return nil }
 
-func (f *fakeClient) ListPullRequests(_ context.Context, _ string, _ int) ([]model.PullRequest, error) {
+func (f *fakeClient) ListPullRequests(_ context.Context, query string, _ int) ([]model.PullRequest, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.queries = append(f.queries, query)
+	if prs, ok := f.searches[query]; ok || (f.searchErr != nil && query != "") {
+		return prs, f.searchErr
+	}
 	f.listCalls++
 	if f.listErr != nil {
 		return nil, f.listErr

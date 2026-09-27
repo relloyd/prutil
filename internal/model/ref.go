@@ -50,15 +50,23 @@ func ParseReference(text string) (Key, error) {
 	return keyOf(parts[0]+"/"+parts[1], parts[3])
 }
 
+// ValidRepo reports whether text is an owner/name repository identifier in the
+// characters GitHub allows, which is what may be put into a search qualifier:
+// anything else, a space above all, would add qualifiers of its own.
+func ValidRepo(text string) bool {
+	owner, name, ok := strings.Cut(text, "/")
+	return ok && repoPart.MatchString(owner) && repoPart.MatchString(name)
+}
+
 // keyOf validates the two halves of a reference.
 func keyOf(repo, number string) (Key, error) {
-	owner, name, ok := strings.Cut(strings.TrimSpace(repo), "/")
-	if !ok || !repoPart.MatchString(owner) || !repoPart.MatchString(name) {
+	repo = strings.TrimSpace(repo)
+	if !ValidRepo(repo) {
 		return Key{}, ErrNotAReference
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(number))
 	if err != nil || n < 1 {
 		return Key{}, ErrNotAReference
 	}
-	return Key{Repo: owner + "/" + name, Number: n}, nil
+	return Key{Repo: repo, Number: n}, nil
 }

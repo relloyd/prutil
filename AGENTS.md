@@ -373,11 +373,24 @@ the reader's own `herdr.toast`, once per set of newest comment ids.
 
 ## Adopting somebody else's pull request
 
-`+` opens `adoptPane` (`internal/ui/adopt.go`), which floats over the screen
-like `?` and `s` and takes input the same way while open, with its own
-`adoptKeyMap`. The first `enter` looks the pull request up
-(`Client.LookupPullRequest`); a second adopts what was found, and only if the
-input still names it. Editing the input forgets the lookup.
+`+` opens `adoptPane` (`internal/ui/adopt_pane.go`), which floats over the
+screen like `?` and `s` and takes input the same way while open, with its own
+`adoptKeyMap`. It has three stages, `adoptStage`: a repository, one of its pull
+requests, and the preview. Each `enter` moves one on and each `esc` one back; a
+whole reference typed or pasted in any stage goes straight to the preview. The
+preview is where `Client.LookupPullRequest` is asked, and `enter` there adopts
+only if the input still names what was found. Editing the input forgets the
+lookup and returns to the stage the reference came from.
+
+The repository list is built when the pane opens and costs nothing to build:
+`home.State.Repos`, which `TouchRepo` fills when a browse answers or a pull
+request is adopted, then every repository in the open and closed views. A
+repository that did not answer is not remembered. Browsing is the ordinary
+`ListPullRequests` with `gh.OthersInRepoQuery`, so it adds no client method,
+and the name reaches that query only after `model.ValidRepo`, because a space in
+it would add qualifiers. The browse and the lookup carry separate sequence
+numbers, `pullSeq` and `seq`: a number looked up while a browse is still
+reading must not drop the browse that `esc` goes back to.
 
 An adoption lives in `home.PRState.Adopted`, keyed like everything else in the
 watch state, and holds the node id and the author. `App.loadOpen` reads adopted

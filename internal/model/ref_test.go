@@ -126,3 +126,23 @@ func TestAReviewerTypingTheMarkerCanOnlyHoldThePullRequest(t *testing.T) {
 	assert.True(t, thread.NeedsAttention(model.ReviewFilter{Viewer: "relloyd"}))
 	assert.True(t, model.HoldFor([]model.ReviewThread{thread}, model.TrustPolicy{Viewer: "relloyd"}).Held())
 }
+
+func TestValidRepoAcceptsOnlyAnOwnerAndAName(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "an owner and a name", text: "acme/widgets", want: true},
+		{name: "dots, dashes and underscores", text: "acme-co/wid.get_s", want: true},
+		{name: "no owner", text: "widgets", want: false},
+		{name: "a space, which would add a search qualifier", text: "acme/widgets is:closed", want: false},
+		{name: "a third part", text: "acme/widgets/pull", want: false},
+		{name: "an empty name", text: "acme/", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, model.ValidRepo(tc.text))
+		})
+	}
+}
