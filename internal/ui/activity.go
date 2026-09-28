@@ -37,7 +37,12 @@ func (a *App) setWatchOperation(key model.Key, text string) {
 		}
 		return
 	}
-	a.mutate(key).operation = text
+	entry := a.mutate(key)
+	if entry.operation != text {
+		// Restating the operation under way is not starting it again.
+		entry.operationAt = a.now()
+	}
+	entry.operation = text
 }
 
 // loadSelectedHandoffHistory starts a history read for the current list

@@ -29,9 +29,10 @@ type watchFacts struct {
 	status    watch.Status
 	// operation is the work in flight, and open the review threads still
 	// waiting. Only one of them is shown: work in flight is the newer news.
-	operation string
-	open      int
-	hasOpen   bool
+	operation   string
+	operationAt time.Time
+	open        int
+	hasOpen     bool
 	// hold is why prutil is not handing this pull request over on its own. It
 	// is shown above both of those and survives the compact section's budget,
 	// because it answers the question a reader watching nothing happen is
@@ -50,16 +51,17 @@ func (a *App) watchFactsOf(pr model.PullRequest) watchFacts {
 	status, scheduled := a.engine.Status(key)
 	got := a.runtimeOf(key)
 	return watchFacts{
-		key:       key,
-		armed:     a.armed(key),
-		scheduled: scheduled,
-		status:    status,
-		operation: got.operation,
-		open:      got.feedback,
-		hasOpen:   got.hasFeedback,
-		hold:      got.hold,
-		events:    got.activity,
-		history:   got.history,
+		key:         key,
+		armed:       a.armed(key),
+		scheduled:   scheduled,
+		status:      status,
+		operation:   got.operation,
+		operationAt: got.operationAt,
+		open:        got.feedback,
+		hasOpen:     got.hasFeedback,
+		hold:        got.hold,
+		events:      got.activity,
+		history:     got.history,
 	}
 }
 
@@ -376,7 +378,15 @@ func (a *App) currentRow(f watchFacts, labelled bool) (watchRow, bool) {
 
 	switch {
 	case f.operation != "":
-		return watchRow{text: label("operation: ", f.operation), style: a.styles.Status}, true
+		text := f.operation
+		// Most operations are over before the reader could read the clock. One
+		// that waits on an agent can run for minutes with the spinner
+		// deliberately quiet, so how long it has been going is what tells the
+		// reader it is not hung.
+		if elapsed := a.now().Sub(f.operationAt); elapsed >= time.Second {
+			text += " · " + model.HumanDuration(elapsed)
+		}
+		return watchRow{text: label("operation: ", text), style: a.styles.Status}, true
 	case f.hasOpen:
 		return watchRow{
 			text:  label("feedback: ", fmt.Sprintf("%d open %s", f.open, plural(f.open, "thread"))),

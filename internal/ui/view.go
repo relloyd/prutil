@@ -35,6 +35,9 @@ func (a *App) View() tea.View {
 	if a.mouse {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
+	// Focus reports are what let the clock stand down while the terminal is in
+	// the background. Without the clock there is nothing to stand down.
+	v.ReportFocus = a.live
 	return v
 }
 

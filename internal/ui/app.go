@@ -181,6 +181,11 @@ type Config struct {
 	// drag-to-select away from the terminal, which is a trade somebody reading
 	// URLs and error text off the screen may not want to make.
 	NoMouse bool
+	// Clock keeps the elapsed times on screen moving while the terminal has
+	// focus, and asks the terminal to say when it does not. Off is what a test
+	// wants unless it is testing the clock: the clock is a command that waits
+	// for a second to pass, and a test that drains commands would wait with it.
+	Clock bool
 }
 
 // App is the root Bubble Tea model.
@@ -248,6 +253,18 @@ type App struct {
 	// new pull requests, the same way autoSeq names a run of ticks.
 	autoWatchSeq int
 
+	// live is Config.Clock. focused is whether the terminal has focus, which
+	// starts true because a terminal is not obliged to say so when it starts,
+	// and the reader has just launched prutil from the window they are in.
+	live    bool
+	focused bool
+	// clockSeq names the wait in flight, and clockArmed whether there is one,
+	// due at clockDue. A wait made stale by a blur or a sooner one carries an
+	// older number and is dropped, the way autoSeq's are.
+	clockSeq   int
+	clockArmed bool
+	clockDue   time.Time
+
 	// store and state hold which pull requests are armed for watching, and
 	// storeErr explains a store that could not be opened.
 	store    *home.Store
@@ -303,8 +320,10 @@ type prRuntime struct {
 	handing          bool
 	reviewing        bool
 	requestingReview bool
-	// operation says what that work is, in words, for the detail pane.
-	operation string
+	// operation says what that work is, in words, for the detail pane, and
+	// operationAt when it began, for how long it has been going.
+	operation   string
+	operationAt time.Time
 	// feedback is the last known count of review threads still waiting on the
 	// reader, and hasFeedback whether there has ever been a count. A pull
 	// request nobody has asked about is not one with nothing waiting.
@@ -484,6 +503,8 @@ func New(cfg Config) *App {
 		runtime:  map[model.Key]*prRuntime{},
 		mouse:    !cfg.NoMouse,
 		notifier: cfg.Notifier,
+		live:     cfg.Clock,
+		focused:  true,
 	}
 	a.views[viewOpen].loading = true
 	return a
@@ -510,8 +531,9 @@ func (a *App) Init() tea.Cmd {
 	)
 }
 
-// Update implements tea.Model.
-func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+// update handles one message. Update, in clock.go, is what the program calls,
+// and adds the clock to whatever this returns.
+func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// The shortcut overlay has the keyboard and the mouse while it is open.
 	// Everything else, the replies from GitHub included, carries on as usual.
 	if a.overlay.open {

@@ -104,6 +104,7 @@ func run() error {
 		},
 		Version:   version,
 		NoMouse:   !*mouse,
+		Clock:     true,
 		Store:     store,
 		StoreErr:  storeErr,
 		State:     loaded.State,

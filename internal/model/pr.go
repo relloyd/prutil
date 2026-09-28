@@ -56,6 +56,12 @@ func (c Check) Duration(now time.Time) time.Duration {
 	return end.Sub(c.StartedAt)
 }
 
+// Running reports whether Duration is still growing with the clock: the check
+// has started and has not completed.
+func (c Check) Running() bool {
+	return !c.StartedAt.IsZero() && c.CompletedAt.IsZero()
+}
+
 // PullRequest is the headline information prutil shows for one pull request,
 // open or closed. Checks are fetched separately and cached by the UI. The
 // closed-only fields stay zero for an open pull request.

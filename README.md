@@ -187,6 +187,28 @@ left, and once it runs out prutil is back to refreshing only when you press
 Each automatic reload is the same work `r` does, so it costs the same one
 request for the list plus the checks it warms.
 
+## Timers and focus
+
+While the terminal has focus, the times on screen keep counting. Each second:
+`next poll` in the header, `next in` in the watch section, how long a running
+check has been going, and how long the watcher's current operation has been
+under way, which is how you tell a handoff waiting on an agent from a hung one.
+Each minute: the ages, such as `upd 3m` and `opened 2h ago`. When nothing on
+screen counts, nothing wakes prutil at all.
+
+When the terminal loses focus, prutil stops redrawing for the clocks, and draws
+once more the moment focus returns, with the right times: none of them is
+stored, each is worked out from the clock as it is drawn. A load that is still
+running keeps its spinner going, and the watcher polls as usual; only the
+redraws for the timers stop.
+
+This relies on the terminal reporting focus changes, which Ghostty does, and
+herdr passes on to the pane. tmux passes them on only with `set -g focus-events
+on`. A terminal that never reports focus is treated as always focused: the
+timers keep moving, at a cost of one redraw a second. A key press counts as
+proof of focus, so a report that goes missing corrects itself as soon as you
+type.
+
 ## Watching, and handing work to an agent
 
 `w` marks a pull request as watched. The row grows a `◉`, the header counts how
