@@ -1,0 +1,33 @@
+{
+  "data": {
+    "viewer": { "login": "relloyd" },
+    "repository": {
+      "pullRequest": {
+        "__typename": "PullRequest",
+        "id": "PR_A12",
+        "number": 12,
+        "title": "Make the widget spin",
+        "url": "https://github.com/acme/widgets/pull/12",
+        "author": { "login": "alice" },
+        "isDraft": true,
+        "state": "OPEN",
+        "createdAt": "2026-09-01T09:00:00Z",
+        "updatedAt": "2026-09-09T16:00:00Z",
+        "mergeable": "MERGEABLE",
+        "reviewDecision": null,
+        "approvals": { "totalCount": 0 },
+        "additions": 40,
+        "deletions": 2,
+        "changedFiles": 3,
+        "headRefName": "feat/spin",
+        "baseRefName": "main",
+        "repository": { "nameWithOwner": "acme/widgets" },
+        "comments": { "totalCount": 1 },
+        "reviewThreads": { "totalCount": 2 },
+        "commits": { "nodes": [ { "commit": { "oid": "a12a12", "statusCheckRollup": { "state": "SUCCESS" } } } ] },
+        "isCrossRepository": true,
+        "maintainerCanModify": false
+      }
+    }
+  }
+}

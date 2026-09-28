@@ -2,6 +2,7 @@ package home
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -12,6 +13,33 @@ import (
 // file can be read and edited by hand.
 type State struct {
 	PRs map[string]*PRState `json:"prs"`
+	// Repos are the repositories the reader has browsed or adopted from in the
+	// adopt pane, most recent first, so that the next time they are one key
+	// press away rather than a name to type.
+	Repos []RecentRepo `json:"recent_repos,omitempty"`
+}
+
+// RecentRepo is one repository the reader has used in the adopt pane.
+type RecentRepo struct {
+	Repo string    `json:"repo"`
+	At   time.Time `json:"at"`
+}
+
+// recentRepoLimit caps the recent repositories. It is a shortlist, and the
+// pane adds every repository the lists already hold beneath it.
+const recentRepoLimit = 20
+
+// TouchRepo moves a repository to the front of the recent ones, adding it when
+// it is new and dropping the oldest past the cap.
+func (s *State) TouchRepo(repo string, at time.Time) {
+	repos := make([]RecentRepo, 0, len(s.Repos)+1)
+	repos = append(repos, RecentRepo{Repo: repo, At: at})
+	for _, got := range s.Repos {
+		if !strings.EqualFold(got.Repo, repo) {
+			repos = append(repos, got)
+		}
+	}
+	s.Repos = repos[:min(len(repos), recentRepoLimit)]
 }
 
 // PRState is what is remembered about one pull request.
@@ -28,6 +56,30 @@ type PRState struct {
 	// here is not new; a thread in here whose newest comment has changed has
 	// been replied to, which is new again.
 	NotifiedThreads map[string]string `json:"notified_threads,omitempty"`
+	// Adopted is set on a pull request somebody else opened that the reader has
+	// taken on. See Adoption.
+	Adopted *Adoption `json:"adopted,omitempty"`
+	// AcceptedAgentReplies are the comment ids of other agents' replies the
+	// reader has seen and chose to watch the pull request regardless of. A
+	// reply in here does not stop the watch again; a new one does.
+	AcceptedAgentReplies []string `json:"accepted_agent_replies,omitempty"`
+}
+
+// Adoption is the reader's decision to work on a pull request somebody else
+// opened: it is listed beside their own, and its author is trusted on it.
+//
+// The grant is to Author on this pull request alone, as the reader saw it when
+// they adopted it. It is recorded rather than read from the pull request each
+// time because the reader agreed to a person, and a pull request whose author
+// GitHub has since lost, or renamed, is not the one they agreed to.
+type Adoption struct {
+	// NodeID is how the pull request is read back on every load, since no
+	// search of the reader's own pull requests finds it.
+	NodeID string `json:"node_id"`
+	// Author is the login the reader agreed to trust on this pull request.
+	Author string `json:"author"`
+	// At is when it was adopted.
+	At time.Time `json:"at"`
 }
 
 // NewState returns an empty state.
@@ -69,6 +121,7 @@ func (s *State) SetArmed(key string, armed bool) bool {
 	entry.Armed = armed
 	if !armed {
 		entry.LastCheckHandoffHead = ""
+		entry.AcceptedAgentReplies = nil
 	}
 	return armed
 }
@@ -80,6 +133,7 @@ func (s *State) ToggleArmed(key string) bool {
 	entry.Armed = !entry.Armed
 	if !entry.Armed {
 		entry.LastCheckHandoffHead = ""
+		entry.AcceptedAgentReplies = nil
 	}
 	return entry.Armed
 }
@@ -117,11 +171,60 @@ func (s *State) RecordHandoff(key string, threads map[string]string, at time.Tim
 	}
 }
 
+// Adopt records that the reader has taken on a pull request somebody else
+// opened. It does not arm it: watching another author's pull request is a
+// second decision, made with its own key press.
+func (s *State) Adopt(key string, adoption Adoption) {
+	s.Mutate(key).Adopted = &adoption
+}
+
+// Release forgets an adoption and everything that only made sense while it
+// stood: the watch, the replies accepted under it, and the threads already
+// handed over, which would otherwise keep the entry in the file for good.
+// It reports whether the pull request was adopted.
+func (s *State) Release(key string) bool {
+	if s == nil || s.PRs[key] == nil || s.PRs[key].Adopted == nil {
+		return false
+	}
+	entry := s.PRs[key]
+	entry.Adopted = nil
+	entry.AcceptedAgentReplies = nil
+	entry.NotifiedThreads, entry.LastHandoff = nil, time.Time{}
+	entry.Armed, entry.LastCheckHandoffHead = false, ""
+	return true
+}
+
+// Adoption returns the adoption recorded for a pull request, reporting false
+// for one of the reader's own or one they have released.
+func (s *State) Adoption(key string) (Adoption, bool) {
+	got := s.Get(key).Adopted
+	if got == nil {
+		return Adoption{}, false
+	}
+	return *got, true
+}
+
+// AdoptedKeys lists every adopted pull request, in the same order ArmedKeys
+// uses.
+func (s *State) AdoptedKeys() []string {
+	if s == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(s.PRs))
+	for key, entry := range s.PRs {
+		if entry != nil && entry.Adopted != nil {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // Compact drops entries that hold nothing worth keeping, which is what stops
 // the file growing a line for every pull request the reader ever looked at.
 func (s *State) Compact() {
 	for key, entry := range s.PRs {
-		if entry == nil || (!entry.Armed && len(entry.NotifiedThreads) == 0) {
+		if entry == nil || (!entry.Armed && len(entry.NotifiedThreads) == 0 && entry.Adopted == nil) {
 			delete(s.PRs, key)
 		}
 	}

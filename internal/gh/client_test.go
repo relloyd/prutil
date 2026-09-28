@@ -885,3 +885,102 @@ func TestListDecodesWhoOpenedEachPullRequest(t *testing.T) {
 		"GitHub returns a null author for an account it no longer has, and nobody is not the viewer")
 	assert.Contains(t, runner.argsOf(0), "author { login }")
 }
+
+func TestLookupPullRequestReadsOnePullRequestWhoeverOpenedIt(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "lookup.json")}}
+	client := gh.New(runner, 1)
+
+	got, err := client.LookupPullRequest(context.Background(), model.Key{Repo: "acme/widgets", Number: 12})
+	require.NoError(t, err)
+
+	assert.Equal(t, "relloyd", got.Viewer, "the viewer rides along, so the reader's own is recognised")
+	assert.Equal(t, model.Key{Repo: "acme/widgets", Number: 12}, got.PR.Key())
+	assert.Equal(t, "PR_A12", got.PR.NodeID, "the node id is what the adoption is read back by")
+	assert.Equal(t, "alice", got.PR.Author)
+	assert.Equal(t, model.PRStateOpen, got.PR.State)
+	assert.Equal(t, model.StatusSuccess, got.PR.Rollup)
+	assert.True(t, got.Fork)
+	assert.False(t, got.MaintainerCanModify)
+
+	args := runner.argsOf(0)
+	assert.Contains(t, args, "owner=acme")
+	assert.Contains(t, args, "name=widgets")
+	assert.Contains(t, args, "number=12")
+}
+
+func TestLookupPullRequestSaysSoWhenThereIsNothingToSee(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "lookup_missing.json")}}
+	client := gh.New(runner, 1)
+
+	_, err := client.LookupPullRequest(context.Background(), model.Key{Repo: "acme/widgets", Number: 12})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is not a pull request this account can see")
+}
+
+func TestLookupPullRequestRejectsAMalformedKeyBeforeAskingGitHub(t *testing.T) {
+	cases := []struct {
+		name string
+		key  model.Key
+	}{
+		{name: "a repository without an owner", key: model.Key{Repo: "widgets", Number: 12}},
+		{name: "a repository with a space in it", key: model.Key{Repo: "acme/wid gets", Number: 12}},
+		{name: "a number that is not a pull request's", key: model.Key{Repo: "acme/widgets", Number: 0}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeRunner{}
+			client := gh.New(runner, 1)
+
+			_, err := client.LookupPullRequest(context.Background(), tc.key)
+
+			require.Error(t, err)
+			assert.Zero(t, runner.callCount())
+		})
+	}
+}
+
+func TestAdoptedPullRequestsReadsEveryOneByNodeIDInOneRequest(t *testing.T) {
+	runner := &fakeRunner{responses: [][]byte{fixture(t, "adopted_nodes.json")}}
+	client := gh.New(runner, 1)
+
+	prs, err := client.AdoptedPullRequests(context.Background(), []string{"PR_A12", "PR_GONE", "PR_B3"})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, runner.callCount())
+	assert.Contains(t, runner.argsOf(0), "ids[]=PR_A12")
+	require.Len(t, prs, 2, "a pull request the token can no longer see comes back null and is dropped")
+	assert.Equal(t, "alice", prs[0].Author)
+	assert.Equal(t, model.PRStateOpen, prs[0].State)
+	assert.Equal(t, model.StatusFailure, prs[0].Rollup)
+	assert.Equal(t, "a12a12", prs[0].HeadOID)
+	assert.Equal(t, model.PRStateMerged, prs[1].State, "state is read, since nothing else says one has merged")
+}
+
+func TestAdoptedPullRequestsAsksNothingWhenNothingIsAdopted(t *testing.T) {
+	runner := &fakeRunner{}
+	client := gh.New(runner, 1)
+
+	prs, err := client.AdoptedPullRequests(context.Background(), []string{"", " "})
+
+	require.NoError(t, err)
+	assert.Empty(t, prs)
+	assert.Zero(t, runner.callCount())
+}
+
+func TestAdoptedPullRequestsSplitsMoreThanAHundredAcrossRequests(t *testing.T) {
+	ids := make([]string, 0, 150)
+	for i := range 150 {
+		ids = append(ids, fmt.Sprintf("PR_%d", i))
+	}
+	runner := &fakeRunner{responses: [][]byte{
+		fixture(t, "adopted_nodes.json"),
+		fixture(t, "adopted_nodes.json"),
+	}}
+	client := gh.New(runner, 1)
+
+	_, err := client.AdoptedPullRequests(context.Background(), ids)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, runner.callCount(), "GitHub caps nodes(ids:) at a hundred")
+}

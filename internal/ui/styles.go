@@ -24,6 +24,10 @@ type Styles struct {
 	Mode       lipgloss.Style
 	Auto       lipgloss.Style
 	Watch      lipgloss.Style
+	// Adopted marks a pull request somebody else opened that the reader has
+	// taken on, in a colour nothing else uses, so that it is never mistaken
+	// for one of their own.
+	Adopted    lipgloss.Style
 	Help       lipgloss.Style
 	Error      lipgloss.Style
 	Status     lipgloss.Style
@@ -72,6 +76,7 @@ func newStyles(isDark bool) Styles {
 		amber    = c(lipgloss.Color("#B45309"), lipgloss.Color("#FBBF24"))
 		grey     = c(lipgloss.Color("#7A8290"), lipgloss.Color("#9CA3AF"))
 		selected = c(lipgloss.Color("#EEF0FF"), lipgloss.Color("#262338"))
+		pink     = c(lipgloss.Color("#BE185D"), lipgloss.Color("#F472B6"))
 	)
 
 	base := lipgloss.NewStyle()
@@ -93,6 +98,7 @@ func newStyles(isDark bool) Styles {
 		Mode:       base.Foreground(text).Bold(true),
 		Auto:       base.Foreground(amber).Bold(true),
 		Watch:      base.Foreground(amber).Bold(true),
+		Adopted:    base.Foreground(pink).Bold(true),
 		Help:       base.Foreground(faint),
 		Error:      base.Foreground(red).Bold(true),
 		Status:     base.Foreground(amber),

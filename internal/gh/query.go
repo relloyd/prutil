@@ -11,44 +11,92 @@ import (
 // repositories are excluded because nothing can be done about those PRs.
 const DefaultSearchQuery = "is:open is:pr author:@me archived:false sort:created-desc"
 
-// listQuery is the headline request. It deliberately stops at the check rollup
-// state so that the first paint needs exactly one round trip; the individual
-// check runs are fetched afterwards by detailQuery. The head OID is included
-// so the watcher can persist failed-check deduplication by commit.
+// OthersInRepoQuery is the search behind browsing one repository for a pull
+// request to adopt: what is open there, opened by anybody but the viewer, whose
+// own are already in the list. repo must satisfy model.ValidRepo, since a space
+// in it would add qualifiers of its own.
+func OthersInRepoQuery(repo string) string {
+	return "is:open is:pr repo:" + repo + " -author:@me archived:false sort:updated-desc"
+}
+
+// openPRFields is the headline field set of an open pull request. It is a
+// fragment because three documents select it: the search behind the open list,
+// and the two ways of reading a pull request somebody else opened, by number
+// when the reader adopts it and by node id on every load after that. A column
+// added to one of them and not the others would be a row that looked different
+// depending on whose pull request it was.
+//
+// It deliberately stops at the check rollup state so that the first paint needs
+// exactly one round trip; the individual check runs are fetched afterwards by
+// detailQuery. The head OID is included so the watcher can persist failed-check
+// deduplication by commit.
+const openPRFields = `
+fragment openFields on PullRequest {
+  id
+  number
+  title
+  url
+  author { login }
+  isDraft
+  createdAt
+  updatedAt
+  mergeable
+  reviewDecision
+  approvals: reviews(states: [APPROVED]) { totalCount }
+  additions
+  deletions
+  changedFiles
+  headRefName
+  baseRefName
+  repository { nameWithOwner }
+  comments { totalCount }
+  reviewThreads { totalCount }
+  commits(last: 1) {
+    nodes { commit { oid statusCheckRollup { state } } }
+  }
+}`
+
+// listQuery is the headline request: every open pull request the search finds,
+// in one round trip.
 const listQuery = `
 query($q: String!, $first: Int!, $after: String) {
   search(query: $q, type: ISSUE, first: $first, after: $after) {
     issueCount
     pageInfo { hasNextPage endCursor }
-    nodes {
+    nodes { __typename ...openFields }
+  }
+}` + openPRFields
+
+// adoptedQuery reads the pull requests the reader has adopted, by the node ids
+// remembered when they were adopted, whatever repositories they are spread
+// across. It is one document per hundred, which is where GitHub caps
+// nodes(ids:), and it selects state as well as the open list's fields because
+// an adopted pull request is never searched for: this is the only way prutil
+// learns that one has merged.
+const adoptedQuery = `
+query($ids: [ID!]!) {
+  nodes(ids: $ids) { __typename ...openFields ... on PullRequest { state } }
+}` + openPRFields
+
+// lookupQuery reads one pull request by its number, for the reader deciding
+// whether to adopt it. Beyond the list's fields it asks whether the head lives
+// in a fork and whether its author lets maintainers push there, which is what
+// decides whether an agent's commits can go anywhere, and who the viewer is, so
+// that adopting one's own pull request can be told apart without a second
+// request.
+const lookupQuery = `
+query($owner: String!, $name: String!, $number: Int!) {
+  viewer { login }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
       __typename
-      ... on PullRequest {
-        id
-        number
-        title
-        url
-        author { login }
-        isDraft
-        createdAt
-        updatedAt
-        mergeable
-        reviewDecision
-        approvals: reviews(states: [APPROVED]) { totalCount }
-        additions
-        deletions
-        changedFiles
-        headRefName
-        baseRefName
-        repository { nameWithOwner }
-        comments { totalCount }
-        reviewThreads { totalCount }
-        commits(last: 1) {
-          nodes { commit { oid statusCheckRollup { state } } }
-        }
-      }
+      ...openFields
+      state
+      isCrossRepository
+      maintainerCanModify
     }
   }
-}`
+}` + openPRFields
 
 // detailQuery fetches the individual checks attached to a pull request's head
 // commit, covering both GitHub Actions check runs and legacy commit statuses.

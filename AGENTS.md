@@ -279,7 +279,7 @@ an agent may be given it without asking the reader, from the participants
 `reviewThreadQuery` reads and the `security` block in `config.yaml`. The design
 and the threat it answers are in `docs/security/prompt-injection.md`.
 
-Nine rules hold it together. Each is a thing that looks like a tidy-up and
+Eleven rules hold it together. Each is a thing that looks like a tidy-up and
 is not.
 
 - **Unknown is not trusted, and unread is not clear.** The automatic paths ask
@@ -340,6 +340,18 @@ is not.
   stranger. A reader may still hand work to an agent they checked out there
   themselves; what goes away is prutil doing it unasked.
 
+- **An adoption trusts one person on one pull request.** `home.Adoption`
+  records the author the reader agreed to when they pressed `+`, and
+  `App.trustPolicyFor` and `Request.AdoptedAuthor` apply it to that pull request
+  alone. Do not fold it into `trusted_authors`, and do not read the author
+  afresh from GitHub in its place: a renamed or deleted author is not the person
+  the reader agreed to, and `mayProvision` must refuse them.
+- **Another agent's marker holds; it never filters.** `AgentCommentMarker` in a
+  comment the viewer did not write is `Hold.OtherAgents`, which is how two
+  prutils on one pull request stop answering each other. Honouring the marker
+  as "answered" in somebody else's comment would let any reviewer take their
+  own feedback off the list.
+
 Every explicit path asks for a second press before acting on a held pull
 request, naming the key the reader pressed, via the shared `pendingConfirm`.
 That gate is deliberately not `force`'s to answer: `force` says the work is due
@@ -358,6 +370,48 @@ puts a held pull request back on the automatic loop.
 A held handoff is an outcome like any other: `home.OutcomeHeld` in
 `handoffs.jsonl`, and a herdr notification through `dispatcher.Notify` under
 the reader's own `herdr.toast`, once per set of newest comment ids.
+
+## Adopting somebody else's pull request
+
+`+` opens `adoptPane` (`internal/ui/adopt_pane.go`), which floats over the
+screen like `?` and `s` and takes input the same way while open, with its own
+`adoptKeyMap`. It has three stages, `adoptStage`: a repository, one of its pull
+requests, and the preview. Each `enter` moves one on and each `esc` one back; a
+whole reference typed or pasted in any stage goes straight to the preview. The
+preview is where `Client.LookupPullRequest` is asked, and `enter` there adopts
+only if the input still names what was found. Editing the input forgets the
+lookup and returns to the stage the reference came from.
+
+The repository list is built when the pane opens and costs nothing to build:
+`home.State.Repos`, which `TouchRepo` fills when a browse answers or a pull
+request is adopted, then every repository in the open and closed views. A
+repository that did not answer is not remembered. Browsing is the ordinary
+`ListPullRequests` with `gh.OthersInRepoQuery`, so it adds no client method,
+and the name reaches that query only after `model.ValidRepo`, because a space in
+it would add qualifiers. The browse and the lookup carry separate sequence
+numbers, `pullSeq` and `seq`: a number looked up while a browse is still
+reading must not drop the browse that `esc` goes back to.
+
+An adoption lives in `home.PRState.Adopted`, keyed like everything else in the
+watch state, and holds the node id and the author. `App.loadOpen` reads adopted
+pull requests back with `Client.AdoptedPullRequests`, one `nodes(ids:)` document
+per hundred, after the reader's own search. They are merged into the open view
+rather than given a view of their own, so the watcher, the notifications and
+every key treat them as they treat the reader's own. The read is skipped when
+nothing is adopted, and a failure in it loses the adopted rows alone.
+`listQuery`, `adoptedQuery` and `lookupQuery` share the `openFields` fragment;
+keep them sharing it.
+
+`applyAdoptedLoad` releases an adopted pull request that has merged, closed, or
+come back null, since a row that cannot be selected cannot be released by hand.
+A failed read releases nothing. `App.own` is the set the reader's own search
+returned, which is how `-` knows whether the row leaves the list.
+
+Adopting never arms. `w` asks first on an adopted pull request, and on any pull
+request where another agent is replying (`watchCaution`). Arming records the
+other agents' replies it was shown in `AcceptedAgentReplies`, and
+`App.contended` compares against that list. That is why `stopForOtherAgent`
+fires once per new reply, and not on every poll while the hold stands.
 
 ## Sandboxes
 

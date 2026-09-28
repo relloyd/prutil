@@ -71,3 +71,19 @@ func TestClosedListQueryCarriesItsFragment(t *testing.T) {
 	assert.NotContains(t, closedPRFields, "reviewThreads",
 		"the closed view omits this open-headline field to protect its query budget")
 }
+
+func TestEveryWayOfReadingAnOpenPullRequestSelectsTheSameFields(t *testing.T) {
+	// An adopted row is read by id and looked up by number, and the reader's
+	// own is searched for. A column one of them lacked would be a row that
+	// looked different depending on whose pull request it was.
+	for name, doc := range map[string]string{"list": listQuery, "adopted": adoptedQuery, "lookup": lookupQuery} {
+		assert.Contains(t, doc, "...openFields", name)
+		assert.Contains(t, doc, openPRFields, name)
+	}
+	assert.Contains(t, adoptedQuery, "state", "only the adopted read can learn one has merged")
+}
+
+func TestBrowsingARepositoryLeavesOutTheViewersOwn(t *testing.T) {
+	assert.Equal(t, "is:open is:pr repo:acme/widgets -author:@me archived:false sort:updated-desc",
+		OthersInRepoQuery("acme/widgets"))
+}

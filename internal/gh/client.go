@@ -48,6 +48,29 @@ type Client interface {
 	// AddComment posts a top-level conversation comment to a pull request
 	// subject (by its GitHub node ID).
 	AddComment(ctx context.Context, subjectID string, body string) error
+	// LookupPullRequest reads one pull request by repository and number,
+	// whoever opened it, for the reader deciding whether to adopt it.
+	LookupPullRequest(ctx context.Context, key model.Key) (Lookup, error)
+	// AdoptedPullRequests reads the pull requests the reader has adopted, by
+	// the node ids remembered when they were adopted, open or not. One request
+	// covers up to watchNodeLimit of them. A pull request the token can no
+	// longer see is simply missing from the reply.
+	AdoptedPullRequests(ctx context.Context, ids []string) ([]model.PullRequest, error)
+}
+
+// Lookup is one pull request as the adopt prompt shows it before the reader
+// commits to anything.
+type Lookup struct {
+	PR model.PullRequest
+	// Viewer is the login prutil is authenticated as, which is how a pull
+	// request of the reader's own is recognised: it is already in the list.
+	Viewer string
+	// Fork reports that the head branch lives in another repository, and
+	// MaintainerCanModify whether its author lets the base repository's
+	// maintainers push to it. A fork that does not is a branch an agent can
+	// check out and never push back to.
+	Fork                bool
+	MaintainerCanModify bool
 }
 
 // Review is the review conversation on one pull request.
@@ -563,6 +586,69 @@ func (c *CLI) WatchSnapshot(ctx context.Context, ids []string) ([]model.Snapshot
 		}
 	}
 	return snaps, nil
+}
+
+// LookupPullRequest implements Client.
+func (c *CLI) LookupPullRequest(ctx context.Context, key model.Key) (Lookup, error) {
+	owner, name := key.Owner()
+	if owner == "" || name == "" || !repoNamePattern.MatchString(key.Repo) {
+		return Lookup{}, fmt.Errorf("malformed repository %q", key.Repo)
+	}
+	if key.Number < 1 {
+		return Lookup{}, fmt.Errorf("pull request number must be positive")
+	}
+
+	var resp lookupResponse
+	vars := map[string]any{"owner": owner, "name": name, "number": key.Number}
+	if err := c.graphql(ctx, lookupQuery, vars, &resp); err != nil {
+		return Lookup{}, err
+	}
+	if resp.Repository == nil || resp.Repository.PullRequest == nil {
+		return Lookup{}, fmt.Errorf("%s is not a pull request this account can see", key)
+	}
+	node := resp.Repository.PullRequest
+	pr, ok := node.toPullRequest()
+	if !ok {
+		return Lookup{}, fmt.Errorf("%s is not a pull request this account can see", key)
+	}
+	return Lookup{
+		PR:                  pr,
+		Viewer:              resp.Viewer.Login,
+		Fork:                node.IsCrossRepository,
+		MaintainerCanModify: node.MaintainerCanModify,
+	}, nil
+}
+
+// AdoptedPullRequests implements Client.
+func (c *CLI) AdoptedPullRequests(ctx context.Context, ids []string) ([]model.PullRequest, error) {
+	wanted := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if strings.TrimSpace(id) != "" {
+			wanted = append(wanted, id)
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+
+	prs := make([]model.PullRequest, 0, len(wanted))
+	for start := 0; start < len(wanted); start += watchNodeLimit {
+		batch := wanted[start:min(start+watchNodeLimit, len(wanted))]
+
+		var resp adoptedResponse
+		if err := c.graphql(ctx, adoptedQuery, map[string]any{"ids": batch}, &resp); err != nil {
+			return nil, err
+		}
+		for _, node := range resp.Nodes {
+			if node == nil {
+				continue
+			}
+			if pr, ok := node.toPullRequest(); ok {
+				prs = append(prs, pr)
+			}
+		}
+	}
+	return prs, nil
 }
 
 // reviewThreadPageSize is how many review conversations one request reads.

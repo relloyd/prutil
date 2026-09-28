@@ -58,6 +58,9 @@ func (a *App) render() string {
 	if a.settings.open {
 		lines = a.renderSettings(lines)
 	}
+	if a.adopt.open {
+		lines = a.renderAdopt(lines)
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -94,6 +97,10 @@ func (a *App) renderHeader() []string {
 	// Watching is a mode that outlives a session, so the header says how much
 	// of it is on rather than leaving the reader to scroll the list for dots.
 	left += a.styles.Watch.Render(a.watchNote())
+	// Adopted pull requests are counted beside the watched ones, because an
+	// adoption outlives the session just as a watch does, and somebody else's
+	// pull request is the last one a reader should lose track of.
+	left += a.styles.Adopted.Render(a.adoptNote())
 	if a.autoLeft > 0 {
 		// Auto-refresh is a mode with a countdown, and the whole point of it is
 		// to be left running while the reader watches; the header is where they

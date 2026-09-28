@@ -226,6 +226,12 @@ type App struct {
 	overlay helpOverlay
 	// settings is the s pane, drawn over everything else while open.
 	settings settingsPane
+	// adopt is the + pane, drawn over everything else while open.
+	adopt adoptPane
+	// own is the set of pull requests the open list's own search returned on
+	// its last load, which is what tells a released adoption whose row should
+	// go from one that is the reader's own as well.
+	own map[model.Key]bool
 
 	// gen is bumped on every refresh; replies carrying an older generation are
 	// discarded so a slow request cannot overwrite fresher data.
@@ -319,6 +325,10 @@ type prRuntime struct {
 	// to err on, and it keeps the state file out of it.
 	holdMark      string
 	heldAnnounced string
+	// agentReplies are the comment ids of other agents' replies the last read
+	// of the threads found, which is what arming the pull request accepts and
+	// what a new one is told apart from.
+	agentReplies []string
 	// activity is a bounded, session-only account of what the watcher has
 	// done, oldest first.
 	activity []watchActivity
@@ -346,6 +356,12 @@ const (
 	// prutil is holding back. Separate from confirmHeldHandoff because the two
 	// keys do different things and each has to say which it is asking about.
 	confirmHeldChecks confirmable = "held check investigation"
+	// confirmRelease releases an adopted pull request, which also withdraws
+	// the trust adopting it granted.
+	confirmRelease confirmable = "release"
+	// confirmWatch arms a pull request somebody else is also working on: one
+	// the reader adopted, or one another agent is replying on.
+	confirmWatch confirmable = "watch"
 )
 
 // pendingConfirm is a question prutil has asked on the status line and is
@@ -505,6 +521,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 	}
+	if a.adopt.open {
+		if cmd, handled := a.updateAdopt(msg); handled {
+			return a, cmd
+		}
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -520,12 +541,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.clampScroll()
 		a.resizeHelp()
+		a.resizeAdopt()
 		return a, nil
 
 	case tea.BackgroundColorMsg:
 		a.styles = newStyles(msg.IsDark())
 		a.spin.Style = a.styles.Accent
 		a.restyleHelp()
+		if a.adopt.open {
+			a.adopt.input.SetStyles(a.styles.helpInput())
+		}
 		return a, nil
 
 	case tea.KeyPressMsg:
@@ -559,8 +584,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != a.gen {
 			return a, nil
 		}
+		if msg.view == viewOpen && msg.own != nil {
+			a.own = msg.own
+		}
 		a.applyPRs(msg.view, msg.prs, msg.unavailable)
-		watching := a.watchAfterLoad(msg.view)
+		adopted := a.applyAdoptedLoad(msg)
+		watching := tea.Batch(a.watchAfterLoad(msg.view), adopted)
 		notices := a.noticeAfterLoad(msg)
 		history := a.loadSelectedHandoffHistory()
 		if msg.partial {
@@ -677,6 +706,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.clampScroll()
 		return a, nil
 
+	case adoptLookupMsg:
+		a.applyAdoptLookup(msg)
+		return a, nil
+
+	case adoptPullsMsg:
+		a.applyAdoptPulls(msg)
+		return a, nil
+
 	case notifyTickMsg:
 		return a, a.pollNotifications()
 
@@ -754,6 +791,12 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.NextTab):
 		return a, a.switchView(a.active.next())
+
+	case key.Matches(msg, a.keys.Adopt):
+		return a, a.openAdopt()
+
+	case key.Matches(msg, a.keys.Release):
+		return a, a.releaseAdopted()
 
 	case key.Matches(msg, a.keys.Into):
 		if a.focus == paneList && len(a.cur().prs) > 0 {
@@ -1160,9 +1203,16 @@ func (a *App) load(v view) tea.Cmd {
 	return a.loadOpen(a.gen)
 }
 
-// loadOpen fetches the open pull request list.
+// loadOpen fetches the open pull request list: the reader's own, from the
+// search, and then whatever they have adopted, by node id.
+//
+// The adopted read is a second request rather than a clause in the search,
+// because the search cannot name pull requests one by one. It is skipped
+// outright when nothing is adopted, and a failure in it costs the adopted rows
+// alone: the reader's own list is the one thing this load must not lose.
 func (a *App) loadOpen(gen int) tea.Cmd {
 	client, query, limit, at := a.client, a.query, a.limit, a.now()
+	ids := a.adoptedIDs()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		defer cancel()
@@ -1170,7 +1220,35 @@ func (a *App) loadOpen(gen int) tea.Cmd {
 		if err != nil {
 			return errMsg{gen: gen, view: viewOpen, err: err}
 		}
-		return prsMsg{gen: gen, view: viewOpen, prs: prs, at: at}
+		msg := prsMsg{gen: gen, view: viewOpen, prs: prs, at: at, own: make(map[model.Key]bool, len(prs))}
+		for _, pr := range prs {
+			msg.own[pr.Key()] = true
+		}
+		if len(ids) == 0 {
+			return msg
+		}
+		adopted, err := client.AdoptedPullRequests(ctx, ids)
+		if err != nil {
+			msg.adoptErr = err
+			return msg
+		}
+		open := make([]model.PullRequest, 0, len(adopted))
+		seen := make(map[string]bool, len(adopted))
+		for _, pr := range adopted {
+			seen[pr.NodeID] = true
+			if pr.State == model.PRStateOpen {
+				open = append(open, pr)
+			} else {
+				msg.finished = append(msg.finished, pr)
+			}
+		}
+		for _, id := range ids {
+			if !seen[id] {
+				msg.vanished = append(msg.vanished, id)
+			}
+		}
+		msg.prs = mergeAdopted(prs, open)
+		return msg
 	}
 }
 
@@ -1307,6 +1385,9 @@ func (a *App) itemCount() int {
 
 // busy reports whether anything is still loading, which drives the spinner.
 func (a *App) busy() bool {
+	if a.adopt.loading || a.adopt.looking != (model.Key{}) {
+		return true
+	}
 	for i := range a.views {
 		if a.views[i].loading || a.views[i].enriching {
 			return true
@@ -1525,6 +1606,16 @@ type (
 		// FinishClosedPullRequests needs to fetch the rest in the background.
 		partial    bool
 		sweepState gh.ClosedSweepState
+		// own is the set of pull requests the open list's search returned,
+		// before any adopted ones were added to prs. finished are adopted pull
+		// requests that have merged or closed, and adoptErr says the adopted
+		// ones could not be read at all.
+		own      map[model.Key]bool
+		finished []model.PullRequest
+		adoptErr error
+		// vanished are the node ids of adopted pull requests GitHub answered
+		// with nothing, because the account can no longer see them.
+		vanished []string
 	}
 	errMsg struct {
 		gen  int
