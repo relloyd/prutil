@@ -470,7 +470,7 @@ func TestSettingsSteppingAndCycling(t *testing.T) {
 	// Step interval up with +
 	send(t, app, press("+"))
 	assert.Equal(t, home.Duration(2*time.Minute+30*time.Second), app.homeCfg.Notifications.Interval)
-	assert.Contains(t, app.settings.notice, "Check poll interval set to 2m30s · saved")
+	assert.Contains(t, app.settings.notice, "Notification poll interval set to 2m30s · saved")
 
 	// Step interval down with -
 	send(t, app, press("-"))

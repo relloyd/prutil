@@ -397,8 +397,8 @@ func allSettings() []settingDescriptor {
 		durationSetting(settingMeta{
 			id:      "notifications.interval",
 			section: "DESKTOP NOTIFICATIONS",
-			title:   "Check poll interval",
-			detail:  "How often prutil checks your open pull requests in the background while any notification is enabled.",
+			title:   "Notification poll interval",
+			detail:  "How often prutil reads your open pull requests in the background while any notification is enabled.",
 			def:     "2m",
 			path:    []string{"notifications", "interval"},
 			after:   func(a *App) tea.Cmd { return a.scheduleNotifications() },
@@ -426,12 +426,12 @@ func allSettings() []settingDescriptor {
 		boolSetting(settingMeta{
 			id:      "watch.auto_watch",
 			section: "WATCHING & POLLING",
-			title:   "Auto-watch new pull requests",
+			title:   "New PR watching",
 			detail: "Watch every pull request you open from now on without pressing w. Those already open are " +
-				"left alone, and one you stop watching stays stopped. The open list is re-read on the interval below to find them.",
+				"left alone, and one you stop watching stays stopped. The open list is searched for them on the interval below.",
 			def:   "off",
 			path:  []string{"watch", "auto_watch"},
-			label: "Auto-watch",
+			label: "New pull request watching",
 			after: func(a *App) tea.Cmd { return a.setAutoWatch() },
 		}, field[bool]{
 			get: func(c *home.Config) bool { return c.Watch.AutoWatch },
@@ -440,12 +440,12 @@ func allSettings() []settingDescriptor {
 		boolSetting(settingMeta{
 			id:      "watch.auto_watch_drafts",
 			section: "WATCHING & POLLING",
-			title:   "Auto-watch drafts",
-			detail: "Auto-watch a draft as soon as it is opened. Off, a draft is watched once it is marked ready " +
+			title:   "Draft PR watching",
+			detail: "Watch a new draft as soon as it is opened. Off, a draft is watched once it is marked ready " +
 				"for review, since its checks failing is usually you still pushing.",
 			def:   "off",
 			path:  []string{"watch", "auto_watch_drafts"},
-			label: "Auto-watching drafts",
+			label: "Draft pull request watching",
 		}, field[bool]{
 			get: func(c *home.Config) bool { return c.Watch.AutoWatchDrafts },
 			set: func(c *home.Config, v bool) { c.Watch.AutoWatchDrafts = v },
@@ -453,11 +453,13 @@ func allSettings() []settingDescriptor {
 		durationSetting(settingMeta{
 			id:      "watch.auto_watch_interval",
 			section: "WATCHING & POLLING",
-			title:   "Auto-watch interval",
-			detail:  "How often the open list is re-read for new pull requests while auto-watch is on. Each read is one search.",
-			def:     "5m",
-			path:    []string{"watch", "auto_watch_interval"},
-			after:   func(a *App) tea.Cmd { return a.scheduleAutoWatch() },
+			title:   "New PR search interval",
+			detail: "How often your open pull requests are searched for new ones to watch, while new PR watching is on. " +
+				"Pull requests already watched are polled on the intervals below. Each search is one request.",
+			def:   "5m",
+			path:  []string{"watch", "auto_watch_interval"},
+			label: "New pull request search interval",
+			after: func(a *App) tea.Cmd { return a.scheduleAutoWatch() },
 		}, field[home.Duration]{
 			get: func(c *home.Config) home.Duration { return c.Watch.AutoWatchInterval },
 			set: func(c *home.Config, v home.Duration) { c.Watch.AutoWatchInterval = v },
