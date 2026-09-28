@@ -482,11 +482,11 @@ func TestSettingsSteppingAndCycling(t *testing.T) {
 
 	// Jump to next section with tab (AI REVIEW TRIGGER)
 	send(t, app, press("tab"))
-	assert.Equal(t, 12, app.settings.cursor) // review.comment
+	assert.Equal(t, 15, app.settings.cursor) // review.comment
 
 	// Jump to next section with tab (CODING AGENT)
 	send(t, app, press("tab"))
-	assert.Equal(t, 14, app.settings.cursor) // herdr.fallback
+	assert.Equal(t, 17, app.settings.cursor) // herdr.fallback
 
 	// Cycle fallback strategy
 	assert.Equal(t, home.FallbackNew, app.homeCfg.Herdr.Fallback)
@@ -506,10 +506,10 @@ func TestSettingsInlineTextEditing(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	openSettingsPane(t, app)
 
-	// Jump to review.comment (item 12)
+	// Jump to review.comment (item 15)
 	send(t, app, press("tab"))
 	send(t, app, press("tab"))
-	assert.Equal(t, 12, app.settings.cursor)
+	assert.Equal(t, 15, app.settings.cursor)
 
 	// Press enter to edit
 	send(t, app, press("enter"))

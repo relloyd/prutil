@@ -521,3 +521,42 @@ func TestRecentRepositoriesSurviveARestart(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, state.Repos, loaded.Repos)
 }
+
+func TestAutoWatchRemembersWhenItStartedAndWhatItArmed(t *testing.T) {
+	store := home.OpenIn(t.TempDir())
+	state := home.NewState()
+	since := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	state.StartAutoWatch(since)
+	state.AutoWatch.Consider("acme/widgets#12", since.Add(time.Hour))
+
+	require.NoError(t, store.SaveState(state))
+	loaded, err := store.LoadState()
+	require.NoError(t, err)
+
+	require.NotNil(t, loaded.AutoWatch)
+	assert.Equal(t, since, loaded.AutoWatch.Since)
+	assert.True(t, loaded.AutoWatch.Seen("acme/widgets#12"))
+}
+
+func TestForgettingKeepsOnlyWhatIsStillOpen(t *testing.T) {
+	state := home.NewState()
+	state.StartAutoWatch(time.Now())
+	state.AutoWatch.Consider("acme/widgets#12", time.Now())
+	state.AutoWatch.Consider("acme/widgets#13", time.Now())
+
+	state.AutoWatch.Forget(map[string]bool{"acme/widgets#13": true})
+
+	assert.False(t, state.AutoWatch.Seen("acme/widgets#12"))
+	assert.True(t, state.AutoWatch.Seen("acme/widgets#13"))
+}
+
+func TestStartingAutoWatchAgainForgetsTheLastRun(t *testing.T) {
+	state := home.NewState()
+	state.StartAutoWatch(time.Now())
+	state.AutoWatch.Consider("acme/widgets#12", time.Now())
+	state.StopAutoWatch()
+
+	state.StartAutoWatch(time.Now())
+
+	assert.False(t, state.AutoWatch.Seen("acme/widgets#12"))
+}

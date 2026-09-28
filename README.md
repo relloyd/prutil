@@ -259,6 +259,34 @@ conversation comment, a marker written by another reviewer, or an older reply
 that is no longer the latest. Normal duplicate suppression still applies, so
 the thread is handed over again only when it gains a new latest comment.
 
+### Watching new pull requests automatically
+
+`watch.auto_watch` watches every pull request you open from the moment it is
+switched on, so a new one is on the loop without anybody pressing `w`. It is off
+by default; `s` toggles it under `WATCHING`, where the two settings below it
+live too. The header reads `· auto-watch` while it is on.
+
+Nothing else re-reads the open list on its own — the watcher and the
+notifications only ask about pull requests prutil already has — so while
+auto-watch is on the list is re-read every `auto_watch_interval` (5 minutes by
+default, at least one), and after every `r` and `a` too. A pull request is
+watched when:
+
+- you opened it, and the list's own search found it. Somebody else's that a
+  custom `-query` lists, and one you adopted, are left alone;
+- it was created after auto-watch was switched on. Everything already open
+  stays as you had it, and switching it off and on again starts afresh;
+- auto-watch has not watched it before. Stop watching one with `w` and it
+  stays stopped;
+- it is not a draft, unless `watch.auto_watch_drafts` is on. A draft is
+  watched once it is marked ready for review, because a draft's checks
+  failing is usually you still pushing.
+
+At most five are armed per read, and the rest on the next, because a watched
+pull request with failing checks can start an agent and a stack of pull
+requests opened at once should not be a burst of them. Each one is named on the
+status line and in its watch activity.
+
 ### Your own review comments as feedback
 
 `watch.self_review` turns every unresolved review comment you wrote into
@@ -414,6 +442,9 @@ watch:
   dormant_after: 3          # polls at the cap before prutil stops asking
   force_precise_every: 5    # polls before the expensive question is asked anyway
   self_review: false        # treat every unresolved comment of yours as feedback
+  auto_watch: false         # watch every pull request you open from now on
+  auto_watch_drafts: false  # include drafts before they are ready for review
+  auto_watch_interval: 5m   # how often the open list is re-read to find them
   self_test_marker: "<!-- prutil:test -->"  # "" turns it off
 review:
   comment: "/gemini review"  # comment posted by R to trigger an AI review; "" turns it off

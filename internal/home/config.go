@@ -227,6 +227,19 @@ type WatchConfig struct {
 	// SelfReview treats all unresolved review comments written by the viewer
 	// as actionable feedback, as long as they are not automated agent comments.
 	SelfReview bool `yaml:"self_review"`
+	// AutoWatch arms every pull request the reader opens from the moment it is
+	// switched on, so that a new one is watched without anybody pressing w.
+	// Pull requests already open at that moment are left as they are.
+	AutoWatch bool `yaml:"auto_watch"`
+	// AutoWatchDrafts includes draft pull requests. Without it a draft is
+	// armed once it is marked ready for review, since a draft's checks
+	// failing is usually the author still pushing, not work for an agent.
+	AutoWatchDrafts bool `yaml:"auto_watch_drafts"`
+	// AutoWatchInterval is how often the open list is re-read, looking for new
+	// pull requests, while AutoWatch is on. Nothing else re-reads it on its
+	// own: the watcher and the notifications ask only about pull requests
+	// prutil already knows.
+	AutoWatchInterval Duration `yaml:"auto_watch_interval"`
 	// SelfTestMarker lets you count one of your own review comments as
 	// feedback by writing this string in it, which is how the watcher is tried
 	// against a real pull request without waiting for a reviewer. It answers
@@ -283,6 +296,7 @@ func DefaultConfig() Config {
 			IdleInterval:        Duration(10 * time.Second),
 			DormantAfter:        3,
 			ForcePreciseEvery:   5,
+			AutoWatchInterval:   Duration(DefaultAutoWatchInterval),
 			SelfTestMarker:      defaultMarker(),
 		},
 		Review: ReviewConfig{
@@ -328,6 +342,15 @@ func ParseConfig(data []byte) (Config, error) {
 	return cfg, nil
 }
 
+// DefaultAutoWatchInterval is how often the open list is re-read for new pull
+// requests while auto-watch is on. A new pull request is rarely urgent in its
+// first five minutes, and the search behind the list is one request.
+const DefaultAutoWatchInterval = 5 * time.Minute
+
+// minAutoWatchInterval is the shortest gap between two of those reads. Each
+// is a whole search, the costliest request prutil makes on a schedule.
+const minAutoWatchInterval = time.Minute
+
 // minPollInterval is the shortest gap prutil will leave between two polls of
 // the same pull request, whatever the configuration says. A typo in a
 // configuration file should not be able to turn a dashboard into a denial of
@@ -366,6 +389,9 @@ func (c *Config) clamp() {
 		if *d < floor {
 			*d = floor
 		}
+	}
+	if w.AutoWatchInterval < Duration(minAutoWatchInterval) {
+		w.AutoWatchInterval = Duration(minAutoWatchInterval)
 	}
 	if w.IdleInterval < Duration(time.Second) {
 		w.IdleInterval = Duration(time.Second)

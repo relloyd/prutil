@@ -413,6 +413,31 @@ other agents' replies it was shown in `AcceptedAgentReplies`, and
 `App.contended` compares against that list. That is why `stopForOtherAgent`
 fires once per new reply, and not on every poll while the hold stands.
 
+## Auto-watch
+
+`watch.auto_watch` arms the reader's new pull requests (`internal/ui/autowatch.go`).
+Nothing else discovers one: the watcher and the notification poll address pull
+requests by the node ids the open list came with. So while it is on,
+`scheduleAutoWatch` re-reads the open list every `auto_watch_interval`, and every
+load of that list, whoever asked for it, reschedules the wait and runs
+`applyAutoWatch`.
+
+`home.State.AutoWatch` is what keeps it to new pull requests, and to each once.
+`Since` is when it was switched on, and a pull request created before it is not
+new; switching it off forgets the record, so switching it on again starts from
+then. `Considered` holds every pull request it has armed, or found already
+armed, and is what makes a `w` that stopped one stick. Keep both. Without
+`Since`, switching it on arms every pull request already open; without
+`Considered`, the next load re-arms what the reader just stopped. A draft is not
+considered until it is armed, which is how one is picked up once it is ready.
+
+`Forget` prunes `Considered` to what the open list holds, and only when the list
+came back shorter than `-limit`: a list cut short does not say which pull
+requests have closed. Only pull requests the list's own search found
+(`prsMsg.own`) and the viewer opened are candidates, and nothing is armed until
+the viewer is known, which `loadOpen` asks `Client.Viewer` for while it is not.
+`autoWatchBurst` caps what one load arms.
+
 ## Sandboxes
 
 `internal/sandbox` holds one `Profile` per kind of agent. `Launch` returns

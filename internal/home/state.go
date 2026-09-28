@@ -17,6 +17,61 @@ type State struct {
 	// adopt pane, most recent first, so that the next time they are one key
 	// press away rather than a name to type.
 	Repos []RecentRepo `json:"recent_repos,omitempty"`
+	// AutoWatch is what watch.auto_watch has decided so far, nil while it is
+	// off.
+	AutoWatch *AutoWatch `json:"auto_watch,omitempty"`
+}
+
+// AutoWatch is the record that keeps automatic arming to new pull requests,
+// and to each of them once.
+type AutoWatch struct {
+	// Since is when it was switched on. Only a pull request created after it
+	// is new; everything open before is left as the reader had it.
+	Since time.Time `json:"since"`
+	// Considered holds each pull request already armed automatically, keyed
+	// like PRs, with when it was created. Being in here is what stops a pull
+	// request the reader has since stopped watching from being armed again.
+	Considered map[string]time.Time `json:"considered,omitempty"`
+}
+
+// StartAutoWatch begins automatic arming from at, forgetting anything an
+// earlier run of it decided: a pull request opened while it was off is not
+// new by the time it is switched back on.
+func (s *State) StartAutoWatch(at time.Time) {
+	s.AutoWatch = &AutoWatch{Since: at, Considered: map[string]time.Time{}}
+}
+
+// StopAutoWatch forgets automatic arming. What it armed stays armed.
+func (s *State) StopAutoWatch() {
+	s.AutoWatch = nil
+}
+
+// Consider records that a pull request has been armed automatically, so that
+// it never is again.
+func (w *AutoWatch) Consider(key string, created time.Time) {
+	if w.Considered == nil {
+		w.Considered = map[string]time.Time{}
+	}
+	w.Considered[key] = created
+}
+
+// Seen reports whether a pull request has been armed automatically
+// before.
+func (w *AutoWatch) Seen(key string) bool {
+	_, ok := w.Considered[key]
+	return ok
+}
+
+// Forget drops every considered pull request that is not in open, which must
+// be every open pull request the reader has: GitHub does not reuse a number,
+// so one that has closed will never be new again, and dropping it is what
+// keeps the record the size of the open list.
+func (w *AutoWatch) Forget(open map[string]bool) {
+	for key := range w.Considered {
+		if !open[key] {
+			delete(w.Considered, key)
+		}
+	}
 }
 
 // RecentRepo is one repository the reader has used in the adopt pane.
