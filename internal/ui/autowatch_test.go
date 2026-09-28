@@ -60,7 +60,7 @@ func TestANewPullRequestOfYoursIsWatchedAutomatically(t *testing.T) {
 	stored, err := app.store.LoadState()
 	require.NoError(t, err)
 	assert.True(t, stored.Armed(pr.Key().String()), "and the watch survives a restart")
-	assert.Contains(t, lines(app)[0], "auto-watch", "the header says why it is watched")
+	assert.Contains(t, lines(app)[0], "new PR watching", "the header says why it is watched, in the words the settings pane uses")
 }
 
 func TestWhatWasAlreadyOpenWhenAutoWatchWasSwitchedOnIsLeftAlone(t *testing.T) {

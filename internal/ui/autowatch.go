@@ -174,7 +174,7 @@ func (a *App) autoWatchNote() string {
 	if !a.autoWatching() {
 		return ""
 	}
-	return " · auto-watch"
+	return " · new PR watching"
 }
 
 // readViewer reports whether the open list's load should ask who the reader

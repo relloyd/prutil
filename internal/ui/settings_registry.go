@@ -397,8 +397,8 @@ func allSettings() []settingDescriptor {
 		durationSetting(settingMeta{
 			id:      "notifications.interval",
 			section: "DESKTOP NOTIFICATIONS",
-			title:   "Check poll interval",
-			detail:  "How often prutil checks your open pull requests in the background while any notification is enabled.",
+			title:   "Notification poll interval",
+			detail:  "How often prutil reads your open pull requests in the background while any notification is enabled.",
 			def:     "2m",
 			path:    []string{"notifications", "interval"},
 			after:   func(a *App) tea.Cmd { return a.scheduleNotifications() },

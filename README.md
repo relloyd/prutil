@@ -155,12 +155,13 @@ shape prutil does not edit (such as a flow mapping), is left alone, and the pane
 reports why.
 
 While any notification is on, prutil reads every open pull request every two
-minutes (`notifications.interval`), using the watcher's cheap query: one
-request, and one rate limit point, per hundred pull requests. A watched pull
-request is also read on the watcher's own schedule, and a refresh reads the
-whole list, so either may notice a change sooner. The first reading of each
-pull request after prutil starts only records where it stands; a pull request
-approved while prutil was not running is not announced.
+minutes (**Notification poll interval** in `s`, `notifications.interval`), using
+the watcher's cheap query: one request, and one rate limit point, per hundred
+pull requests. A watched pull request is also read on the watcher's own
+schedule, and a refresh reads the whole list, so either may notice a change
+sooner. The first reading of each pull request after prutil starts only records
+where it stands; a pull request approved while prutil was not running is not
+announced.
 
 These are separate from `herdr.toast`, which is herdr's own notification of a
 handoff. New review feedback and failed checks are what the watcher hands to
@@ -261,12 +262,12 @@ the thread is handed over again only when it gains a new latest comment.
 
 ### Watching new pull requests automatically
 
-`watch.auto_watch` watches every pull request you open from the moment it is
-switched on, so a new one is on the loop without anybody pressing `w`. It is off
-by default; `s` toggles it as **New PR watching** under `WATCHING & POLLING`,
-where the two settings below it live too: **Draft PR watching**
-(`auto_watch_drafts`) and **New PR search interval** (`auto_watch_interval`).
-The header reads `· auto-watch` while it is on.
+`watch.auto_watch`, auto-watch for short, watches every pull request you open
+from the moment it is switched on, so a new one is on the loop without anybody
+pressing `w`. It is off by default; `s` toggles it as **New PR watching** under
+`WATCHING & POLLING`, where the two settings below it live too: **Draft PR
+watching** (`auto_watch_drafts`) and **New PR search interval**
+(`auto_watch_interval`). The header reads `· new PR watching` while it is on.
 
 Nothing else re-reads the open list on its own — the watcher and the
 notifications only ask about pull requests prutil already has — so while
