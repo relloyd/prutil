@@ -263,14 +263,17 @@ the thread is handed over again only when it gains a new latest comment.
 
 `watch.auto_watch` watches every pull request you open from the moment it is
 switched on, so a new one is on the loop without anybody pressing `w`. It is off
-by default; `s` toggles it under `WATCHING`, where the two settings below it
-live too. The header reads `· auto-watch` while it is on.
+by default; `s` toggles it as **New PR watching** under `WATCHING & POLLING`,
+where the two settings below it live too: **Draft PR watching**
+(`auto_watch_drafts`) and **New PR search interval** (`auto_watch_interval`).
+The header reads `· auto-watch` while it is on.
 
 Nothing else re-reads the open list on its own — the watcher and the
 notifications only ask about pull requests prutil already has — so while
-auto-watch is on the list is re-read every `auto_watch_interval` (5 minutes by
-default, at least one), and after every `r` and `a` too. A pull request is
-watched when:
+auto-watch is on the list is searched for new ones every `auto_watch_interval`
+(5 minutes by default, at least one), and after every `r` and `a` too. That
+interval only finds them: once a pull request is watched it is polled on the
+watcher's own schedule, not this one. A pull request is watched when:
 
 - you opened it, and the list's own search found it. Somebody else's that a
   custom `-query` lists, and one you adopted, are left alone;
