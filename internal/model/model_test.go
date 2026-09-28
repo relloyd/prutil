@@ -141,6 +141,14 @@ func TestHumanDuration(t *testing.T) {
 	assert.Equal(t, "1h5m", model.HumanDuration(65*time.Minute))
 }
 
+func TestCheckRunning(t *testing.T) {
+	start := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+
+	assert.True(t, model.Check{StartedAt: start}.Running(), "started and not completed is what a clock counts")
+	assert.False(t, model.Check{StartedAt: start, CompletedAt: start.Add(time.Minute)}.Running())
+	assert.False(t, model.Check{}.Running(), "a check with no timings has no clock to run")
+}
+
 func TestCheckDuration(t *testing.T) {
 	start := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
 	now := start.Add(5 * time.Minute)

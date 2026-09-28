@@ -127,6 +127,40 @@ whose `seq` is stale, so a tick from a spent run cannot revive it. Each tick
 goes through the same `refresh` the `r` key uses, which is what makes the
 checks refetch and the dot go green.
 
+## The clock
+
+Nothing on screen that counts holds a time of its own: `next poll`, `next in`,
+a running check's duration, an operation's elapsed time and every age are worked
+out from `a.now()` as they are drawn. The clock (`internal/ui/clock.go`) decides
+only whether prutil wakes up to draw again, which is what lets it stop while the
+terminal is in the background. Each rule below is a thing that looks like a
+tidy-up and is not.
+
+- **`Update` is the wrapper and `update` does the work.** `Update` asks
+  `ensureClock` after every message, so no handler starts or stops the clock.
+  Do not return a `tea.Tick` from a handler to keep a display moving.
+- **A beat falls on the wall clock's next second or minute.** A chain of
+  `tea.Tick(time.Second)` begins each wait after the last was handled, slips,
+  and eventually skips a displayed second. `TestBeatsFallOnTheWallClock…` pins
+  it.
+- **`secondsShown` and `minutesShown` are the list of what counts, and a new
+  counting display has to be added to one.** Overestimating costs a redraw;
+  underestimating leaves that display frozen. They read the model rather than
+  the render, because `View` must not have side effects. `HumanDuration` stops
+  counting seconds at an hour, so the countdown test does too.
+- **Focus starts true and a key press restores it; a mouse wheel does not.** A
+  terminal need not say what its focus is at startup, and a report can go
+  missing. Keys reach only the focused window. A wheel can scroll one that is
+  not, and nothing would then tell prutil to stop.
+- **`Config.Clock` is off in tests.** The clock is a command that waits for a
+  second, and `drain` and `pump` run commands. `clockApp` builds an app the
+  ordinary way and then sets `live`; a clock test checks whether a command came
+  back and what `clockDue` is, and never runs it. `View` asks the terminal for
+  focus reports only when the clock is on.
+- **The spinner is not gated on focus.** It ticks about ten times a second
+  while anything loads, focused or not. Gating it means `FocusMsg` restarting
+  `a.spin.Tick` when `busy()`, or the chain dies.
+
 ## Views
 
 `tab` cycles the `view` enum in `internal/ui/app.go`. Each view owns a
