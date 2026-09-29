@@ -193,25 +193,28 @@ func (s Styles) reviewBadge(pr model.PullRequest) seg {
 	}
 }
 
-// countsText renders the per-state check tally shown on a list row.
-func countsText(c model.CheckCounts) string {
+// checkCountSeg renders the per-state check tally shown on a list row, with
+// each count in its own status colour — the same green/red/amber/grey the
+// summary dot already uses — merged into one segment so it costs one slot in
+// a row's width budget.
+func (s Styles) checkCountSeg(c model.CheckCounts) seg {
 	if c.Total == 0 {
-		return "no checks"
+		return seg{text: "no checks", style: s.Meta}
 	}
-	parts := make([]string, 0, 4)
+	segs := make([]seg, 0, 4)
 	if c.Success > 0 {
-		parts = append(parts, fmt.Sprintf("✓%d", c.Success))
+		segs = append(segs, seg{text: fmt.Sprintf("✓%d", c.Success), style: s.Success})
 	}
 	if c.Failure > 0 {
-		parts = append(parts, fmt.Sprintf("✗%d", c.Failure))
+		segs = append(segs, seg{text: fmt.Sprintf("✗%d", c.Failure), style: s.Failure})
 	}
 	if c.Pending > 0 {
-		parts = append(parts, fmt.Sprintf("●%d", c.Pending))
+		segs = append(segs, seg{text: fmt.Sprintf("●%d", c.Pending), style: s.Pending})
 	}
 	if c.Other > 0 {
-		parts = append(parts, fmt.Sprintf("◦%d", c.Other))
+		segs = append(segs, seg{text: fmt.Sprintf("◦%d", c.Other), style: s.Neutral})
 	}
-	return strings.Join(parts, " ")
+	return seg{text: renderSegs(" ", segs...)}
 }
 
 // diffText renders the size of a pull request's diff.
@@ -224,6 +227,45 @@ func diffText(pr model.PullRequest) string {
 		files = "file"
 	}
 	return fmt.Sprintf("+%d −%d · %d %s", pr.Additions, pr.Deletions, pr.ChangedFiles, files)
+}
+
+// diffSeg renders a pull request's diff the way diffText does, with the
+// additions and deletions coloured green and red — the same pair
+// statusStyle already uses for a passing and a failing check — merged into
+// one segment so it still costs one slot in a row's width budget. The file
+// count carries no colour of its own, since it counts neither for nor
+// against the change, and withFiles false leaves it off for a line with no
+// room for it. The zero value's empty text marks a pull request with nothing
+// to report.
+func (s Styles) diffSeg(pr model.PullRequest, withFiles bool) seg {
+	if pr.ChangedFiles == 0 && pr.Additions == 0 && pr.Deletions == 0 {
+		return seg{}
+	}
+	segs := []seg{
+		{text: fmt.Sprintf("+%d", pr.Additions), style: s.Success},
+		{text: fmt.Sprintf("−%d", pr.Deletions), style: s.Failure},
+	}
+	if withFiles {
+		files := "files"
+		if pr.ChangedFiles == 1 {
+			files = "file"
+		}
+		segs = append(segs, seg{text: fmt.Sprintf("· %d %s", pr.ChangedFiles, files), style: s.Meta})
+	}
+	return seg{text: renderSegs(" ", segs...)}
+}
+
+// justifyFirstFit is justify with a choice of right-hand texts, longest
+// first: it uses the first that fits beside left without cutting it short,
+// or none. A row's left-hand text is what identifies it, so the detail on
+// the right gives way first.
+func justifyFirstFit(width int, left string, rights ...string) string {
+	for _, right := range rights {
+		if right != "" && lenOf(left)+1+lenOf(right) <= width {
+			return justify(width, left, right)
+		}
+	}
+	return justify(width, left, "")
 }
 
 // clipLines trims or pads a block of lines to exactly height lines, so that

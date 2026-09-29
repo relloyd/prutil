@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/relloyd/prutil/internal/model"
 )
@@ -34,6 +35,11 @@ func (a *App) renderList(width, height int) []string {
 
 // renderRow draws one pull request as a fixed-height block, so that scrolling
 // arithmetic stays exact whatever the terminal width.
+//
+// No line of a row is ever blank. A blank line in some rows and not others
+// drew the eye more than the dot that starts each row, so the title is cut to
+// one line (the detail pane has it in full), and rows are separated by a
+// faint rule that sits in the same place every time.
 func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string {
 	inner := max(width-2, 1)
 
@@ -53,10 +59,7 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 		seg{text: pr.Repo, style: a.styles.Repo},
 	)
 
-	title := wrapLines(pr.Title, inner, 2)
-	for len(title) < 2 {
-		title = append(title, "")
-	}
+	title := wrapLines(pr.Title, inner, 1)[0]
 
 	branchWidth := max(inner/2-2, 8)
 	branchSegs := []seg{
@@ -67,33 +70,37 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 	branchSegs = append(branchSegs, a.styles.badges(pr)...)
 	branchSegs = append(branchSegs, a.authorSeg(pr))
 
-	metaSegs := []seg{{text: a.checksSummary(pr), style: a.styles.Meta}}
+	// The diff sits at the right end of the branch line, and gives up its
+	// file count, then itself, before the branch is cut short.
+	branch := fitSegs(inner, " ", branchSegs...)
+	full, core := a.styles.diffSeg(pr, true), a.styles.diffSeg(pr, false)
+	branchLine := justifyFirstFit(inner, branch, full.style.Render(full.text), core.style.Render(core.text))
+
+	// The review decision leads, because it says what the pull request is
+	// waiting for; the check tally follows.
+	var metaSegs []seg
 	if review := a.styles.reviewBadge(pr); review.text != "" {
 		metaSegs = append(metaSegs, review)
 	}
+	metaSegs = append(metaSegs, a.checkSeg(pr))
 	if open := a.feedbackSeg(pr); open.text != "" {
 		metaSegs = append(metaSegs, open)
-	}
-	if diff := diffText(pr); diff != "" {
-		metaSegs = append(metaSegs, seg{text: diff, style: a.styles.Meta})
 	}
 	// A closed pull request is already dated by its close time on the right of
 	// the row, and its last update is almost always that same moment, so
 	// repeating it here would be noise.
+	var updated string
 	if pr.ClosedAt.IsZero() && !pr.UpdatedAt.IsZero() {
-		metaSegs = append(metaSegs, seg{
-			text:  "upd " + model.HumanAge(a.now().Sub(pr.UpdatedAt)),
-			style: a.styles.Meta,
-		})
+		updated = a.styles.Meta.Render("upd " + model.HumanAge(a.now().Sub(pr.UpdatedAt)))
 	}
+	metaLine := justifyFirstFit(inner, fitSegs(inner, "  ", metaSegs...), updated)
 
 	return []string{
 		prefix + justify(inner, identity, age),
-		prefix + titleStyle.Render(title[0]),
-		prefix + titleStyle.Render(title[1]),
-		prefix + fitSegs(inner, " ", branchSegs...),
-		prefix + fitSegs(inner, "  ", metaSegs...),
-		"",
+		prefix + titleStyle.Render(title),
+		prefix + branchLine,
+		prefix + metaLine,
+		prefix + a.styles.PaneBorder.Render(strings.Repeat("─", inner)),
 	}
 }
 
@@ -106,17 +113,19 @@ func (a *App) ageText(pr model.PullRequest) string {
 	return model.HumanAge(a.now().Sub(pr.ClosedAt)) + " ago"
 }
 
-// checksSummary describes the state of a pull request's checks for a list row,
-// falling back to the rollup while the detail is still loading.
-func (a *App) checksSummary(pr model.PullRequest) string {
+// checkSeg describes the state of a pull request's checks for a list row,
+// falling back to the rollup while the detail is still loading. Once the
+// counts are in, each one carries its own status colour rather than one flat
+// summary string.
+func (a *App) checkSeg(pr model.PullRequest) seg {
 	state, ok := a.checks[pr.Key()]
 	switch {
 	case !ok || state.loading:
-		return "checks…"
+		return seg{text: "checks…", style: a.styles.Meta}
 	case state.err != nil:
-		return "checks unavailable"
+		return seg{text: "checks unavailable", style: a.styles.Meta}
 	default:
-		return countsText(model.CountChecks(state.checks))
+		return a.styles.checkCountSeg(model.CountChecks(state.checks))
 	}
 }
 

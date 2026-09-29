@@ -135,6 +135,16 @@ func (a *App) detailHeader(pr model.PullRequest, width int) []string {
 		lines = append(lines, fitSegs(width, "  ", badges...))
 	}
 
+	// The list row's adopted marker and author are among the first things it
+	// drops when narrow, and adoption changes what w and a handoff do, so the
+	// detail pane says it on a line of its own.
+	if adopted := a.adoptedSeg(pr); adopted.text != "" {
+		lines = append(lines, fitSegs(width, " · ",
+			seg{text: adopted.text + " adopted", style: adopted.style},
+			a.authorSeg(pr),
+		))
+	}
+
 	return append(lines, "")
 }
 

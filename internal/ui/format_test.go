@@ -100,10 +100,51 @@ func TestClipLinesSquaresOffAPane(t *testing.T) {
 	assert.Len(t, clipLines([]string{"one", "two", "three"}, 2, 6), 2, "extra lines are cut")
 }
 
-func TestCountsText(t *testing.T) {
-	assert.Equal(t, "no checks", countsText(model.CheckCounts{}))
-	assert.Equal(t, "✓2 ✗1 ●3 ◦1", countsText(model.CheckCounts{Success: 2, Failure: 1, Pending: 3, Other: 1, Total: 7}))
-	assert.Equal(t, "✓4", countsText(model.CheckCounts{Success: 4, Total: 4}))
+func TestCheckCountSeg(t *testing.T) {
+	styles := newStyles(true)
+	text := func(c model.CheckCounts) string { return ansi.Strip(styles.checkCountSeg(c).text) }
+
+	assert.Equal(t, "no checks", text(model.CheckCounts{}))
+	assert.Equal(t, "✓2 ✗1 ●3 ◦1", text(model.CheckCounts{Success: 2, Failure: 1, Pending: 3, Other: 1, Total: 7}))
+	assert.Equal(t, "✓4", text(model.CheckCounts{Success: 4, Total: 4}))
+}
+
+func TestDiffSegReadsLikeDiffText(t *testing.T) {
+	styles := newStyles(true)
+	for _, pr := range []model.PullRequest{
+		{},
+		{Additions: 1, ChangedFiles: 1},
+		{Additions: 120, Deletions: 30, ChangedFiles: 7},
+	} {
+		assert.Equal(t, diffText(pr), ansi.Strip(styles.diffSeg(pr, true).text))
+	}
+}
+
+func TestDiffSegCanLeaveOffTheFileCount(t *testing.T) {
+	styles := newStyles(true)
+	pr := model.PullRequest{Additions: 120, Deletions: 30, ChangedFiles: 7}
+
+	assert.Equal(t, "+120 −30", ansi.Strip(styles.diffSeg(pr, false).text))
+	assert.Empty(t, styles.diffSeg(model.PullRequest{}, false).text)
+}
+
+func TestJustifyFirstFit(t *testing.T) {
+	cases := []struct {
+		name   string
+		width  int
+		rights []string
+		want   string
+	}{
+		{"the longest right-hand text is used when it fits", 20, []string{"long right", "short"}, "left      long right"},
+		{"a shorter one is used when the longest does not fit", 14, []string{"long right", "short"}, "left     short"},
+		{"the left is kept whole when no right-hand text fits", 8, []string{"long right", "short"}, "left    "},
+		{"an empty right-hand text is skipped", 10, []string{""}, "left      "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, justifyFirstFit(tc.width, "left", tc.rights...))
+		})
+	}
 }
 
 func TestDiffText(t *testing.T) {

@@ -30,8 +30,8 @@ const (
 	// side and the focused pane takes the whole terminal.
 	narrowWidth = 80
 	// rowHeight is the fixed number of lines a list row occupies, including the
-	// blank separator beneath it.
-	rowHeight = 6
+	// rule beneath it.
+	rowHeight = 5
 	// selectionDebounce delays the check fetch for a newly selected pull
 	// request so that holding j or k does not start a request per row.
 	selectionDebounce = 120 * time.Millisecond

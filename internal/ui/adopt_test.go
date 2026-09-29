@@ -151,6 +151,21 @@ func TestAnAdoptedPullRequestIsMarkedOnItsRowAndCountedInTheHeader(t *testing.T)
 	assert.Contains(t, body, "feat/spin → main by alice")
 }
 
+func TestTheDetailPaneSaysWhoseAnAdoptedPullRequestIs(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	adoptAlice(t, app, client)
+
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	require.Equal(t, alicesKey, pr.Key(), "adopting selects the pull request")
+	assert.Contains(t, plain(strings.Join(app.detailHeader(pr, 40), "\n")), adoptedGlyph+" adopted · by alice",
+		"the detail pane keeps what a narrow list row drops")
+
+	mine := samplePRs()[0]
+	assert.NotContains(t, plain(strings.Join(app.detailHeader(mine, 40), "\n")), "adopted",
+		"the reader's own pull request says nothing about adoption")
+}
+
 func TestAdoptingRefusesWhatCannotBeAdopted(t *testing.T) {
 	mine := alicesPR()
 	mine.Author = "relloyd"
