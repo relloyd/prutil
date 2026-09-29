@@ -29,9 +29,10 @@ const (
 	// narrowWidth is the point below which the two panes stop fitting side by
 	// side and the focused pane takes the whole terminal.
 	narrowWidth = 80
-	// rowHeight is the fixed number of lines a list row occupies, including the
-	// blank separator beneath it.
-	rowHeight = 6
+	// rowHeight is the fixed number of lines a list row occupies. There is no
+	// blank separator line: the identity line's leading dot is what the eye
+	// anchors on between one pull request and the next.
+	rowHeight = 5
 	// selectionDebounce delays the check fetch for a newly selected pull
 	// request so that holding j or k does not start a request per row.
 	selectionDebounce = 120 * time.Millisecond

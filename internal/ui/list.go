@@ -33,7 +33,9 @@ func (a *App) renderList(width, height int) []string {
 }
 
 // renderRow draws one pull request as a fixed-height block, so that scrolling
-// arithmetic stays exact whatever the terminal width.
+// arithmetic stays exact whatever the terminal width. There is no blank
+// separator line between one row and the next: the leading dot on the
+// identity line is what marks where a row begins.
 func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string {
 	inner := max(width-2, 1)
 
@@ -58,6 +60,17 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 		title = append(title, "")
 	}
 
+	// A one-line title leaves its second line spare. Rather than let it sit
+	// blank, the diff stat moves up into it, right-aligned, and drops out of
+	// the meta line below; a title that needed both lines leaves the diff
+	// stat where it has always been. Either way it is shown exactly once.
+	diff := a.styles.diffSeg(pr)
+	titleLine2 := prefix + titleStyle.Render(title[1])
+	diffOnTitleLine := title[1] == "" && diff.text != ""
+	if diffOnTitleLine {
+		titleLine2 = prefix + justify(inner, "", diff.style.Render(diff.text))
+	}
+
 	branchWidth := max(inner/2-2, 8)
 	branchSegs := []seg{
 		{text: truncatePlain(pr.HeadRef, branchWidth), style: a.styles.Branch},
@@ -67,15 +80,15 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 	branchSegs = append(branchSegs, a.styles.badges(pr)...)
 	branchSegs = append(branchSegs, a.authorSeg(pr))
 
-	metaSegs := []seg{{text: a.checksSummary(pr), style: a.styles.Meta}}
+	metaSegs := []seg{a.checkSeg(pr)}
 	if review := a.styles.reviewBadge(pr); review.text != "" {
 		metaSegs = append(metaSegs, review)
 	}
 	if open := a.feedbackSeg(pr); open.text != "" {
 		metaSegs = append(metaSegs, open)
 	}
-	if diff := diffText(pr); diff != "" {
-		metaSegs = append(metaSegs, seg{text: diff, style: a.styles.Meta})
+	if !diffOnTitleLine && diff.text != "" {
+		metaSegs = append(metaSegs, diff)
 	}
 	// A closed pull request is already dated by its close time on the right of
 	// the row, and its last update is almost always that same moment, so
@@ -90,10 +103,9 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 	return []string{
 		prefix + justify(inner, identity, age),
 		prefix + titleStyle.Render(title[0]),
-		prefix + titleStyle.Render(title[1]),
+		titleLine2,
 		prefix + fitSegs(inner, " ", branchSegs...),
 		prefix + fitSegs(inner, "  ", metaSegs...),
-		"",
 	}
 }
 
@@ -106,17 +118,19 @@ func (a *App) ageText(pr model.PullRequest) string {
 	return model.HumanAge(a.now().Sub(pr.ClosedAt)) + " ago"
 }
 
-// checksSummary describes the state of a pull request's checks for a list row,
-// falling back to the rollup while the detail is still loading.
-func (a *App) checksSummary(pr model.PullRequest) string {
+// checkSeg describes the state of a pull request's checks for a list row,
+// falling back to the rollup while the detail is still loading. Once the
+// counts are in, each one carries its own status colour rather than one flat
+// summary string.
+func (a *App) checkSeg(pr model.PullRequest) seg {
 	state, ok := a.checks[pr.Key()]
 	switch {
 	case !ok || state.loading:
-		return "checks…"
+		return seg{text: "checks…", style: a.styles.Meta}
 	case state.err != nil:
-		return "checks unavailable"
+		return seg{text: "checks unavailable", style: a.styles.Meta}
 	default:
-		return countsText(model.CountChecks(state.checks))
+		return a.styles.checkCountSeg(model.CountChecks(state.checks))
 	}
 }
 

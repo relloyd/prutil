@@ -214,6 +214,30 @@ func countsText(c model.CheckCounts) string {
 	return strings.Join(parts, " ")
 }
 
+// checkCountSeg renders the same per-state tally as countsText, but with each
+// count in its own status colour — the same green/red/amber/grey the summary
+// dot already uses — merged into one segment so it still costs one slot in a
+// row's width budget, the way the flat string it replaces did.
+func (s Styles) checkCountSeg(c model.CheckCounts) seg {
+	if c.Total == 0 {
+		return seg{text: "no checks", style: s.Meta}
+	}
+	segs := make([]seg, 0, 4)
+	if c.Success > 0 {
+		segs = append(segs, seg{text: fmt.Sprintf("✓%d", c.Success), style: s.Success})
+	}
+	if c.Failure > 0 {
+		segs = append(segs, seg{text: fmt.Sprintf("✗%d", c.Failure), style: s.Failure})
+	}
+	if c.Pending > 0 {
+		segs = append(segs, seg{text: fmt.Sprintf("●%d", c.Pending), style: s.Pending})
+	}
+	if c.Other > 0 {
+		segs = append(segs, seg{text: fmt.Sprintf("◦%d", c.Other), style: s.Neutral})
+	}
+	return seg{text: renderSegs(" ", segs...)}
+}
+
 // diffText renders the size of a pull request's diff.
 func diffText(pr model.PullRequest) string {
 	if pr.ChangedFiles == 0 && pr.Additions == 0 && pr.Deletions == 0 {
@@ -224,6 +248,28 @@ func diffText(pr model.PullRequest) string {
 		files = "file"
 	}
 	return fmt.Sprintf("+%d −%d · %d %s", pr.Additions, pr.Deletions, pr.ChangedFiles, files)
+}
+
+// diffSeg renders a pull request's diff the way diffText does, with the
+// additions and deletions coloured green and red — the same pair
+// statusStyle already uses for a passing and a failing check — merged into
+// one segment so it still costs one slot in a row's width budget. The file
+// count carries no colour of its own, since it counts neither for nor
+// against the change. The zero value's empty text marks a pull request with
+// nothing to report.
+func (s Styles) diffSeg(pr model.PullRequest) seg {
+	if pr.ChangedFiles == 0 && pr.Additions == 0 && pr.Deletions == 0 {
+		return seg{}
+	}
+	files := "files"
+	if pr.ChangedFiles == 1 {
+		files = "file"
+	}
+	return seg{text: renderSegs(" ",
+		seg{text: fmt.Sprintf("+%d", pr.Additions), style: s.Success},
+		seg{text: fmt.Sprintf("−%d", pr.Deletions), style: s.Failure},
+		seg{text: fmt.Sprintf("· %d %s", pr.ChangedFiles, files), style: s.Meta},
+	)}
 }
 
 // clipLines trims or pads a block of lines to exactly height lines, so that
