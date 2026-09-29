@@ -234,21 +234,38 @@ func diffText(pr model.PullRequest) string {
 // statusStyle already uses for a passing and a failing check — merged into
 // one segment so it still costs one slot in a row's width budget. The file
 // count carries no colour of its own, since it counts neither for nor
-// against the change. The zero value's empty text marks a pull request with
-// nothing to report.
-func (s Styles) diffSeg(pr model.PullRequest) seg {
+// against the change, and withFiles false leaves it off for a line with no
+// room for it. The zero value's empty text marks a pull request with nothing
+// to report.
+func (s Styles) diffSeg(pr model.PullRequest, withFiles bool) seg {
 	if pr.ChangedFiles == 0 && pr.Additions == 0 && pr.Deletions == 0 {
 		return seg{}
 	}
-	files := "files"
-	if pr.ChangedFiles == 1 {
-		files = "file"
+	segs := []seg{
+		{text: fmt.Sprintf("+%d", pr.Additions), style: s.Success},
+		{text: fmt.Sprintf("−%d", pr.Deletions), style: s.Failure},
 	}
-	return seg{text: renderSegs(" ",
-		seg{text: fmt.Sprintf("+%d", pr.Additions), style: s.Success},
-		seg{text: fmt.Sprintf("−%d", pr.Deletions), style: s.Failure},
-		seg{text: fmt.Sprintf("· %d %s", pr.ChangedFiles, files), style: s.Meta},
-	)}
+	if withFiles {
+		files := "files"
+		if pr.ChangedFiles == 1 {
+			files = "file"
+		}
+		segs = append(segs, seg{text: fmt.Sprintf("· %d %s", pr.ChangedFiles, files), style: s.Meta})
+	}
+	return seg{text: renderSegs(" ", segs...)}
+}
+
+// justifyFirstFit is justify with a choice of right-hand texts, longest
+// first: it uses the first that fits beside left without cutting it short,
+// or none. A row's left-hand text is what identifies it, so the detail on
+// the right gives way first.
+func justifyFirstFit(width int, left string, rights ...string) string {
+	for _, right := range rights {
+		if right != "" && lenOf(left)+1+lenOf(right) <= width {
+			return justify(width, left, right)
+		}
+	}
+	return justify(width, left, "")
 }
 
 // clipLines trims or pads a block of lines to exactly height lines, so that

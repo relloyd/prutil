@@ -105,6 +105,35 @@ func TestWideLayoutShowsBothPanes(t *testing.T) {
 	assert.Contains(t, screen, "4 conversations")
 }
 
+func TestNoListRowLineIsBlank(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	for _, width := range []int{20, 50, 80} {
+		for _, pr := range append(samplePRs(), sampleClosedPRs()...) {
+			row := app.renderRow(pr, width, false)
+			require.Len(t, row, rowHeight, "a row is always rowHeight lines")
+			for i, line := range row {
+				assert.NotEmpty(t, strings.TrimSpace(plain(line)),
+					"line %d of #%d at width %d is blank", i, pr.Number, width)
+				assert.LessOrEqual(t, ansi.StringWidth(line), width,
+					"line %d of #%d overflows width %d", i, pr.Number, width)
+			}
+		}
+	}
+}
+
+func TestAListRowLeadsItsStatusLineWithTheReviewDecision(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	row := app.renderRow(samplePRs()[0], 50, false)
+
+	status := plain(row[3])
+	require.Contains(t, status, "APPROVED")
+	require.Contains(t, status, "✓1 ✗1 ●1")
+	assert.Less(t, strings.Index(status, "APPROVED"), strings.Index(status, "✓1"),
+		"the review decision comes before the check tally")
+	assert.True(t, strings.HasSuffix(strings.TrimRight(status, " "), "upd 2h"),
+		"the last update sits at the right end of the line: %q", status)
+}
+
 func TestDetailLeavesAGapBetweenWatchAndChecks(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	send(t, app, press("w"))
