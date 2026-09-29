@@ -193,31 +193,10 @@ func (s Styles) reviewBadge(pr model.PullRequest) seg {
 	}
 }
 
-// countsText renders the per-state check tally shown on a list row.
-func countsText(c model.CheckCounts) string {
-	if c.Total == 0 {
-		return "no checks"
-	}
-	parts := make([]string, 0, 4)
-	if c.Success > 0 {
-		parts = append(parts, fmt.Sprintf("✓%d", c.Success))
-	}
-	if c.Failure > 0 {
-		parts = append(parts, fmt.Sprintf("✗%d", c.Failure))
-	}
-	if c.Pending > 0 {
-		parts = append(parts, fmt.Sprintf("●%d", c.Pending))
-	}
-	if c.Other > 0 {
-		parts = append(parts, fmt.Sprintf("◦%d", c.Other))
-	}
-	return strings.Join(parts, " ")
-}
-
-// checkCountSeg renders the same per-state tally as countsText, but with each
-// count in its own status colour — the same green/red/amber/grey the summary
-// dot already uses — merged into one segment so it still costs one slot in a
-// row's width budget, the way the flat string it replaces did.
+// checkCountSeg renders the per-state check tally shown on a list row, with
+// each count in its own status colour — the same green/red/amber/grey the
+// summary dot already uses — merged into one segment so it costs one slot in
+// a row's width budget.
 func (s Styles) checkCountSeg(c model.CheckCounts) seg {
 	if c.Total == 0 {
 		return seg{text: "no checks", style: s.Meta}
