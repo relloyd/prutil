@@ -593,7 +593,7 @@ func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Re
 		return res, nil
 	}
 
-	session, reused, err := d.openWorktree(ctx, checkout.Root, workspaceBranch(req.PR), label, req.PR.Number)
+	session, reused, err := d.openWorktree(ctx, checkout.Root, workspaceBranch(req.PR), label, req)
 	if err != nil {
 		return d.fail(ctx, req, res, err)
 	}
@@ -630,22 +630,27 @@ func (d *Dispatcher) provision(ctx context.Context, agents []herdr.Agent, req Re
 	return d.send(ctx, req, agent, note, res, true)
 }
 
-// openWorktree reuses an existing matching checkout before asking herdr to
-// create one, and reports the path when it reused one, which is what lets the
-// caller warn an agent about a workspace left behind the pull request. If
+// openWorktree prefers a reader's worktree for a manual handoff when its branch
+// and HEAD match the PR, then falls back to a prutil workspace. It reports a
+// reused path so the caller can warn about a stale workspace. If
 // creation reports an error after creating the checkout, a fresh list can
-// safely recover only an exact branch match; otherwise the original error
-// remains visible instead of guessing at a path.
-func (d *Dispatcher) openWorktree(ctx context.Context, root, branch, label string, number int) (herdr.WorktreeSession, string, error) {
+// safely recover only an exact prutil branch match.
+func (d *Dispatcher) openWorktree(ctx context.Context, root, branch, label string, req Request) (herdr.WorktreeSession, string, error) {
 	worktrees, err := d.herdr.Worktrees(ctx, root)
 	if err != nil {
 		return herdr.WorktreeSession{}, "", err
+	}
+	if req.Manual {
+		if existing, ok := d.headWorktree(ctx, worktrees, req); ok {
+			session, err := d.herdr.OpenWorktree(ctx, root, existing.Path, existing.Branch, label)
+			return session, existing.Path, err
+		}
 	}
 	if existing, ok := worktreeForBranch(worktrees, branch); ok {
 		session, err := d.herdr.OpenWorktree(ctx, root, existing.Path, branch, label)
 		return session, existing.Path, err
 	}
-	if err := d.fetch.FetchPullRequest(ctx, root, number, branch); err != nil {
+	if err := d.fetch.FetchPullRequest(ctx, root, req.PR.Number, branch); err != nil {
 		return herdr.WorktreeSession{}, "", err
 	}
 
