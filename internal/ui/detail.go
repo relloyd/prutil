@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/relloyd/prutil/internal/model"
 )
 
@@ -166,6 +168,20 @@ func (a *App) renderCheck(check model.Check, width int, selected bool) string {
 	if name == "" {
 		name = "(unnamed check)"
 	}
+	budget := inner
+	if right != "" {
+		budget = inner - lenOf(right) - 1
+		if budget-2 < min(lenOf(name), 4) {
+			right = ""
+			budget = inner
+		}
+	}
+	nameWidth := budget - 2
+	if nameWidth == 1 {
+		name = ansi.Truncate(name, 1, "")
+	} else {
+		name = truncatePlain(name, nameWidth)
+	}
 	segs := []seg{
 		{text: statusGlyph(check.Status), style: a.styles.statusStyle(check.Status)},
 		{text: name, style: a.styles.Text},
@@ -174,7 +190,7 @@ func (a *App) renderCheck(check model.Check, width int, selected bool) string {
 		segs = append(segs, seg{text: "· " + check.Workflow, style: a.styles.Muted})
 	}
 
-	left := fitSegs(max(inner-lenOf(right)-1, 1), " ", segs...)
+	left := fitSegs(budget, " ", segs...)
 	return prefix + justify(inner, left, right)
 }
 

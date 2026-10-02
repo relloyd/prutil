@@ -6,7 +6,9 @@ repository your account can see.
 The list on the left shows each pull request with a coloured dot for its CI
 state, its age, repository, branches, number, review state and diff size. The
 pane on the right shows the selected pull request's WATCH summary and
-individual GitHub Actions checks.
+individual GitHub Actions checks. When the detail pane narrows, check names
+are shortened before they disappear: workflow labels go first, then durations
+if needed to keep the start of the name visible.
 
 ## Self-healing pull requests
 
