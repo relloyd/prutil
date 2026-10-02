@@ -70,11 +70,12 @@ const (
 	maxPromptAttempts = 3
 )
 
-// Identifier reports what a directory holds, and whether the commit checked out
-// there has another commit in its history.
+// Identifier reports what a directory holds, whether the commit checked out
+// there has another commit in its history, and whether it has uncommitted work.
 type Identifier interface {
 	Identify(ctx context.Context, dir string) git.Checkout
 	Contains(ctx context.Context, dir, commit string) bool
+	Clean(ctx context.Context, dir string) bool
 }
 
 // RepositoryResolver finds the local checkout where a manual handoff can

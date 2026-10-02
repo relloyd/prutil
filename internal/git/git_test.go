@@ -133,6 +133,24 @@ func TestABranchThatTracksNothingHasAnEmptyUpstream(t *testing.T) {
 	assert.Empty(t, got.Upstream)
 }
 
+func TestCleanIsTrueOnlyWhenGitReportsNothingUncommitted(t *testing.T) {
+	runner := &fakeRunner{
+		replies: map[string]string{
+			"-C /work/clean status --porcelain": "",
+			"-C /work/dirty status --porcelain": " M main.go\n?? notes.txt",
+		},
+		fails: map[string]bool{"-C /work/gone status --porcelain": true},
+	}
+	client := git.New(runner)
+	ctx := context.Background()
+
+	assert.True(t, client.Clean(ctx, "/work/clean"))
+	assert.False(t, client.Clean(ctx, "/work/dirty"), "modified or untracked files are the reader's unfinished work")
+	assert.False(t, client.Clean(ctx, "/work/gone"), "a directory git will not answer for is not clean")
+	assert.False(t, client.Clean(ctx, ""))
+	assert.Equal(t, 3, runner.calls)
+}
+
 func TestContainsAsksGitWhetherACommitIsInTheCheckoutsHistory(t *testing.T) {
 	runner := &fakeRunner{
 		replies: map[string]string{"-C /work/prutil merge-base --is-ancestor c0ffee1234 HEAD": ""},

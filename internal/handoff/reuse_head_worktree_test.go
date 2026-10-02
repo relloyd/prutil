@@ -25,13 +25,15 @@ func TestManualInvestigationReusesTheMatchingHeadWorktree(t *testing.T) {
 		repo   string
 		reuse  bool
 		noOID  bool
+		dirty  bool
 	}{
-		{"manual handoff on matching branch and commit", true, "migrate-fep-to-dcp-1", head, "acme/widgets", true, false},
-		{"automatic handoff leaves a reader's checkout alone", false, "migrate-fep-to-dcp-1", head, "acme/widgets", false, false},
-		{"different commit does not reuse a checkout", true, "migrate-fep-to-dcp-1", "other", "acme/widgets", false, false},
-		{"different repository does not reuse a checkout", true, "migrate-fep-to-dcp-1", head, "acme/other", false, false},
-		{"different branch does not reuse a checkout", true, "other", head, "acme/widgets", false, false},
-		{"unknown head does not reuse a checkout", true, "migrate-fep-to-dcp-1", head, "acme/widgets", false, true},
+		{"manual handoff on matching branch and commit", true, "migrate-fep-to-dcp-1", head, "acme/widgets", true, false, false},
+		{"automatic handoff leaves a reader's checkout alone", false, "migrate-fep-to-dcp-1", head, "acme/widgets", false, false, false},
+		{"different commit does not reuse a checkout", true, "migrate-fep-to-dcp-1", "other", "acme/widgets", false, false, false},
+		{"different repository does not reuse a checkout", true, "migrate-fep-to-dcp-1", head, "acme/other", false, false, false},
+		{"different branch does not reuse a checkout", true, "other", head, "acme/widgets", false, false, false},
+		{"unknown head does not reuse a checkout", true, "migrate-fep-to-dcp-1", head, "acme/widgets", false, true, false},
+		{"a checkout with uncommitted work is left to the reader", true, "migrate-fep-to-dcp-1", head, "acme/widgets", false, false, true},
 	}
 
 	for _, tt := range tests {
@@ -42,7 +44,10 @@ func TestManualInvestigationReusesTheMatchingHeadWorktree(t *testing.T) {
 				create:    herdr.WorktreeSession{WorkspaceID: "w9", TabID: "w9:t1", RootPaneID: "w9:p1"},
 				start:     herdr.Agent{Kind: "claude", Status: herdr.StatusIdle, PaneID: "w8:p1"},
 			}
-			checkouts := fakeGit{path: {Root: path, Repo: tt.repo, Branch: tt.branch, Head: tt.head}}
+			checkouts := dirtyGit{
+				fakeGit: fakeGit{path: {Root: path, Repo: tt.repo, Branch: tt.branch, Head: tt.head}},
+				dirty:   map[string]bool{path: tt.dirty},
+			}
 			repos := &fakeResolver{checkout: git.Checkout{Root: root, Repo: "acme/widgets"}}
 			fetch := &fakeFetcher{}
 			dispatcher, _ := dispatcherWithProvision(t, control, checkouts, repos, fetch, func(cfg *home.Config) {

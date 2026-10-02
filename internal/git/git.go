@@ -151,6 +151,19 @@ func (c *Client) Contains(ctx context.Context, dir, commit string) bool {
 	return ok
 }
 
+// Clean reports whether dir is a working tree with nothing uncommitted in it:
+// no staged or unstaged changes and no untracked files. A directory git will
+// not answer for is not clean, because an agent handed one could be building
+// on work the reader has not finished. The result is not cached; a reader's
+// edits do not wait for a cache to expire.
+func (c *Client) Clean(ctx context.Context, dir string) bool {
+	if dir == "" {
+		return false
+	}
+	out, ok := c.read(ctx, dir, "status", "--porcelain")
+	return ok && out == ""
+}
+
 // isCommitID reports whether s is a commit hash, which is all Contains will
 // put on git's command line in a position an option could otherwise take.
 func isCommitID(s string) bool {

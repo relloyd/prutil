@@ -154,6 +154,18 @@ func (f fakeGit) Contains(_ context.Context, dir, commit string) bool {
 	return commit != "" && f[dir].Head == commit
 }
 
+// Clean reports every checkout clean; dirtyGit marks some as holding
+// uncommitted work.
+func (f fakeGit) Clean(context.Context, string) bool { return true }
+
+// dirtyGit is a fakeGit in which the named directories have uncommitted work.
+type dirtyGit struct {
+	fakeGit
+	dirty map[string]bool
+}
+
+func (d dirtyGit) Clean(_ context.Context, dir string) bool { return !d.dirty[dir] }
+
 // historyGit is a fakeGit whose checkouts also hold older commits.
 type historyGit struct {
 	fakeGit
