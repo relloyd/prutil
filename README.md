@@ -497,7 +497,11 @@ security:
 Discovery roots are walked four levels deep, and a checkout's origin remote is
 read from its own `.git/config` before git is asked about it, so pointing at a
 directory of a hundred repositories costs a hundred small file reads rather
-than several hundred forked processes.
+than several hundred forked processes. A root such as `~/.filetree/worktrees`
+can find checkouts under `repository/branch`. When you press `W` or `F` and no
+agent is already on the pull request, prutil reopens an existing worktree on
+the pull request's head branch if its repository and HEAD commit match.
+Automatic provisioning still creates or reuses only prutil's own worktrees.
 
 With `skill` set, the prompt is `/<skill> <pull request url>`. Without it,
 prutil spells the job out instead. Either can be replaced with `herdr.prompt`,

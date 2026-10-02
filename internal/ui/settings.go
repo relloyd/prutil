@@ -284,6 +284,18 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Cmd, bool) {
 			a.settings.input, cmd = a.settings.input.Update(msg)
 			return cmd, true
 		}
+		if a.settings.mode == settingsModeSubPane {
+			sp := &a.settings.subPane
+			if sp.adding || sp.editing {
+				var cmd tea.Cmd
+				if sp.activeIdx == 0 {
+					sp.keyInput, cmd = sp.keyInput.Update(msg)
+				} else {
+					sp.valInput, cmd = sp.valInput.Update(msg)
+				}
+				return cmd, true
+			}
+		}
 		return nil, true
 	case tea.MouseWheelMsg:
 		switch msg.Button {
