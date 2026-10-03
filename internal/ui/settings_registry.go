@@ -107,7 +107,7 @@ type settingMeta struct {
 }
 
 // verbOrIs is how a boolean setting reads in its notice. "is" suits a singular
-// label; a plural one such as "Herdr toast notifications" takes "are".
+// label; a plural one such as "herdr toasts on handoff" takes "are".
 func (m settingMeta) verbOrIs() string {
 	if m.verb != "" {
 		return m.verb
@@ -408,11 +408,11 @@ func allSettings() []settingDescriptor {
 		}, 15*time.Second, 30*time.Second),
 
 		// ---------------------------------------------------------------------
-		// WATCHING & POLLING
+		// WATCHING
 		// ---------------------------------------------------------------------
 		boolSetting(settingMeta{
 			id:      "watch.self_review",
-			section: "WATCHING & POLLING",
+			section: "WATCHING",
 			title:   "Self-review feedback",
 			detail: "Treat every unresolved review comment written from your account as actionable feedback for " +
 				"coding agents, apart from the replies your agents left behind.",
@@ -425,7 +425,7 @@ func allSettings() []settingDescriptor {
 		}),
 		boolSetting(settingMeta{
 			id:      "watch.auto_watch",
-			section: "WATCHING & POLLING",
+			section: "WATCHING",
 			title:   "New PR watching",
 			detail: "Watch every pull request you open from now on without pressing w. Those already open are " +
 				"left alone, and one you stop watching stays stopped. The open list is searched for them on the interval below.",
@@ -439,7 +439,7 @@ func allSettings() []settingDescriptor {
 		}),
 		boolSetting(settingMeta{
 			id:      "watch.auto_watch_drafts",
-			section: "WATCHING & POLLING",
+			section: "WATCHING",
 			title:   "Draft PR watching",
 			detail: "Watch a new draft as soon as it is opened. Off, a draft is watched once it is marked ready " +
 				"for review, since its checks failing is usually you still pushing.",
@@ -452,7 +452,7 @@ func allSettings() []settingDescriptor {
 		}),
 		durationSetting(settingMeta{
 			id:      "watch.auto_watch_interval",
-			section: "WATCHING & POLLING",
+			section: "WATCHING",
 			title:   "New PR search interval",
 			detail: "How often your open pull requests are searched for new ones to watch, while new PR watching is on. " +
 				"Pull requests already watched are polled on the intervals below. Each search is one request.",
@@ -464,9 +464,25 @@ func allSettings() []settingDescriptor {
 			get: func(c *home.Config) home.Duration { return c.Watch.AutoWatchInterval },
 			set: func(c *home.Config, v home.Duration) { c.Watch.AutoWatchInterval = v },
 		}, time.Minute, time.Minute),
+		stringSetting(settingMeta{
+			id:      "watch.self_test_marker",
+			section: "WATCHING",
+			title:   "Self-test marker comment",
+			detail:  "Review comment marker string treated as feedback when written by yourself. Empty to disable.",
+			def:     "<!-- prutil:test -->",
+			path:    []string{"watch", "self_test_marker"},
+			label:   "Self-test marker",
+		}, field[string]{
+			get: func(c *home.Config) string { return c.Watch.Marker() },
+			set: func(c *home.Config, v string) { c.Watch.SelfTestMarker = &v },
+		}, "(disabled)", "Self-test marker disabled"),
+
+		// ---------------------------------------------------------------------
+		// POLL TIMING
+		// ---------------------------------------------------------------------
 		durationSetting(settingMeta{
 			id:      "watch.active_interval",
-			section: "WATCHING & POLLING",
+			section: "POLL TIMING",
 			title:   "Active poll interval",
 			detail:  "How often an armed pull request is polled while checks or workflows are actively running.",
 			def:     "30s",
@@ -477,7 +493,7 @@ func allSettings() []settingDescriptor {
 		}, 15*time.Second, 15*time.Second),
 		durationSetting(settingMeta{
 			id:      "watch.base_interval",
-			section: "WATCHING & POLLING",
+			section: "POLL TIMING",
 			title:   "Base poll interval",
 			detail:  "Starting polling interval for an armed pull request once all checks have finished running.",
 			def:     "2m",
@@ -488,7 +504,7 @@ func allSettings() []settingDescriptor {
 		}, 15*time.Second, 30*time.Second),
 		durationSetting(settingMeta{
 			id:      "watch.max_interval",
-			section: "WATCHING & POLLING",
+			section: "POLL TIMING",
 			title:   "Max poll backoff cap",
 			detail:  "Maximum polling backoff interval reached when an armed pull request remains unchanged.",
 			def:     "30m",
@@ -500,7 +516,7 @@ func allSettings() []settingDescriptor {
 		}, 15*time.Second, 5*time.Minute),
 		durationSetting(settingMeta{
 			id:      "watch.notified_interval",
-			section: "WATCHING & POLLING",
+			section: "POLL TIMING",
 			title:   "Post-handoff interval",
 			detail:  "Initial polling interval after handing review feedback to a coding agent.",
 			def:     "10m",
@@ -511,7 +527,7 @@ func allSettings() []settingDescriptor {
 		}, 15*time.Second, 1*time.Minute),
 		durationSetting(settingMeta{
 			id:      "watch.max_notified_interval",
-			section: "WATCHING & POLLING",
+			section: "POLL TIMING",
 			title:   "Max post-handoff cap",
 			detail:  "Maximum polling backoff cap after handing review feedback to a coding agent.",
 			def:     "60m",
@@ -522,19 +538,19 @@ func allSettings() []settingDescriptor {
 		}, 15*time.Second, 5*time.Minute),
 		durationSetting(settingMeta{
 			id:      "watch.idle_interval",
-			section: "WATCHING & POLLING",
-			title:   "Agent idle check interval",
-			detail:  "How often a target agent is polled over local socket while waiting for it to become idle.",
+			section: "POLL TIMING",
+			title:   "Busy agent re-read interval",
+			detail:  "How often a busy agent is re-read through herdr while prutil waits to send it work.",
 			def:     "10s",
 			path:    []string{"watch", "idle_interval"},
-			label:   "Agent idle interval",
+			label:   "Busy agent re-read interval",
 		}, field[home.Duration]{
 			get: func(c *home.Config) home.Duration { return c.Watch.IdleInterval },
 			set: func(c *home.Config, v home.Duration) { c.Watch.IdleInterval = v },
 		}, 1*time.Second, 5*time.Second),
 		intSetting(settingMeta{
 			id:      "watch.dormant_after",
-			section: "WATCHING & POLLING",
+			section: "POLL TIMING",
 			title:   "Dormant poll threshold",
 			detail:  "How many consecutive polls at max interval with no changes before polling goes dormant.",
 			def:     "3 polls",
@@ -546,49 +562,37 @@ func allSettings() []settingDescriptor {
 		}, 1, 1, "%d polls"),
 		intSetting(settingMeta{
 			id:      "watch.force_precise_every",
-			section: "WATCHING & POLLING",
-			title:   "Force precise check every",
-			detail:  "Poll count interval to run the precise review-thread query regardless of tripwire counters.",
+			section: "POLL TIMING",
+			title:   "Full thread read every",
+			detail:  "Read every review thread in full after this many polls, even when the cheap poll saw nothing change.",
 			def:     "5 polls",
 			path:    []string{"watch", "force_precise_every"},
-			label:   "Force precise check",
+			label:   "Full thread read",
 		}, field[int]{
 			get: func(c *home.Config) int { return c.Watch.ForcePreciseEvery },
 			set: func(c *home.Config, v int) { c.Watch.ForcePreciseEvery = v },
 		}, 1, 1, "every %d polls"),
-		stringSetting(settingMeta{
-			id:      "watch.self_test_marker",
-			section: "WATCHING & POLLING",
-			title:   "Self-test marker comment",
-			detail:  "Review comment marker string treated as feedback when written by yourself. Empty to disable.",
-			def:     "[prutil-test]",
-			path:    []string{"watch", "self_test_marker"},
-			label:   "Self-test marker",
-		}, field[string]{
-			get: func(c *home.Config) string { return c.Watch.Marker() },
-			set: func(c *home.Config, v string) { c.Watch.SelfTestMarker = &v },
-		}, "(disabled)", "Self-test marker disabled"),
 
 		// ---------------------------------------------------------------------
-		// AI REVIEW TRIGGER
+		// PR COMMENTS
 		// ---------------------------------------------------------------------
 		stringSetting(settingMeta{
 			id:      "review.comment",
-			section: "AI REVIEW TRIGGER",
-			title:   "Default review comment",
-			detail:  "Comment posted to an open pull request when pressing R to trigger an AI review. Empty to disable.",
+			section: "PR COMMENTS",
+			title:   "AI review comment",
+			detail:  "Comment R posts to an open pull request to request an AI review, such as /gemini review. Empty to disable.",
 			def:     "/gemini review",
 			path:    []string{"review", "comment"},
-			label:   "Review comment",
+			label:   "AI review comment",
 		}, field[string]{
 			get: func(c *home.Config) string { return c.Review.CommentFor("") },
 			set: func(c *home.Config, v string) { c.Review.Comment = &v },
 		}, "(disabled)", "Review comment trigger disabled"),
 		collectionSetting(settingMeta{
 			id:      "review.repos",
-			section: "AI REVIEW TRIGGER",
-			title:   "Repository comment overrides",
-			detail:  "Per-repository review comment overrides (e.g. owner/repo -> @coderabbitai review). Press enter to manage.",
+			section: "PR COMMENTS",
+			title:   "AI review comment per repository",
+			detail:  "AI review comment for one repository in place of the one above (e.g. owner/repo -> @coderabbitai review). Press enter to manage.",
 			def:     "0 overrides",
 			path:    []string{"review", "repos"},
 		}, settingKindMap, func(a *App) int { return len(a.homeCfg.Review.Repos) }, "override", "overrides"),
@@ -599,7 +603,7 @@ func allSettings() []settingDescriptor {
 		{
 			id:          "herdr.fallback",
 			section:     "CODING AGENT (HERDR)",
-			title:       "Fallback provisioning strategy",
+			title:       "When no agent is on the PR",
 			detail:      "Fallback strategy when no active agent matches PR branch: 'new' (provision fresh workspace), 'none' (take no action), 'repo' (use any agent in repository).",
 			defaultText: "new",
 			kind:        settingKindEnum,
@@ -690,7 +694,7 @@ func allSettings() []settingDescriptor {
 		boolSetting(settingMeta{
 			id:      "herdr.toast",
 			section: "CODING AGENT (HERDR)",
-			title:   "Herdr toast notifications",
+			title:   "herdr toasts on handoff",
 			detail:  "Show herdr's desktop notification alongside each agent handoff.",
 			def:     "on",
 			path:    []string{"herdr", "toast"},

@@ -10,6 +10,72 @@ individual GitHub Actions checks. When the detail pane narrows, check names
 are shortened before they disappear: workflow labels go first, then durations
 if needed to keep the start of the name visible.
 
+## What prutil can do
+
+prutil acts in two ways: on its own, for the pull requests you have asked it to
+watch, and when you press a key.
+
+**On its own**, for every watched pull request (`◉`):
+
+- New review feedback is sent to the coding agent working on that pull request.
+- Once every check has finished and some have failed, the failed checks are sent
+  to the agent, once per head commit.
+- If no agent is on the pull request, one is set up in a fresh worktree
+  (`herdr.fallback: new`, the default), but only over branches you trust:
+  your own, ones you adopted, and `security.trusted_authors`.
+- Anything written by somebody outside your trust boundary, or hidden in a
+  comment, holds the pull request: nothing is sent until you say so.
+- It stops watching a pull request once it sees it merged or closed.
+
+And, if you switch them on: new pull requests you open are watched without
+pressing `w`, and your desktop tells you when a pull request is approved.
+
+**When you press a key**, on the selected pull request:
+
+- `w` watches or stops watching it.
+- `W` sends its open review feedback to an agent now, `F` its failed checks, and
+  `N` only the feedback it has not sent before.
+- `R` posts a comment, `/gemini review` by default, to ask a review bot for a
+  review. prutil never posts it on its own.
+- `+` adopts somebody else's pull request so the rest of this works on it too.
+
+prutil itself posts nothing to GitHub except the `R` comment. Replies,
+commits and re-run checks come from the agent.
+
+| Feature | Trigger | Switched by | Default |
+| --- | --- | --- | --- |
+| [Watch a pull request](#watching-and-handing-work-to-an-agent) | `w` | per pull request | not watched |
+| [Watch new pull requests](#watching-new-pull-requests-automatically) | on its own, every 5 minutes and after `r` | `watch.auto_watch` (New PR watching) | off |
+| Watch new drafts too | with the above | `watch.auto_watch_drafts` (Draft PR watching) | off |
+| Send review feedback to an agent | on its own when watched; `W` now; `N` now, new feedback only | `herdr.prompt`, `herdr.skill` | on when watched |
+| [Treat your own comments as feedback](#your-own-review-comments-as-feedback) | on its own when watched | `watch.self_review` for all of them; `watch.self_test_marker` for one | off; marker on |
+| Send failed checks to an agent | on its own when watched, once every check has finished; `F` now; `W` on a failed check | `herdr.check_prompt` | on when watched |
+| Set up a workspace and agent when none is on the pull request | any send that finds no agent | `herdr.fallback`: `new`, `none` or `repo`; `W` always may | `new` |
+| [Hold work from untrusted commenters](#configuration) | every send; a second press of `W` or `F` sends once anyway | `security.trusted_associations`, `security.trusted_authors` | on |
+| [Require a sandboxed agent](#sandboxed-agents) | every automatic send | `security.require_sandbox` | on |
+| Post an AI review comment | `R`, pressed twice | `review.comment`, `review.repos` | `/gemini review` |
+| [Desktop notification on approval](#desktop-notifications) | on its own, every 2 minutes | `notifications.events.approved`, `notifications.interval` | on |
+| [Adopt somebody else's pull request](#adopting-somebody-elses-pull-request) | `+` to adopt, `-` to release | per pull request | none |
+| [Auto-refresh](#auto-refresh) | `a` | per press | off |
+| Record sends without making them | `-dry-run` | `herdr.dry_run` | off |
+
+Every setting in the table can be changed in the settings pane, `s`, as well as
+in [`config.yaml`](#configuration).
+
+### Words prutil uses
+
+| Word | Means |
+| --- | --- |
+| watch | prutil polls the pull request and acts on what it finds. Nothing to do with watching a repository on GitHub. |
+| auto-watch | watching new pull requests without pressing `w`. Not the same as auto-refresh (`a`), which only reloads the screen. |
+| feedback | an unresolved review thread whose newest comment is not yours. |
+| send | giving feedback or failed checks to a coding agent through herdr. The log, `handoffs.jsonl`, calls each one a handoff. |
+| agent | a coding agent, such as Claude Code, running in a herdr pane. |
+| held | prutil found a comment it will not send unasked, from somebody outside the trust boundary or with hidden text in it. |
+| notification | a desktop notification from your operating system, such as an approval. |
+| toast | herdr's own notification that a send happened, `herdr.toast`. |
+| check | a CI check on the pull request's head commit; the rollup is GitHub's verdict over all of them. |
+
 ## Self-healing pull requests
 
 prutil can turn a pull request into a lightweight feedback loop instead of a
@@ -101,14 +167,14 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `r` | refresh from GitHub |
 | `a` | auto-refresh: reload every 30s, five times over. press again to add five more |
 | `w` | watch the selected open pull request, or stop watching it |
-| `W` | hand the selected pull request's open review feedback to a coding agent now, creating one when needed |
-| `F` | investigate the selected pull request's failed checks now |
-| `R` | trigger an AI review on the selected open pull request by posting the configured comment |
-| `N` | check the selected open pull request for new review feedback and notify an existing agent |
+| `W` | send the selected pull request's open review feedback to a coding agent now, creating one when needed; on a failed check, send the failed checks |
+| `F` | send the selected pull request's failed checks to a coding agent now, without waiting for running checks |
+| `R` | post the configured AI review comment, such as `/gemini review`, on the selected open pull request. press twice to confirm |
+| `N` | read the selected open pull request's review threads now and send only the feedback not sent before |
 | `tab` | switch between your open and your recently closed pull requests |
 | `+` | adopt a pull request somebody else opened: pick a recent repository and one of its pull requests, or paste a URL. it joins your open list and its author is trusted on it |
 | `-` | release the selected adopted pull request: it stops being watched and its author stops being trusted on it. press twice to confirm |
-| `s` or `,` | open settings: configure notifications, polling intervals, review triggers, and coding agent settings |
+| `s` or `,` | open settings: desktop notifications, what is watched, poll timing, PR comments, coding agent and security |
 | `?` | open the shortcut overlay: type to filter, `enter` to run the highlighted shortcut, `esc` or `?` to close |
 | `q` or `ctrl+c` | quit |
 
@@ -249,18 +315,19 @@ you have not armed or one you want looked at again now.
 
 Watching also monitors the pull-request check rollup. When the rollup fails,
 prutil fetches the individual checks and waits until every check is terminal.
-It then sends all failed checks together to an existing matching Herdr agent so
-the agent can decide whether they share a cause. The default check prompt asks
+It then sends all failed checks together to the agent working on the pull
+request, so the agent can decide whether they share a cause. The default check prompt asks
 the agent to fix failures related to the pull request with a follow-up commit,
 re-trigger unrelated failures with `gh`, and ask for human assistance when it
-has already retried an unchanged check or is unsure what to do. A missing agent
-is recorded and notified, but does not cause automatic workspace provisioning.
+has already retried an unchanged check or is unsure what to do. When no agent
+is on the pull request, `herdr.fallback` decides, as it does for review
+feedback: under the default `new` prutil sets a workspace up and starts one.
 
-`F` forces the same investigation immediately using the failures currently
-known, even while other checks are pending. It bypasses automatic
-deduplication but still requires an existing agent. When a failed check is
-selected, `W` sends the same investigation while retaining `W`'s explicit
-permission to provision a workspace and start an agent if needed.
+`F` sends the same failed checks immediately, using the failures currently
+known, even while other checks are pending, and even if they were sent for
+this head commit before. Like the watcher, it follows `herdr.fallback` when no
+agent is on the pull request. When a failed check is selected, `W` sends the
+same thing, and may set a workspace up whatever `herdr.fallback` says.
 
 Automatic investigations are recorded against the head commit, so a restart
 does not resend the same failure. Pushing a new head allows a new investigation.
@@ -289,7 +356,7 @@ the thread is handed over again only when it gains a new latest comment.
 `watch.auto_watch`, auto-watch for short, watches every pull request you open
 from the moment it is switched on, so a new one is on the loop without anybody
 pressing `w`. It is off by default; `s` toggles it as **New PR watching** under
-`WATCHING & POLLING`, where the two settings below it live too: **Draft PR
+`WATCHING`, where the two settings below it live too: **Draft PR
 watching** (`auto_watch_drafts`) and **New PR search interval**
 (`auto_watch_interval`). The header reads `· new PR watching` while it is on.
 
@@ -437,8 +504,8 @@ doing:
 
 Anything at all changing puts a pull request back to the top of that ladder. A
 pull request prutil has stopped asking about is still armed, and its `◉` turns
-hollow to say so; `r` wakes it, along with everything else, while `R` (triggering
-an AI review) wakes that specific pull request.
+hollow to say so; `r` wakes it, along with everything else, while `R` (posting
+the AI review comment) wakes that specific pull request.
 
 ### Configuration
 
