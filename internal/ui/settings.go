@@ -60,6 +60,7 @@ const (
 	subPaneNone subPaneType = iota
 	subPaneRepos
 	subPaneReviewRepos
+	subPaneChecksPassedRepos
 	subPaneDiscoveryRoots
 	subPaneTrustedAssociations
 	subPaneTrustedAuthors
@@ -115,6 +116,49 @@ func listSubPanes() map[subPaneType]listSubPane {
 // listSubPaneFor returns the sequence behind a sub-pane kind, if it is one.
 func listSubPaneFor(kind subPaneType) (listSubPane, bool) {
 	spec, ok := listSubPanes()[kind]
+	return spec, ok
+}
+
+// mapSubPane describes a sub-pane over a mapping from a repository to a
+// string, which is what every map the pane manages is. Like listSubPane, it
+// is what lets them share the add, delete, list and render paths.
+type mapSubPane struct {
+	title string
+	// noun names one value, for every notice about it.
+	noun string
+	path []string
+	// entries returns the map inside a configuration, so that one accessor
+	// serves reading, adding and deleting.
+	entries func(c *home.Config) *map[string]string
+}
+
+// mapSubPanes is every mapping the pane can manage.
+func mapSubPanes() map[subPaneType]mapSubPane {
+	return map[subPaneType]mapSubPane{
+		subPaneRepos: {
+			title:   "Repositories: Explicit Paths",
+			noun:    "repository path",
+			path:    []string{"repos"},
+			entries: func(c *home.Config) *map[string]string { return &c.Repos },
+		},
+		subPaneReviewRepos: {
+			title:   "PR Comments: AI Review per Repository",
+			noun:    "AI review comment",
+			path:    []string{"review", "repos"},
+			entries: func(c *home.Config) *map[string]string { return &c.Review.Repos },
+		},
+		subPaneChecksPassedRepos: {
+			title:   "PR Comments: Checks Passed per Repository",
+			noun:    "checks passed comment",
+			path:    []string{"checks_passed", "repos"},
+			entries: func(c *home.Config) *map[string]string { return &c.ChecksPassed.Repos },
+		},
+	}
+}
+
+// mapSubPaneFor returns the mapping behind a sub-pane kind, if it is one.
+func mapSubPaneFor(kind subPaneType) (mapSubPane, bool) {
+	spec, ok := mapSubPanes()[kind]
 	return spec, ok
 }
 
@@ -618,6 +662,8 @@ func (a *App) openSubPane(item settingDescriptor) tea.Cmd {
 		kind = subPaneRepos
 	case "review.repos":
 		kind = subPaneReviewRepos
+	case "checks_passed.repos":
+		kind = subPaneChecksPassedRepos
 	case "discovery.roots":
 		kind = subPaneDiscoveryRoots
 	case "security.trusted_associations":
@@ -725,29 +771,21 @@ func (a *App) handleSubPaneInputKey(msg tea.KeyPressMsg) tea.Cmd {
 		k := strings.TrimSpace(sp.keyInput.Value())
 		v := strings.TrimSpace(sp.valInput.Value())
 		if k != "" && v != "" {
-			switch sp.kind {
-			case subPaneRepos:
-				if err := a.saveMapEntry([]string{"repos"}, k, v, func(c *home.Config) {
-					if c.Repos == nil {
-						c.Repos = map[string]string{}
+			if spec, isMap := mapSubPaneFor(sp.kind); isMap {
+				// A fresh map rather than a write into the one the running
+				// configuration holds, the way setNotification does it.
+				if err := a.saveMapEntry(spec.path, k, v, func(c *home.Config) {
+					entries := maps.Clone(*spec.entries(c))
+					if entries == nil {
+						entries = map[string]string{}
 					}
-					c.Repos[k] = v
+					entries[k] = v
+					*spec.entries(c) = entries
 				}); err != nil {
-					a.settings.setNotice("could not save the repository path: "+err.Error(), true)
+					a.settings.setNotice("could not save the "+spec.noun+": "+err.Error(), true)
 					return nil
 				}
-				a.settings.setNotice(fmt.Sprintf("Saved repo path %s -> %s · saved", k, v), false)
-			case subPaneReviewRepos:
-				if err := a.saveMapEntry([]string{"review", "repos"}, k, v, func(c *home.Config) {
-					if c.Review.Repos == nil {
-						c.Review.Repos = map[string]string{}
-					}
-					c.Review.Repos[k] = v
-				}); err != nil {
-					a.settings.setNotice("could not save the review trigger: "+err.Error(), true)
-					return nil
-				}
-				a.settings.setNotice(fmt.Sprintf("Saved review trigger for %s · saved", k), false)
+				a.settings.setNotice(fmt.Sprintf("Saved %s for %s · saved", spec.noun, k), false)
 			}
 		}
 		sp.adding = false
@@ -768,19 +806,11 @@ func (a *App) handleSubPaneInputKey(msg tea.KeyPressMsg) tea.Cmd {
 // subPaneEntries returns list of entry labels for active subPane.
 func (a *App) subPaneEntries() []string {
 	sp := a.settings.subPane
-	switch sp.kind {
-	case subPaneRepos:
-		var res []string
-		keys := slices.Sorted(maps.Keys(a.homeCfg.Repos))
-		for _, k := range keys {
-			res = append(res, fmt.Sprintf("%s → %s", k, a.homeCfg.Repos[k]))
-		}
-		return res
-	case subPaneReviewRepos:
-		var res []string
-		keys := slices.Sorted(maps.Keys(a.homeCfg.Review.Repos))
-		for _, k := range keys {
-			res = append(res, fmt.Sprintf("%s → %s", k, a.homeCfg.Review.Repos[k]))
+	if spec, isMap := mapSubPaneFor(sp.kind); isMap {
+		entries := *spec.entries(&a.homeCfg)
+		res := make([]string, 0, len(entries))
+		for _, k := range slices.Sorted(maps.Keys(entries)) {
+			res = append(res, fmt.Sprintf("%s → %s", k, entries[k]))
 		}
 		return res
 	}
@@ -821,23 +851,16 @@ func (a *App) deleteSubPaneEntry(entry string) tea.Cmd {
 	if k, _, found := strings.Cut(entry, " → "); found {
 		key = k
 	}
-	switch sp.kind {
-	case subPaneRepos:
-		if err := a.deleteMapEntry([]string{"repos"}, key, func(c *home.Config) {
-			delete(c.Repos, key)
+	if spec, isMap := mapSubPaneFor(sp.kind); isMap {
+		if err := a.deleteMapEntry(spec.path, key, func(c *home.Config) {
+			entries := maps.Clone(*spec.entries(c))
+			delete(entries, key)
+			*spec.entries(c) = entries
 		}); err != nil {
-			a.settings.setNotice("could not remove the repository path: "+err.Error(), true)
+			a.settings.setNotice("could not remove the "+spec.noun+": "+err.Error(), true)
 			return nil
 		}
-		a.settings.setNotice(fmt.Sprintf("Deleted repository path %q · saved", key), false)
-	case subPaneReviewRepos:
-		if err := a.deleteMapEntry([]string{"review", "repos"}, key, func(c *home.Config) {
-			delete(c.Review.Repos, key)
-		}); err != nil {
-			a.settings.setNotice("could not remove the review trigger: "+err.Error(), true)
-			return nil
-		}
-		a.settings.setNotice(fmt.Sprintf("Deleted review trigger for %q · saved", key), false)
+		a.settings.setNotice(fmt.Sprintf("Deleted %s for %q · saved", spec.noun, key), false)
 	}
 	if spec, isList := listSubPaneFor(sp.kind); isList {
 		// Not a nil slice: ParseConfig reads "roots: []" back as an empty one,
@@ -1136,15 +1159,12 @@ func (a *App) templateBox(l settingsLayout) []string {
 	return a.closeBox(box, l, hints)
 }
 
-// subPaneBox renders the modal for collections (repos, review.repos, discovery.roots).
+// subPaneBox renders the modal for collections: the mapSubPanes and listSubPanes.
 func (a *App) subPaneBox(l settingsLayout) []string {
 	sp := &a.settings.subPane
 	title := "Manage Items"
-	switch sp.kind {
-	case subPaneRepos:
-		title = "Repositories: Explicit Paths"
-	case subPaneReviewRepos:
-		title = "Review: Repository Overrides"
+	if spec, isMap := mapSubPaneFor(sp.kind); isMap {
+		title = spec.title
 	}
 	if spec, isList := listSubPaneFor(sp.kind); isList {
 		title = spec.title

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -189,7 +190,7 @@ func TestSpaceTurnsSelfReviewOnAndSavesIt(t *testing.T) {
 	openSettingsPane(t, app)
 
 	send(t, app, press("tab"))
-	assert.Equal(t, 2, app.settings.cursor)
+	assert.Equal(t, settingIndex(t, "watch.self_review"), app.settings.cursor)
 	assert.Contains(t, plain(app.render()), "Treat every unresolved review comment")
 
 	send(t, app, press("space"))
@@ -373,10 +374,12 @@ func TestClickingASettingTogglesItAndClicksElsewhereDoNothing(t *testing.T) {
 	send(t, app, tea.MouseClickMsg{X: l.x + 4, Y: l.y + 2, Button: tea.MouseRight})
 	assert.False(t, app.homeCfg.Notifications.Enabled(home.NotifyApproved), "only the left button toggles")
 
-	send(t, app, click(l.x+4, l.y+4))
+	// The heading, then every notification row and the poll interval.
+	second := l.y + 2 + len(notifications) + 1
+	send(t, app, click(l.x+4, second))
 	assert.False(t, app.homeCfg.Watch.SelfReview, "a click on the second heading changes nothing")
 
-	send(t, app, click(l.x+4, l.y+5))
+	send(t, app, click(l.x+4, second+1))
 	assert.True(t, app.homeCfg.Watch.SelfReview, "a click on the self-review row toggles it")
 
 	send(t, app, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
@@ -463,9 +466,10 @@ func TestSettingsSteppingAndCycling(t *testing.T) {
 	// Cursor starts on notifications.approved (item 0)
 	assert.Equal(t, 0, app.settings.cursor)
 
-	// Move down to notifications.interval (item 1)
-	send(t, app, press("j"))
-	assert.Equal(t, 1, app.settings.cursor)
+	// Move down to notifications.interval, past the other notifications
+	for app.settings.cursor < settingIndex(t, "notifications.interval") {
+		send(t, app, press("j"))
+	}
 
 	// Step interval up with +
 	send(t, app, press("+"))
@@ -478,19 +482,19 @@ func TestSettingsSteppingAndCycling(t *testing.T) {
 
 	// Jump to next section with tab (WATCHING)
 	send(t, app, press("tab"))
-	assert.Equal(t, 2, app.settings.cursor) // watch.self_review
+	assert.Equal(t, settingIndex(t, "watch.self_review"), app.settings.cursor)
 
 	// Jump to next section with tab (POLL TIMING)
 	send(t, app, press("tab"))
-	assert.Equal(t, 7, app.settings.cursor) // watch.active_interval
+	assert.Equal(t, settingIndex(t, "watch.active_interval"), app.settings.cursor)
 
 	// Jump to next section with tab (PR COMMENTS)
 	send(t, app, press("tab"))
-	assert.Equal(t, 15, app.settings.cursor) // review.comment
+	assert.Equal(t, settingIndex(t, "review.comment"), app.settings.cursor)
 
 	// Jump to next section with tab (CODING AGENT)
 	send(t, app, press("tab"))
-	assert.Equal(t, 17, app.settings.cursor) // herdr.fallback
+	assert.Equal(t, settingIndex(t, "herdr.fallback"), app.settings.cursor)
 
 	// Cycle fallback strategy
 	assert.Equal(t, home.FallbackNew, app.homeCfg.Herdr.Fallback)
@@ -510,11 +514,11 @@ func TestSettingsInlineTextEditing(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	openSettingsPane(t, app)
 
-	// Jump to review.comment (item 15)
+	// Jump to review.comment, three sections down
 	send(t, app, press("tab"))
 	send(t, app, press("tab"))
 	send(t, app, press("tab"))
-	assert.Equal(t, 15, app.settings.cursor)
+	assert.Equal(t, settingIndex(t, "review.comment"), app.settings.cursor)
 
 	// Press enter to edit
 	send(t, app, press("enter"))
@@ -958,4 +962,13 @@ func TestASavedSettingIsHandedToTheDispatcher(t *testing.T) {
 	require.NotEmpty(t, configs, "the save is handed over")
 	assert.False(t, configs[len(configs)-1].Security.RequireSandbox)
 	assert.False(t, app.homeCfg.Security.RequireSandbox, "and matches what the pane is showing")
+}
+
+// settingIndex is where the setting with id sits in the pane, so that a test
+// moving the cursor does not break each time a setting is added above it.
+func settingIndex(t *testing.T, id string) int {
+	t.Helper()
+	i := slices.IndexFunc(allSettings(), func(d settingDescriptor) bool { return d.id == id })
+	require.GreaterOrEqual(t, i, 0, "no setting %q", id)
+	return i
 }

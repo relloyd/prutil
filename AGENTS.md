@@ -543,6 +543,30 @@ first reading of a pull request is a baseline and never announced. Readings are
 recorded even while every notification is off, so turning one on does not
 announce old news.
 
+## The checks passed comment
+
+`P` arms `checks_passed.comment` on a watched pull request
+(`internal/ui/passcomment.go`): prutil posts it itself, through
+`Client.AddComment` as `R` does, each time every check on a new head commit
+passes. It reads the rollup `applyWatch` already has, so it costs nothing until
+it posts.
+
+- **Once per head commit, recorded only when it was posted.**
+  `PRState.LastPassCommentHead` is what stops a poll that finds the same commit
+  still green from posting again. A failed post is not recorded, so the next
+  green poll tries again.
+- **It belongs to the watch.** `PRState.disarm` clears it with everything else
+  a watch remembers, so `w`, `disarmFinished`, `stopForOtherAgent` and
+  `Release` all take it off. Watching again does not bring it back.
+- **It obeys the trust gate like any automatic path.** Unread threads are read
+  first and a held pull request gets nothing, because a deployment runs the pull
+  request's code. `postOnPassAfterReview` is what posts once the read lands, so
+  `Update` runs it after `applyReview`, never before.
+- **Arming on checks already green asks first** (`confirmPostOnPass`), because
+  it posts at the next poll.
+- **A dry run records rather than posts.** `R` is a key press and ignores dry
+  run; this is automatic, which is what dry run is for.
+
 ## The application directory
 
 `home.Load` degrades and cannot fail. A configuration that will not parse
@@ -591,9 +615,13 @@ To add a new setting:
    `internal/home/settings_store.go` and `internal/home/yamledit.go`.
 
 Write a descriptor out in full only when its behaviour really is its own, and say
-why in a comment. Two are: `notifications.approved`, which applies for the session
-and says so when a save fails rather than refusing, and `herdr.fallback`, the only
-enum, which has nothing to share a constructor with.
+why in a comment. Two are: `notificationSetting`, one row per entry in
+`notifications`, which applies for the session and says so when a save fails
+rather than refusing, and `herdr.fallback`, the only enum, which has nothing to
+share a constructor with.
+
+A map the pane manages is a `mapSubPane` entry and a list is a `listSubPane`
+entry, in `internal/ui/settings.go`; neither needs a new arm in a switch.
 
 Save through the `App` helpers (`saveSetting`, `resetSetting` and the rest), never
 `a.store` directly. They write the file first and move `a.homeCfg` only once that

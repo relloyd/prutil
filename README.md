@@ -25,10 +25,14 @@ watch, and when you press a key.
   your own, ones you adopted, and `security.trusted_authors`.
 - Anything written by somebody outside your trust boundary, or hidden in a
   comment, holds the pull request: nothing is sent until you say so.
+- Once every check on a new head commit has passed, the checks passed comment
+  is posted, such as `/deploy staging`, if you armed it on that pull request
+  with `P`.
 - It stops watching a pull request once it sees it merged or closed.
 
 And, if you switch them on: new pull requests you open are watched without
-pressing `w`, and your desktop tells you when a pull request is approved.
+pressing `w`, and your desktop tells you when a pull request is approved or its
+checks pass.
 
 **When you press a key**, on the selected pull request:
 
@@ -37,10 +41,11 @@ pressing `w`, and your desktop tells you when a pull request is approved.
   `N` only the feedback it has not sent before.
 - `R` posts a comment, `/gemini review` by default, to ask a review bot for a
   review. prutil never posts it on its own.
+- `P` arms or disarms the checks passed comment on a watched pull request.
 - `+` adopts somebody else's pull request so the rest of this works on it too.
 
-prutil itself posts nothing to GitHub except the `R` comment. Replies,
-commits and re-run checks come from the agent.
+prutil itself posts nothing to GitHub except the `R` and `P` comments.
+Replies, commits and re-run checks come from the agent.
 
 | Feature | Trigger | Switched by | Default |
 | --- | --- | --- | --- |
@@ -54,7 +59,9 @@ commits and re-run checks come from the agent.
 | [Hold work from untrusted commenters](#configuration) | every send; a second press of `W` or `F` sends once anyway | `security.trusted_associations`, `security.trusted_authors` | on |
 | [Require a sandboxed agent](#sandboxed-agents) | every automatic send | `security.require_sandbox` | on |
 | Post an AI review comment | `R`, pressed twice | `review.comment`, `review.repos` | `/gemini review` |
+| [Post a comment when checks pass](#posting-a-comment-when-checks-pass) | on its own once armed with `P`, once per head commit | `checks_passed.comment`, `checks_passed.repos` | off, no comment |
 | [Desktop notification on approval](#desktop-notifications) | on its own, every 2 minutes | `notifications.events.approved`, `notifications.interval` | on |
+| Desktop notification when checks pass | on its own, every 2 minutes | `notifications.events.checks_passed` | off |
 | [Adopt somebody else's pull request](#adopting-somebody-elses-pull-request) | `+` to adopt, `-` to release | per pull request | none |
 | [Auto-refresh](#auto-refresh) | `a` | per press | off |
 | Record sends without making them | `-dry-run` | `herdr.dry_run` | off |
@@ -170,6 +177,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `W` | send the selected pull request's open review feedback to a coding agent now, creating one when needed; on a failed check, send the failed checks |
 | `F` | send the selected pull request's failed checks to a coding agent now, without waiting for running checks |
 | `R` | post the configured AI review comment, such as `/gemini review`, on the selected open pull request. press twice to confirm |
+| `P` | on a watched pull request, post the configured checks passed comment, such as `/deploy staging`, each time its checks pass on a new commit. press again to stop |
 | `N` | read the selected open pull request's review threads now and send only the feedback not sent before |
 | `tab` | switch between your open and your recently closed pull requests |
 | `+` | adopt a pull request somebody else opened: pick a recent repository and one of its pull requests, or paste a URL. it joins your open list and its author is trusted on it |
@@ -198,13 +206,14 @@ is installed first. If none is, prutil says which ones it looked for.
 
 prutil can tell you when one of your open pull requests changes, with a
 notification from your operating system, so you can leave it running in a
-terminal you are not looking at. It raises one today:
+terminal you are not looking at. It raises two today:
 
 | Notification | When |
 | --- | --- |
 | Pull request approved | GitHub's review decision turns to approved, or, in a repository without review rules, the pull request gets its first approval |
+| Checks passed | every check on the head commit has passed, after prutil saw them running or failing, or on a commit it had not seen. Off by default |
 
-It is on by default. Press `s` (or `,`) to open the settings pane, where you can
+Approval is on by default. Press `s` (or `,`) to open the settings pane, where you can
 view and edit all prutil configuration options. In the pane:
 - `space` toggles boolean settings on or off.
 - `+` / `-` steps poll intervals and durations.
@@ -382,6 +391,39 @@ pull request with failing checks can start an agent and a stack of pull
 requests opened at once should not be a burst of them. Each one is named on the
 status line and in its watch activity.
 
+### Posting a comment when checks pass
+
+`P` arms a watched pull request to have a comment posted on it each time every
+check on its head commit passes. The comment is whatever your tooling answers:
+`/deploy staging` for a deployment bot, say, so a pull request reaches a dev or
+staging environment as soon as CI is green without anybody going back to it.
+prutil posts the comment itself, through gh, as `R` does; no agent is involved.
+
+Set the comment first, as **Checks passed comment** under `PR COMMENTS` in `s`
+(`checks_passed.comment`). **Checks passed comment per repository**
+(`checks_passed.repos`) gives one repository its own, or `""` to switch it off
+there. With no comment configured, `P` says so rather than arming anything.
+
+- It is posted once per head commit. Push again and it is posted again once the
+  new commit's checks pass; a poll that finds the same commit still green posts
+  nothing.
+- It stays armed, across restarts, until you press `P` again or stop watching
+  the pull request. Stopping the watch, by `w` or any of the ways prutil stops
+  one on its own, disarms it too.
+- Pressing `P` when the checks have already passed on the current commit asks
+  for a second press, because it would post at once.
+- It is never posted while the pull request is held. A deployment runs the
+  pull request's code, so the same trust boundary that keeps feedback from an
+  agent keeps this comment back too, and prutil waits until it has read the
+  review threads before posting. Once the hold clears it is posted at the next
+  poll.
+- `-dry-run` and `herdr.dry_run` record what would have been posted, in the
+  WATCH activity, without posting it.
+
+It costs nothing to wait for: the watcher already reads each watched pull
+request's check rollup. The WATCH section shows `when checks pass: post …`
+while it is armed, and which commit it was last posted for.
+
 ### Your own review comments as feedback
 
 `watch.self_review` turns every unresolved review comment you wrote into
@@ -545,10 +587,15 @@ review:
   comment: "/gemini review"  # comment posted by R to trigger an AI review; "" turns it off
   repos:
     acme/widgets: "@coderabbitai review"  # optional per-repository override
+checks_passed:
+  comment: ""                # posted by a pull request armed with P once its checks pass; "" is off
+  repos:
+    acme/widgets: "/deploy staging"  # optional per-repository override
 notifications:
   interval: 2m              # how often every open pull request is read while one is on
   events:
     approved: true          # a pull request is approved; s in prutil toggles it
+    checks_passed: false    # every check on a pull request's head commit passed
 repos:
   acme/widgets: ~/src/widgets  # optional explicit checkout for W
 discovery:

@@ -27,6 +27,7 @@ type keyMap struct {
 	Handoff       key.Binding
 	CheckHandoff  key.Binding
 	TriggerReview key.Binding
+	PostOnPass    key.Binding
 	Notify        key.Binding
 	NextTab       key.Binding
 	Adopt         key.Binding
@@ -94,6 +95,10 @@ func defaultKeys() keyMap {
 		TriggerReview: key.NewBinding(
 			key.WithKeys("R"),
 			key.WithHelp("R", "post AI review comment"),
+		),
+		PostOnPass: key.NewBinding(
+			key.WithKeys("P"),
+			key.WithHelp("P", "post when checks pass"),
 		),
 		Notify: key.NewBinding(
 			key.WithKeys("N"),
@@ -243,6 +248,8 @@ func (k keyMap) helpSections(mouse bool) []helpSection {
 				detail: "Send the selected pull request's failed checks to a coding agent now, without waiting for running checks. With no agent on it, herdr.fallback decides whether one is created."},
 			{binding: k.TriggerReview, title: "post AI review comment",
 				detail: "Post the configured AI review comment, such as /gemini review, on the selected open pull request. prutil posts it itself; no agent is involved. Press twice to confirm."},
+			{binding: k.PostOnPass, title: "post when checks pass",
+				detail: "On a watched pull request, post the configured checks passed comment, such as /deploy staging, each time every check on a new head commit passes. Press again to stop. Never posted while the pull request is held."},
 			{binding: k.Notify, title: "send new feedback only",
 				detail: "Read the selected open pull request's review threads now and send only the feedback not sent before, as the watcher would. With no agent on it, herdr.fallback decides whether one is created."},
 		}},

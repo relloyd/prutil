@@ -22,11 +22,20 @@ const maxToasts = 3
 // request. A new notification adds the fact it needs here.
 type prFacts struct {
 	approved bool
+	// passed is every check on head having passed. head is kept with it so
+	// that a push whose checks pass between two readings, and so is never
+	// seen pending, is still news.
+	passed bool
+	head   string
 }
 
-func factsOfPR(pr model.PullRequest) prFacts { return prFacts{approved: pr.Approved()} }
+func factsOfPR(pr model.PullRequest) prFacts {
+	return prFacts{approved: pr.Approved(), passed: pr.Rollup == model.StatusSuccess, head: pr.HeadOID}
+}
 
-func factsOfSnapshot(s model.Snapshot) prFacts { return prFacts{approved: s.Approved()} }
+func factsOfSnapshot(s model.Snapshot) prFacts {
+	return prFacts{approved: s.Approved(), passed: s.Rollup == model.StatusSuccess, head: s.HeadOID}
+}
 
 // notification is one kind of change the reader can be told about: how the
 // settings pane names it, how the notification says it, and how to recognise
@@ -49,6 +58,16 @@ var notifications = []notification{
 			"in a repository without review rules, it gets its first approval.",
 		headline: "approved",
 		fired:    func(before, after prFacts) bool { return !before.approved && after.approved },
+	},
+	{
+		event:   home.NotifyChecksPassed,
+		setting: "Checks passed",
+		detail: "When every check on one of your open pull requests passes: once per pushed commit, " +
+			"after the checks were seen running or failing, or on a new commit.",
+		headline: "checks passed",
+		fired: func(before, after prFacts) bool {
+			return after.passed && (!before.passed || before.head != after.head)
+		},
 	},
 }
 
