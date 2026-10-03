@@ -82,6 +82,9 @@ type Config struct {
 	Herdr  HerdrConfig  `yaml:"herdr"`
 	Watch  WatchConfig  `yaml:"watch"`
 	Review ReviewConfig `yaml:"review"`
+	// ChecksPassed is the comment posted on a watched pull request, armed for
+	// it with P, once its checks pass.
+	ChecksPassed ChecksPassedConfig `yaml:"checks_passed"`
 	// Notifications turns the desktop notifications prutil raises on and off.
 	// The settings pane writes it back, one value at a time.
 	Notifications NotificationConfig `yaml:"notifications"`
@@ -125,6 +128,27 @@ func (r ReviewConfig) CommentFor(repo string) string {
 		return strings.TrimSpace(*r.Comment)
 	}
 	return DefaultReviewComment
+}
+
+// ChecksPassedConfig governs the comment prutil posts on a pull request armed
+// with P once every check on its head commit has passed, such as a command a
+// deployment bot answers. It is off until a comment is configured.
+type ChecksPassedConfig struct {
+	// Comment is the text posted. Empty, the default, turns it off.
+	Comment string `yaml:"comment"`
+	// Repos maps a repository in owner/name form to a repository-specific
+	// comment, or "" to turn it off for that repository.
+	Repos map[string]string `yaml:"repos"`
+}
+
+// CommentFor returns the comment configured for the given repository
+// ("owner/name"), falling back to the global one. It returns "" when nothing
+// is to be posted there.
+func (c ChecksPassedConfig) CommentFor(repo string) string {
+	if val, ok := c.Repos[repo]; ok {
+		return strings.TrimSpace(val)
+	}
+	return strings.TrimSpace(c.Comment)
 }
 
 // SecurityConfig is the trust boundary between whoever can comment on a pull
@@ -303,6 +327,9 @@ func DefaultConfig() Config {
 			Comment: defaultReviewComment(),
 			Repos:   map[string]string{},
 		},
+		ChecksPassed: ChecksPassedConfig{
+			Repos: map[string]string{},
+		},
 		Notifications: defaultNotifications(),
 		Repos:         map[string]string{},
 		Discovery: DiscoveryConfig{
@@ -374,6 +401,9 @@ func (c *Config) clamp() {
 	}
 	if c.Review.Repos == nil {
 		c.Review.Repos = map[string]string{}
+	}
+	if c.ChecksPassed.Repos == nil {
+		c.ChecksPassed.Repos = map[string]string{}
 	}
 	if c.Notifications.Events == nil {
 		c.Notifications.Events = map[NotificationEvent]bool{}
@@ -562,6 +592,7 @@ func (c Config) Clone() Config {
 	out.Repos = maps.Clone(c.Repos)
 	out.Review.Repos = maps.Clone(c.Review.Repos)
 	out.Review.Comment = clonePointer(c.Review.Comment)
+	out.ChecksPassed.Repos = maps.Clone(c.ChecksPassed.Repos)
 	out.Notifications.Events = maps.Clone(c.Notifications.Events)
 	out.Discovery.Roots = slices.Clone(c.Discovery.Roots)
 	out.Security.TrustedAssociations = slices.Clone(c.Security.TrustedAssociations)

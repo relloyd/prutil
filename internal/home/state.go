@@ -118,6 +118,15 @@ type PRState struct {
 	// reader has seen and chose to watch the pull request regardless of. A
 	// reply in here does not stop the watch again; a new one does.
 	AcceptedAgentReplies []string `json:"accepted_agent_replies,omitempty"`
+	// PostOnPass is the reader's decision that the checks_passed comment is
+	// posted on this pull request each time its checks pass. It answers only
+	// while the pull request is armed, and disarming clears it: the watcher's
+	// reading of the check rollup is what it acts on.
+	PostOnPass bool `json:"post_on_pass,omitempty"`
+	// LastPassCommentHead is the head commit the comment was last posted for,
+	// so that it is posted once per commit rather than on every poll that
+	// finds the checks still green.
+	LastPassCommentHead string `json:"last_pass_comment_head,omitempty"`
 }
 
 // Adoption is the reader's decision to work on a pull request somebody else
@@ -175,8 +184,7 @@ func (s *State) SetArmed(key string, armed bool) bool {
 	entry := s.Mutate(key)
 	entry.Armed = armed
 	if !armed {
-		entry.LastCheckHandoffHead = ""
-		entry.AcceptedAgentReplies = nil
+		entry.disarm()
 	}
 	return armed
 }
@@ -187,10 +195,53 @@ func (s *State) ToggleArmed(key string) bool {
 	entry := s.Mutate(key)
 	entry.Armed = !entry.Armed
 	if !entry.Armed {
-		entry.LastCheckHandoffHead = ""
-		entry.AcceptedAgentReplies = nil
+		entry.disarm()
 	}
 	return entry.Armed
+}
+
+// disarm forgets what only made sense while the pull request was watched.
+func (e *PRState) disarm() {
+	e.LastCheckHandoffHead = ""
+	e.AcceptedAgentReplies = nil
+	e.PostOnPass, e.LastPassCommentHead = false, ""
+}
+
+// TogglePostOnPass flips whether the checks_passed comment is posted on an
+// armed pull request and reports the new setting. A pull request that is not
+// armed cannot have it, so it reports false and changes nothing.
+func (s *State) TogglePostOnPass(key string) bool {
+	if !s.Armed(key) {
+		return false
+	}
+	entry := s.Mutate(key)
+	entry.PostOnPass = !entry.PostOnPass
+	entry.LastPassCommentHead = ""
+	return entry.PostOnPass
+}
+
+// PostOnPass reports whether the checks_passed comment is due on a pull
+// request whenever its checks pass.
+func (s *State) PostOnPass(key string) bool {
+	got := s.Get(key)
+	return got.Armed && got.PostOnPass
+}
+
+// PostOnPassCount is how many watched pull requests have the checks passed
+// comment armed.
+func (s *State) PostOnPassCount() int {
+	n := 0
+	for _, key := range s.ArmedKeys() {
+		if s.PRs[key].PostOnPass {
+			n++
+		}
+	}
+	return n
+}
+
+// RecordPassComment marks the checks_passed comment as posted for head.
+func (s *State) RecordPassComment(key, head string) {
+	s.Mutate(key).LastPassCommentHead = head
 }
 
 // ArmedKeys lists every armed pull request, in GitHub's own order so that the
@@ -245,7 +296,8 @@ func (s *State) Release(key string) bool {
 	entry.Adopted = nil
 	entry.AcceptedAgentReplies = nil
 	entry.NotifiedThreads, entry.LastHandoff = nil, time.Time{}
-	entry.Armed, entry.LastCheckHandoffHead = false, ""
+	entry.Armed = false
+	entry.disarm()
 	return true
 }
 

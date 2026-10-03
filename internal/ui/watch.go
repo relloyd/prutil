@@ -425,6 +425,7 @@ func (a *App) applyWatch(msg watchSnapshotMsg) tea.Cmd {
 		if snap.Rollup == model.StatusFailure && a.armed(snap.Key) && !entry.handing {
 			cmds = append(cmds, a.loadChecksForHandoff(a.gen, snap.Key, snap.HeadOID, false, false))
 		}
+		cmds = append(cmds, a.postOnPass(snap.Key, snap.HeadOID, snap.Rollup))
 	}
 	return tea.Batch(cmds...)
 }
@@ -1207,7 +1208,7 @@ func (a *App) watchNote() string {
 	if idle := armed - polling; idle > 0 {
 		note += fmt.Sprintf(" %s %d", dormantGlyph, idle)
 	}
-	note += " watched"
+	note += " watched" + a.passNote()
 	if next, ok := a.engine.NextDue(); ok {
 		note += " · next poll " + model.HumanDuration(max(next.Sub(a.now()), time.Second))
 	}

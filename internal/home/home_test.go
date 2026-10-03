@@ -560,3 +560,55 @@ func TestStartingAutoWatchAgainForgetsTheLastRun(t *testing.T) {
 
 	assert.False(t, state.AutoWatch.Seen("acme/widgets#12"))
 }
+
+func TestPostOnPassAnswersOnlyWhileThePullRequestIsWatched(t *testing.T) {
+	state := home.NewState()
+	assert.False(t, state.TogglePostOnPass("a/b#1"), "an unwatched pull request cannot have it")
+	assert.False(t, state.Get("a/b#1").PostOnPass)
+
+	state.SetArmed("a/b#1", true)
+	require.True(t, state.TogglePostOnPass("a/b#1"))
+	state.RecordPassComment("a/b#1", "abc")
+	state.Compact()
+	assert.True(t, state.PostOnPass("a/b#1"), "it survives compaction while armed")
+
+	state.SetArmed("a/b#1", false)
+	assert.False(t, state.PostOnPass("a/b#1"), "stopping the watch disarms it")
+	assert.Empty(t, state.Get("a/b#1").LastPassCommentHead)
+
+	state.SetArmed("a/b#1", true)
+	assert.False(t, state.PostOnPass("a/b#1"), "watching again does not bring it back")
+}
+
+func TestReleasingAnAdoptionDisarmsPostOnPass(t *testing.T) {
+	state := home.NewState()
+	state.Adopt("acme/widgets#12", home.Adoption{NodeID: "PR_A12", Author: "alice"})
+	state.SetArmed("acme/widgets#12", true)
+	state.TogglePostOnPass("acme/widgets#12")
+	state.RecordPassComment("acme/widgets#12", "abc")
+
+	state.Release("acme/widgets#12")
+
+	got := state.Get("acme/widgets#12")
+	assert.False(t, got.PostOnPass)
+	assert.Empty(t, got.LastPassCommentHead)
+}
+
+func TestTheChecksPassedCommentFallsBackToTheGlobalOne(t *testing.T) {
+	tests := []struct {
+		name   string
+		config home.ChecksPassedConfig
+		repo   string
+		want   string
+	}{
+		{name: "nothing configured posts nothing", config: home.ChecksPassedConfig{}, repo: "a/b", want: ""},
+		{name: "the global comment answers for any repository", config: home.ChecksPassedConfig{Comment: " /deploy staging "}, repo: "a/b", want: "/deploy staging"},
+		{name: "a repository override wins over the global one", config: home.ChecksPassedConfig{Comment: "/deploy staging", Repos: map[string]string{"a/b": "/deploy dev"}}, repo: "a/b", want: "/deploy dev"},
+		{name: "an empty override switches it off for that repository", config: home.ChecksPassedConfig{Comment: "/deploy staging", Repos: map[string]string{"a/b": ""}}, repo: "a/b", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.config.CommentFor(tc.repo))
+		})
+	}
+}

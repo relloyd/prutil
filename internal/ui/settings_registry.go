@@ -341,59 +341,14 @@ func collectionSetting(m settingMeta, kind settingKind, count func(a *App) int, 
 // allSettings returns the complete registry of settings displayed in the pane,
 // grouped by their section headers.
 func allSettings() []settingDescriptor {
-	return []settingDescriptor{
+	rows := make([]settingDescriptor, 0, len(notifications))
+	for _, kind := range notifications {
+		rows = append(rows, notificationSetting(kind))
+	}
+	return append(rows, []settingDescriptor{
 		// ---------------------------------------------------------------------
-		// DESKTOP NOTIFICATIONS
+		// DESKTOP NOTIFICATIONS, after the rows above
 		// ---------------------------------------------------------------------
-		{
-			id:          "notifications.approved",
-			section:     "DESKTOP NOTIFICATIONS",
-			title:       "Pull request approved",
-			detail:      "When one of your open pull requests is approved: its review decision turns to approved or, in a repository without review rules, it gets its first approval.",
-			defaultText: "on",
-			kind:        settingKindBool,
-			path:        []string{"notifications", "events", "approved"},
-			getDisplay: func(a *App) string {
-				if a.homeCfg.Notifications.Enabled(home.NotifyApproved) {
-					return "on"
-				}
-				return "off"
-			},
-			getRaw: func(a *App) string {
-				return strconv.FormatBool(a.homeCfg.Notifications.Enabled(home.NotifyApproved))
-			},
-			isEnabled: func(a *App) bool {
-				return a.homeCfg.Notifications.Enabled(home.NotifyApproved)
-			},
-			isDefault: func(a *App) bool {
-				return a.homeCfg.Notifications.Enabled(home.NotifyApproved) == defCfg.Notifications.Enabled(home.NotifyApproved)
-			},
-			toggle: func(a *App) tea.Cmd {
-				on := !a.homeCfg.Notifications.Enabled(home.NotifyApproved)
-				a.homeCfg.Notifications.Set(home.NotifyApproved, on)
-				state := "off"
-				if on {
-					state = "on"
-				}
-				if a.store != nil {
-					if err := a.store.SetNotification(home.NotifyApproved, on); err != nil {
-						a.settings.setNotice(fmt.Sprintf("Pull request approved is %s until prutil quits, but was not saved: %s", state, err), true)
-					} else if on && a.settings.unavailable != "" {
-						a.settings.setNotice(fmt.Sprintf("Pull request approved is on and saved, but nothing will appear: %s", a.settings.unavailable), true)
-					} else {
-						a.settings.setNotice(fmt.Sprintf("Pull request approved is %s · saved", state), false)
-					}
-				} else if a.storeErr != nil {
-					a.settings.setNotice(fmt.Sprintf("Pull request approved is %s until prutil quits, but was not saved: %s", state, a.storeErr), true)
-				} else {
-					a.settings.setNotice(fmt.Sprintf("Pull request approved is %s", state), false)
-				}
-				return a.scheduleNotifications()
-			},
-			reset: func(a *App) error {
-				return a.setNotification(home.NotifyApproved, defCfg.Notifications.Enabled(home.NotifyApproved))
-			},
-		},
 		durationSetting(settingMeta{
 			id:      "notifications.interval",
 			section: "DESKTOP NOTIFICATIONS",
@@ -596,6 +551,27 @@ func allSettings() []settingDescriptor {
 			def:     "0 overrides",
 			path:    []string{"review", "repos"},
 		}, settingKindMap, func(a *App) int { return len(a.homeCfg.Review.Repos) }, "override", "overrides"),
+		stringSetting(settingMeta{
+			id:      "checks_passed.comment",
+			section: "PR COMMENTS",
+			title:   "Checks passed comment",
+			detail: "Comment posted on a watched pull request you armed with P, once every check on its head commit has passed, " +
+				"such as /deploy staging. Posted once per commit, never while the pull request is held. Empty to disable.",
+			def:   "(disabled)",
+			path:  []string{"checks_passed", "comment"},
+			label: "Checks passed comment",
+		}, field[string]{
+			get: func(c *home.Config) string { return c.ChecksPassed.Comment },
+			set: func(c *home.Config, v string) { c.ChecksPassed.Comment = v },
+		}, "(disabled)", "Checks passed comment disabled"),
+		collectionSetting(settingMeta{
+			id:      "checks_passed.repos",
+			section: "PR COMMENTS",
+			title:   "Checks passed comment per repository",
+			detail:  "Checks passed comment for one repository in place of the one above (e.g. owner/repo -> /deploy dev). Press enter to manage.",
+			def:     "0 overrides",
+			path:    []string{"checks_passed", "repos"},
+		}, settingKindMap, func(a *App) int { return len(a.homeCfg.ChecksPassed.Repos) }, "override", "overrides"),
 
 		// ---------------------------------------------------------------------
 		// CODING AGENT (HERDR)
@@ -779,6 +755,52 @@ func allSettings() []settingDescriptor {
 			path: []string{"security", "trusted_authors"},
 		}, func(a *App) []string { return a.homeCfg.Security.TrustedAuthors },
 			home.DefaultConfig().Security.TrustedAuthors, "author", "authors"),
+	}...)
+}
+
+// notificationSetting is the row for one desktop notification, written out in
+// full rather than as a boolSetting because it behaves differently: a change
+// applies for the session even when the save fails, and says so, and turning
+// one on where nothing can show it says that too.
+func notificationSetting(kind notification) settingDescriptor {
+	enabled := func(a *App) bool { return a.homeCfg.Notifications.Enabled(kind.event) }
+	return settingDescriptor{
+		id:          "notifications." + string(kind.event),
+		section:     "DESKTOP NOTIFICATIONS",
+		title:       kind.setting,
+		detail:      kind.detail,
+		defaultText: onOff(defCfg.Notifications.Enabled(kind.event)),
+		kind:        settingKindBool,
+		path:        []string{"notifications", "events", string(kind.event)},
+		getDisplay:  func(a *App) string { return onOff(enabled(a)) },
+		getRaw:      func(a *App) string { return strconv.FormatBool(enabled(a)) },
+		isEnabled:   enabled,
+		isDefault: func(a *App) bool {
+			return enabled(a) == defCfg.Notifications.Enabled(kind.event)
+		},
+		toggle: func(a *App) tea.Cmd {
+			on := !enabled(a)
+			a.homeCfg.Notifications.Set(kind.event, on)
+			state := onOff(on)
+			switch {
+			case a.store != nil:
+				if err := a.store.SetNotification(kind.event, on); err != nil {
+					a.settings.setNotice(fmt.Sprintf("%s is %s until prutil quits, but was not saved: %s", kind.setting, state, err), true)
+				} else if on && a.settings.unavailable != "" {
+					a.settings.setNotice(fmt.Sprintf("%s is on and saved, but nothing will appear: %s", kind.setting, a.settings.unavailable), true)
+				} else {
+					a.settings.setNotice(fmt.Sprintf("%s is %s · saved", kind.setting, state), false)
+				}
+			case a.storeErr != nil:
+				a.settings.setNotice(fmt.Sprintf("%s is %s until prutil quits, but was not saved: %s", kind.setting, state, a.storeErr), true)
+			default:
+				a.settings.setNotice(fmt.Sprintf("%s is %s", kind.setting, state), false)
+			}
+			return a.scheduleNotifications()
+		},
+		reset: func(a *App) error {
+			return a.setNotification(kind.event, defCfg.Notifications.Enabled(kind.event))
+		},
 	}
 }
 

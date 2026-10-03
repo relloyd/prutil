@@ -227,6 +227,9 @@ type App struct {
 	width  int
 	height int
 	status string
+	// statusSeq numbers the status messages, so that only the latest one's
+	// timer clears the line.
+	statusSeq int
 	// overlay is the ? shortcut list, drawn over everything else while open.
 	overlay helpOverlay
 	// settings is the s pane, drawn over everything else while open.
@@ -320,6 +323,11 @@ type prRuntime struct {
 	handing          bool
 	reviewing        bool
 	requestingReview bool
+	// postingPass is the checks passed comment on its way, and passNote the
+	// last reason it was not posted, so that a reason is recorded once rather
+	// than on every poll that finds it still standing.
+	postingPass bool
+	passNote    string
 	// operation says what that work is, in words, for the detail pane, and
 	// operationAt when it began, for how long it has been going.
 	operation   string
@@ -384,6 +392,9 @@ const (
 	// confirmWatch arms a pull request somebody else is also working on: one
 	// the reader adopted, or one another agent is replying on.
 	confirmWatch confirmable = "watch"
+	// confirmPostOnPass arms the checks passed comment on a pull request whose
+	// checks have already passed, which posts it at the next poll.
+	confirmPostOnPass confirmable = "post on pass"
 )
 
 // pendingConfirm is a question prutil has asked on the status line and is
@@ -439,7 +450,7 @@ func (a *App) mutate(key model.Key) *prRuntime {
 // anyInFlight reports whether any pull request has watcher work outstanding.
 func (a *App) anyInFlight() bool {
 	for _, got := range a.runtime {
-		if got.handing || got.reviewing || got.requestingReview {
+		if got.handing || got.reviewing || got.requestingReview || got.postingPass {
 			return true
 		}
 	}
@@ -708,7 +719,13 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.applyWatch(msg)
 
 	case watchReviewMsg:
-		return a, a.applyReview(msg)
+		// applyReview first: it is what learns whether the pull request is
+		// held, which the checks passed comment may be waiting to know.
+		review := a.applyReview(msg)
+		return a, tea.Batch(review, a.postOnPassAfterReview(msg))
+
+	case passCommentMsg:
+		return a, a.applyPassComment(msg)
 
 	case watchErrMsg:
 		a.engine.Defer(msg.keys, a.watchRetry(), a.now())
@@ -779,11 +796,17 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case statusMsg:
+		// Each message's timer names the message it was set for, so that an
+		// older one expiring cannot clear a newer one before its time.
 		a.status = string(msg)
-		return a, tea.Tick(statusLifetime, func(time.Time) tea.Msg { return clearStatusMsg{} })
+		a.statusSeq++
+		seq := a.statusSeq
+		return a, tea.Tick(statusLifetime, func(time.Time) tea.Msg { return clearStatusMsg{seq: seq} })
 
 	case clearStatusMsg:
-		a.status = ""
+		if msg.seq == a.statusSeq {
+			a.status = ""
+		}
 		return a, nil
 	}
 
@@ -823,6 +846,9 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.TriggerReview):
 		return a, a.triggerAIReview()
+
+	case key.Matches(msg, a.keys.PostOnPass):
+		return a, a.togglePostOnPass()
 
 	case key.Matches(msg, a.keys.Notify):
 		return a, a.notifyNewFeedback()
@@ -1463,7 +1489,7 @@ func (a *App) onlyHandoffOutstanding() bool {
 	}
 	handing := false
 	for _, got := range a.runtime {
-		if got.reviewing || got.requestingReview {
+		if got.reviewing || got.requestingReview || got.postingPass {
 			return false
 		}
 		handing = handing || got.handing
@@ -1702,6 +1728,7 @@ type (
 	autoRefreshMsg struct {
 		seq int
 	}
-	statusMsg      string
-	clearStatusMsg struct{}
+	statusMsg string
+	// clearStatusMsg ends the status message seq names, and no other.
+	clearStatusMsg struct{ seq int }
 )

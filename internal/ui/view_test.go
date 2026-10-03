@@ -471,7 +471,7 @@ func TestWhatCouldNotBeReadAtStartupStaysInTheFooter(t *testing.T) {
 	assert.Contains(t, plain(app.render()), "refreshing…")
 	assert.NotContains(t, plain(app.render()), "config: base_interval")
 
-	send(t, app, clearStatusMsg{})
+	send(t, app, clearStatusMsg{seq: app.statusSeq})
 	assert.Contains(t, plain(app.render()), "config: base_interval is not a duration")
 }
 

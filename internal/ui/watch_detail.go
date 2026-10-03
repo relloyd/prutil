@@ -38,6 +38,12 @@ type watchFacts struct {
 	// because it answers the question a reader watching nothing happen is
 	// actually asking.
 	hold model.Hold
+	// onPass is whether P has armed the checks passed comment, comment what it
+	// posts, and posted the head it was last posted for.
+	onPass  bool
+	comment string
+	posted  string
+	head    string
 	// events are this session's watcher activity, oldest first, as recorded.
 	events  []watchActivity
 	history handoffHistoryState
@@ -50,7 +56,12 @@ func (a *App) watchFactsOf(pr model.PullRequest) watchFacts {
 	key := pr.Key()
 	status, scheduled := a.engine.Status(key)
 	got := a.runtimeOf(key)
+	saved := a.state.Get(key.String())
 	return watchFacts{
+		onPass:      saved.Armed && saved.PostOnPass,
+		comment:     a.homeCfg.ChecksPassed.CommentFor(key.Repo),
+		posted:      saved.LastPassCommentHead,
+		head:        got.headOID,
 		key:         key,
 		armed:       a.armed(key),
 		scheduled:   scheduled,
@@ -226,8 +237,11 @@ func (a *App) compactState(f watchFacts) watchRow {
 // in the order it gives them up as the budget runs out: what is happening now,
 // then the two most recent events, then the durable history.
 func (a *App) compactRows(f watchFacts) []watchRow {
-	rows := make([]watchRow, 0, 6)
+	rows := make([]watchRow, 0, 7)
 	rows = append(rows, a.holdRows(f, false)...)
+	if row, ok := a.onPassRow(f); ok {
+		rows = append(rows, row)
+	}
 	if row, ok := a.currentRow(f, false); ok {
 		rows = append(rows, row)
 	}
@@ -281,6 +295,9 @@ func (a *App) watchPageRows(pr model.PullRequest) []watchRow {
 			})
 		}
 	}
+	if row, ok := a.onPassRow(f); ok {
+		rows = append(rows, row)
+	}
 	rows = append(rows, a.holdRows(f, true)...)
 	if row, ok := a.currentRow(f, true); ok {
 		rows = append(rows, row)
@@ -313,6 +330,22 @@ func (a *App) watchPageRows(pr model.PullRequest) []watchRow {
 		}
 	}
 	return rows
+}
+
+// onPassRow says what P has armed, for both renderers: the comment, and
+// whether it has been posted for the head on screen.
+func (a *App) onPassRow(f watchFacts) (watchRow, bool) {
+	if !f.onPass {
+		return watchRow{}, false
+	}
+	if f.comment == "" {
+		return watchRow{text: "when checks pass: nothing, no comment is configured", style: a.styles.Meta}, true
+	}
+	text := "when checks pass: post " + f.comment
+	if f.head != "" && f.posted == f.head {
+		text += " · posted for " + shortHead(f.head)
+	}
+	return watchRow{text: text, style: a.styles.Watch}, true
 }
 
 // watchPageLines is the expanded page wrapped to width, one row per line

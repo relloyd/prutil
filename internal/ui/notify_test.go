@@ -330,3 +330,43 @@ func activityTexts(app *App, key model.Key) []string {
 	}
 	return out
 }
+
+// withRollup returns the sample list with one pull request's head commit and
+// check rollup changed.
+func withRollup(key model.Key, head string, rollup model.Status) []model.PullRequest {
+	prs := samplePRs()
+	for i := range prs {
+		if prs[i].Key() == key {
+			prs[i].HeadOID, prs[i].Rollup = head, rollup
+		}
+	}
+	return prs
+}
+
+func TestChecksPassingIsNewsOncePerCommit(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	app.homeCfg.Notifications.Set(home.NotifyChecksPassed, true)
+	reload(t, app, withRollup(pr7, "c1", model.StatusFailure))
+
+	lines := reload(t, app, withRollup(pr7, "c1", model.StatusSuccess))
+	shown := notifierOf(t, app).notifications()
+	require.Len(t, shown, 1)
+	assert.Equal(t, "relloyd/other#7 checks passed", shown[0].Title)
+	assert.Contains(t, lines, statusMsg("relloyd/other#7 checks passed"))
+
+	reload(t, app, withRollup(pr7, "c1", model.StatusSuccess))
+	assert.Len(t, notifierOf(t, app).notifications(), 1, "staying green is not news")
+
+	reload(t, app, withRollup(pr7, "c2", model.StatusSuccess))
+	assert.Len(t, notifierOf(t, app).notifications(), 2,
+		"a new commit whose checks passed between two readings is news, though it was never seen running")
+}
+
+func TestChecksPassingIsQuietUntilItIsTurnedOn(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	require.False(t, app.homeCfg.Notifications.Enabled(home.NotifyChecksPassed), "it is off by default")
+
+	reload(t, app, withRollup(pr7, "c1", model.StatusPending))
+	reload(t, app, withRollup(pr7, "c1", model.StatusSuccess))
+	assert.Empty(t, notifierOf(t, app).notifications())
+}

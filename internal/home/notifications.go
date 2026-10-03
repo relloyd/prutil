@@ -22,6 +22,9 @@ type NotificationEvent string
 const (
 	// NotifyApproved is a pull request becoming approved.
 	NotifyApproved NotificationEvent = "approved"
+	// NotifyChecksPassed is every check on a pull request's head commit
+	// passing.
+	NotifyChecksPassed NotificationEvent = "checks_passed"
 )
 
 // notificationDefaults is every event, in the order the settings pane lists
@@ -31,6 +34,8 @@ var notificationDefaults = []struct {
 	on    bool
 }{
 	{NotifyApproved, true},
+	// Off by default: it would fire for every push to every open pull request.
+	{NotifyChecksPassed, false},
 }
 
 // NotificationEvents lists every event prutil can notify about, in the order

@@ -305,8 +305,23 @@ func TestStatusMessagesExpire(t *testing.T) {
 	send(t, app, statusMsg("opened relloyd/prutil#42"))
 	assert.Contains(t, app.render(), "opened relloyd/prutil#42")
 
-	send(t, app, clearStatusMsg{})
+	send(t, app, clearStatusMsg{seq: app.statusSeq})
 	assert.NotContains(t, app.render(), "opened relloyd/prutil#42")
+}
+
+func TestAnOlderMessagesExpiryDoesNotCutANewerOneShort(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+
+	send(t, app, statusMsg("refreshing…"))
+	first := app.statusSeq
+	send(t, app, statusMsg("relloyd/prutil#42 is not watched · press w to watch it, then P"))
+
+	send(t, app, clearStatusMsg{seq: first})
+	assert.Contains(t, plain(app.render()), "press w to watch it, then P",
+		"the first message's timer expiring leaves the second on screen for its own full lifetime")
+
+	send(t, app, clearStatusMsg{seq: app.statusSeq})
+	assert.NotContains(t, plain(app.render()), "press w to watch it, then P")
 }
 
 func TestTabLoadsTheClosedViewOnceAndSwitchesBack(t *testing.T) {

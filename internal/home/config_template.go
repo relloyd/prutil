@@ -84,6 +84,15 @@ func DefaultConfigTemplate() []byte {
 	out.WriteString("  # repos:\n")
 	out.WriteString("  #   owner/repo: \"@coderabbitai review\"\n\n")
 
+	out.WriteString("checks_passed:\n")
+	out.WriteString("  # Optional: comment posted on a watched pull request you have armed with P,\n")
+	out.WriteString("  # once every check on its head commit has passed, such as a command your\n")
+	out.WriteString("  # deployment bot answers. Posted once per head commit. \"\" turns it off.\n")
+	_, _ = fmt.Fprintf(&out, "  comment: %q\n", cfg.ChecksPassed.Comment)
+	out.WriteString("  # Optional per-repository overrides:\n")
+	out.WriteString("  # repos:\n")
+	out.WriteString("  #   owner/repo: \"/deploy staging\"\n\n")
+
 	out.WriteString("notifications:\n")
 	out.WriteString("  # Desktop notifications prutil raises when one of your open pull requests\n")
 	out.WriteString("  # changes. Press s in prutil to turn them on and off; it saves the change\n")

@@ -137,7 +137,8 @@ func TestAnExplanationOnlyMatchesWhenItContainsTheQuery(t *testing.T) {
 	}
 	assert.Equal(t, "send feedback to agent", firstTitle(t, app), "a title match ranks above an explanation that mentions it")
 	assert.ElementsMatch(t, []string{
-		"send feedback to agent", "watch / unwatch", "send failed checks to agent", "post AI review comment", "send new feedback only",
+		"send feedback to agent", "watch / unwatch", "send failed checks to agent", "post AI review comment",
+		"post when checks pass", "send new feedback only",
 	}, titles, "the agent shortcuts are found through their section and explanations")
 	assert.NotContains(t, titles, "refresh", "letters scattered across a long sentence are not a match")
 	assert.NotContains(t, titles, "go back")
