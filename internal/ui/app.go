@@ -227,6 +227,9 @@ type App struct {
 	width  int
 	height int
 	status string
+	// statusSeq numbers the status messages, so that only the latest one's
+	// timer clears the line.
+	statusSeq int
 	// overlay is the ? shortcut list, drawn over everything else while open.
 	overlay helpOverlay
 	// settings is the s pane, drawn over everything else while open.
@@ -793,11 +796,17 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case statusMsg:
+		// Each message's timer names the message it was set for, so that an
+		// older one expiring cannot clear a newer one before its time.
 		a.status = string(msg)
-		return a, tea.Tick(statusLifetime, func(time.Time) tea.Msg { return clearStatusMsg{} })
+		a.statusSeq++
+		seq := a.statusSeq
+		return a, tea.Tick(statusLifetime, func(time.Time) tea.Msg { return clearStatusMsg{seq: seq} })
 
 	case clearStatusMsg:
-		a.status = ""
+		if msg.seq == a.statusSeq {
+			a.status = ""
+		}
 		return a, nil
 	}
 
@@ -1719,6 +1728,7 @@ type (
 	autoRefreshMsg struct {
 		seq int
 	}
-	statusMsg      string
-	clearStatusMsg struct{}
+	statusMsg string
+	// clearStatusMsg ends the status message seq names, and no other.
+	clearStatusMsg struct{ seq int }
 )
