@@ -54,6 +54,7 @@ func (a *App) renderRow(pr model.PullRequest, width int, selected bool) []string
 	identity := fitSegs(max(inner-lenOf(age)-1, 1), " ",
 		a.styles.dot(a.rollupFor(pr)),
 		a.watchSeg(pr),
+		a.passSeg(pr),
 		a.adoptedSeg(pr),
 		seg{text: "#" + fmt.Sprint(pr.Number), style: a.styles.Number},
 		seg{text: pr.Repo, style: a.styles.Repo},

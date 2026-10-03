@@ -160,6 +160,29 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | `-mouse` | true | click to select and scroll with the wheel; `-mouse=false` leaves the terminal its own wheel and drag-to-select |
 | `-version` | | print the version and exit |
 
+## Reading a row
+
+```
+▌ ● ◉ ↗ ⇄ #42 acme/widgets                    3d old
+  Retry the GraphQL search on 502
+  fix/retry → main  DRAFT  by alice          +40 -3
+  APPROVED  ✓12  2 open threads              upd 5m
+```
+
+| Mark | Means |
+| --- | --- |
+| `●` | the checks: green passed, red failed, amber still running |
+| `○` | GitHub reports no checks for the head commit |
+| `◉` | watched, and being polled (`w`) |
+| `◎` | watched, but not being polled: it has gone quiet, or is not in the list. `r` wakes it |
+| `↗` | the checks passed comment is armed (`P`) |
+| `⇄` | adopted from somebody else (`+`); the author follows `by` |
+| `N open threads` | review feedback waiting on a watched pull request |
+
+The header counts the same marks across the list: `◉ 3 ◎ 1 watched · ↗ 1 on
+pass · next poll 45s · ⇄ 2 adopted`. `?` lists them too, under ROW MARKS, so typing a mark there
+says what it is.
+
 ## Keys
 
 | Key | Action |
@@ -421,8 +444,9 @@ there. With no comment configured, `P` says so rather than arming anything.
   WATCH activity, without posting it.
 
 It costs nothing to wait for: the watcher already reads each watched pull
-request's check rollup. The WATCH section shows `when checks pass: post …`
-while it is armed, and which commit it was last posted for.
+request's check rollup. An armed pull request carries `↗` beside its `◉`, the
+header counts them as `↗ 1 on pass`, and the WATCH section shows
+`when checks pass: post …` and which commit it was last posted for.
 
 ### Your own review comments as feedback
 

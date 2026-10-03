@@ -243,3 +243,39 @@ func TestTheWatchSectionSaysWhatPWillPost(t *testing.T) {
 	row, _ = app.onPassRow(app.watchFactsOf(pr))
 	assert.Equal(t, "when checks pass: post /deploy staging · posted for abc", row.text)
 }
+
+func TestARowAndTheHeaderShowWhereChecksPassedCommentsAreArmed(t *testing.T) {
+	app, _ := passApp(t)
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	assert.NotContains(t, plain(app.renderRow(pr, 60, false)[0]), passGlyph)
+	assert.NotContains(t, headerLine(app), "on pass")
+
+	send(t, app, press("P"))
+	assert.Contains(t, plain(app.renderRow(pr, 60, false)[0]), watchGlyph+" "+passGlyph+" #42",
+		"the mark sits beside the watch it belongs to")
+	assert.Contains(t, headerLine(app), "watched · "+passGlyph+" 1 on pass",
+		"counted apart from the watch tally, which adds up to everything watched")
+
+	send(t, app, press("P"))
+	assert.NotContains(t, plain(app.renderRow(pr, 60, false)[0]), passGlyph)
+}
+
+func TestTheShortcutOverlayExplainsEveryRowMark(t *testing.T) {
+	for _, mark := range []string{watchGlyph, dormantGlyph, passGlyph, adoptedGlyph} {
+		t.Run(mark, func(t *testing.T) {
+			app, _, _ := newTestApp(t, 120, 40)
+			openOverlay(t, app, mark)
+			require.NotEmpty(t, app.overlay.matches)
+			assert.Equal(t, mark, app.overlay.matches[0].entry.label(), "typing a mark finds what it means")
+		})
+	}
+}
+
+func TestFullHelpHoldsOnlyWhatCanBePressed(t *testing.T) {
+	for _, group := range defaultKeys().FullHelp() {
+		for _, binding := range group {
+			assert.NotEmpty(t, binding.Keys(), "a row mark is not a key binding")
+		}
+	}
+}

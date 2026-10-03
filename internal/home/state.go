@@ -227,6 +227,18 @@ func (s *State) PostOnPass(key string) bool {
 	return got.Armed && got.PostOnPass
 }
 
+// PostOnPassCount is how many watched pull requests have the checks passed
+// comment armed.
+func (s *State) PostOnPassCount() int {
+	n := 0
+	for _, key := range s.ArmedKeys() {
+		if s.PRs[key].PostOnPass {
+			n++
+		}
+	}
+	return n
+}
+
 // RecordPassComment marks the checks_passed comment as posted for head.
 func (s *State) RecordPassComment(key, head string) {
 	s.Mutate(key).LastPassCommentHead = head

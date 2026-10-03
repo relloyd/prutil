@@ -564,6 +564,10 @@ it posts.
   `Update` runs it after `applyReview`, never before.
 - **Arming on checks already green asks first** (`confirmPostOnPass`), because
   it posts at the next poll.
+- **`↗` on the row, apart from the watch tally in the header.** `◉` and `◎`
+  add up to everything watched; `passNote` is not a third kind of watch, so it
+  is a separate count. Every row mark has an entry under ROW MARKS in
+  `helpSections`, which `FullHelp` skips because none of them can be pressed.
 - **A dry run records rather than posts.** `R` is a key press and ignores dry
   run; this is automatic, which is what dry run is for.
 

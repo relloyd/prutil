@@ -21,6 +21,30 @@ import (
 // the review threads have been read and posts nothing while the pull request
 // is held: a deployment runs the pull request's code.
 
+// passGlyph marks a list row whose pull request has the checks passed comment
+// armed: something goes out once it is green. It is a standing instruction
+// that posts to GitHub, so it is worth seeing without opening each one.
+const passGlyph = "↗"
+
+// passSeg is the mark shown against a pull request with P armed.
+func (a *App) passSeg(pr model.PullRequest) seg {
+	if !a.state.PostOnPass(pr.Key().String()) {
+		return seg{}
+	}
+	return seg{text: passGlyph, style: a.styles.Watch}
+}
+
+// passNote is what the header says about P, apart from the watch tally: the
+// two watch glyphs add up to everything watched, and this is not a third kind
+// of watch but something some of them also do.
+func (a *App) passNote() string {
+	n := a.state.PostOnPassCount()
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" · %s %d on pass", passGlyph, n)
+}
+
 // togglePostOnPass arms or disarms the checks passed comment on the selected
 // pull request.
 func (a *App) togglePostOnPass() tea.Cmd {

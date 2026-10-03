@@ -1208,7 +1208,7 @@ func (a *App) watchNote() string {
 	if idle := armed - polling; idle > 0 {
 		note += fmt.Sprintf(" %s %d", dormantGlyph, idle)
 	}
-	note += " watched"
+	note += " watched" + a.passNote()
 	if next, ok := a.engine.NextDue(); ok {
 		note += " · next poll " + model.HumanDuration(max(next.Sub(a.now()), time.Second))
 	}

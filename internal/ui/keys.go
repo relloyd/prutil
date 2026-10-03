@@ -154,9 +154,13 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	for _, section := range sections {
 		group := make([]key.Binding, 0, len(section.entries))
 		for _, entry := range section.entries {
-			group = append(group, entry.binding)
+			if entry.runnable() {
+				group = append(group, entry.binding)
+			}
 		}
-		groups = append(groups, group)
+		if len(group) > 0 {
+			groups = append(groups, group)
+		}
 	}
 	return groups
 }
@@ -203,7 +207,7 @@ type helpSection struct {
 // helpSections is everything the ? overlay lists, in the order it lists it.
 // Every binding in keyMap belongs in exactly one section; a test fails when
 // one is missing. The mouse section only appears when prutil asked the
-// terminal for the mouse.
+// terminal for the mouse, and the row marks, which cannot be run, come last.
 func (k keyMap) helpSections(mouse bool) []helpSection {
 	sections := []helpSection{
 		{title: "Navigation", entries: []helpEntry{
@@ -270,6 +274,23 @@ func (k keyMap) helpSections(mouse bool) []helpSection {
 				detail: "Scroll whichever pane the pointer is over."},
 		}})
 	}
+	// What the marks on a list row mean, last because it is reference rather
+	// than something to press. They are not keys, so nothing here
+	// can be run, but a reader wondering what ↗ is types it and finds out.
+	sections = append(sections, helpSection{title: "Row marks", entries: []helpEntry{
+		{keys: "●", title: "checks",
+			detail: "Coloured by the pull request's checks: green passed, red failed, amber still running."},
+		{keys: "○", title: "no checks",
+			detail: "GitHub reports no checks for the head commit."},
+		{keys: watchGlyph, title: "watched",
+			detail: "Watched, and being polled for review feedback and failed checks. Press w to stop."},
+		{keys: dormantGlyph, title: "watched, not polled",
+			detail: "Still watched, but not being polled: it has gone quiet, or it is not in the list prutil holds. r wakes it."},
+		{keys: passGlyph, title: "posts when checks pass",
+			detail: "The checks passed comment is posted each time every check on a new commit passes. Press P to stop."},
+		{keys: adoptedGlyph, title: "adopted",
+			detail: "Somebody else's pull request you adopted with +. Press - to release it."},
+	}})
 	return sections
 }
 
