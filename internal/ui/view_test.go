@@ -388,8 +388,8 @@ func TestTheFooterFitsEveryShortcutAt120Columns(t *testing.T) {
 		assert.Contains(t, footer, want)
 	}
 	assert.NotContains(t, footer, "…", "nothing is dropped from the footer at 120 columns")
-	assert.NotContains(t, footer, "N notify new feedback", "N belongs only in full help")
-	assert.NotContains(t, footer, "R trigger AI review", "R belongs only in full help")
+	assert.NotContains(t, footer, "N send new feedback only", "N belongs only in full help")
+	assert.NotContains(t, footer, "R post AI review comment", "R belongs only in full help")
 }
 
 func TestTheShortcutOverlayListsTheKeysTheFooterLeavesOut(t *testing.T) {
@@ -400,7 +400,7 @@ func TestTheShortcutOverlayListsTheKeysTheFooterLeavesOut(t *testing.T) {
 	full := plain(app.render())
 	for _, want := range []string{
 		"↑/k", "↓/j", "g/home", "G/end", "←/h/esc", "y/c", "q/ctrl+c",
-		"hand to agent", "trigger AI review", "notify new feedback", "select a pull request",
+		"send feedback to agent", "post AI review comment", "send new feedback only", "select a pull request",
 	} {
 		assert.Contains(t, full, want)
 	}

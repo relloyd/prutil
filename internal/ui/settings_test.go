@@ -476,11 +476,15 @@ func TestSettingsSteppingAndCycling(t *testing.T) {
 	send(t, app, press("-"))
 	assert.Equal(t, home.Duration(2*time.Minute), app.homeCfg.Notifications.Interval)
 
-	// Jump to next section with tab (WATCHING & POLLING)
+	// Jump to next section with tab (WATCHING)
 	send(t, app, press("tab"))
 	assert.Equal(t, 2, app.settings.cursor) // watch.self_review
 
-	// Jump to next section with tab (AI REVIEW TRIGGER)
+	// Jump to next section with tab (POLL TIMING)
+	send(t, app, press("tab"))
+	assert.Equal(t, 7, app.settings.cursor) // watch.active_interval
+
+	// Jump to next section with tab (PR COMMENTS)
 	send(t, app, press("tab"))
 	assert.Equal(t, 15, app.settings.cursor) // review.comment
 
@@ -509,6 +513,7 @@ func TestSettingsInlineTextEditing(t *testing.T) {
 	// Jump to review.comment (item 15)
 	send(t, app, press("tab"))
 	send(t, app, press("tab"))
+	send(t, app, press("tab"))
 	assert.Equal(t, 15, app.settings.cursor)
 
 	// Press enter to edit
@@ -520,7 +525,7 @@ func TestSettingsInlineTextEditing(t *testing.T) {
 	send(t, app, press("enter"))
 	assert.Equal(t, settingsModeNormal, app.settings.mode)
 	assert.Equal(t, "/claude review", app.homeCfg.Review.CommentFor(""))
-	assert.Contains(t, app.settings.notice, "Review comment set to \"/claude review\" · saved")
+	assert.Contains(t, app.settings.notice, "AI review comment set to \"/claude review\" · saved")
 }
 
 func TestSettingsSubPaneMapAndSequence(t *testing.T) {
