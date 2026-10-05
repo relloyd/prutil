@@ -397,7 +397,12 @@ func TestTheShortcutOverlayListsTheKeysTheFooterLeavesOut(t *testing.T) {
 	require.NotContains(t, plain(app.render()), "↑/k", "the footer has no room for them")
 
 	send(t, app, press("?"))
+	// The list scrolls at this height, so read its top and its bottom.
 	full := plain(app.render())
+	for i := 0; i < 40; i++ {
+		send(t, app, press("down"))
+	}
+	full += plain(app.render())
 	for _, want := range []string{
 		"↑/k", "↓/j", "g/home", "G/end", "←/h/esc", "y/c", "q/ctrl+c",
 		"send feedback to agent now", "post AI review comment now", "send new feedback now", "select a pull request",

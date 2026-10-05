@@ -431,3 +431,58 @@ func TestEachAgentShortcutSaysWhetherItActsNowOrKeepsGoing(t *testing.T) {
 	}
 	assert.Equal(t, len(endings), seen, "both sections are in the overlay")
 }
+
+func TestEveryExplanationIsReadInFullOnAnOrdinaryTerminal(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{80, 24}, {100, 30}, {120, 40}, {200, 60}} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			app, _, _ := newTestApp(t, size.width, size.height)
+			openOverlay(t, app, "")
+			l := app.helpLayout()
+			for _, section := range defaultKeys().helpSections(true) {
+				for _, entry := range section.entries {
+					assert.LessOrEqualf(t, len(wrapLines(entry.detail, l.inner, 99)), l.detailLines,
+						"%q is cut short at %dx%d", entry.title, size.width, size.height)
+				}
+			}
+			assert.GreaterOrEqual(t, l.window, 10, "and the list keeps most of the room")
+		})
+	}
+}
+
+func TestExplanationsAreWrittenToFitThreeLinesAt80Columns(t *testing.T) {
+	app, _, _ := newTestApp(t, 80, 24)
+	openOverlay(t, app, "")
+	inner := app.helpLayout().inner
+	for _, section := range defaultKeys().helpSections(true) {
+		for _, entry := range section.entries {
+			assert.LessOrEqualf(t, len(wrapLines(entry.detail, inner, 99)), 3,
+				"%q's explanation runs past three lines at 80 columns; shorten it", entry.title)
+		}
+	}
+}
+
+func TestTheDetailStripGivesWayToTheListOnASmallTerminal(t *testing.T) {
+	for height := 6; height <= 30; height++ {
+		t.Run(fmt.Sprintf("80x%d", height), func(t *testing.T) {
+			app, _, _ := newTestApp(t, 80, height)
+			openOverlay(t, app, "")
+			l := app.helpLayout()
+			if l.detailLines > 0 {
+				assert.GreaterOrEqual(t, l.window, overlayMinRows,
+					"the strip never squeezes the list below its minimum")
+			}
+			assert.LessOrEqual(t, l.detailLines, overlayDetailMax)
+		})
+	}
+}
+
+func TestTheOverlayKeepsItsHeightAsTheCursorMoves(t *testing.T) {
+	app, _, _ := newTestApp(t, 80, 24)
+	openOverlay(t, app, "")
+	before := app.helpLayout()
+	for i := 0; i < 30; i++ {
+		send(t, app, press("down"))
+		assert.Equal(t, before.height, app.helpLayout().height,
+			"a short explanation does not shrink the box, nor a long one grow it")
+	}
+}

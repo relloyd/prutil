@@ -25,11 +25,15 @@ const (
 	// overlayKeyWidth caps the key column, so one long alias cannot squeeze
 	// every title.
 	overlayKeyWidth = 12
-	// overlayDetailLines is how much of the selected shortcut's explanation
-	// is shown beneath the list.
-	overlayDetailLines = 2
-	// overlayMinRows is the fewest list rows worth keeping the detail strip
-	// for. Below it the strip goes, so the list keeps the room.
+	// overlayDetailMax caps the strip beneath the list that explains the
+	// selected shortcut. The strip is as tall as the longest explanation needs
+	// at the overlay's width, up to this, so that every explanation is read in
+	// full on an ordinary terminal and the box does not change height as the
+	// cursor moves. Explanations are written to fit three lines at 80 columns.
+	overlayDetailMax = 4
+	// overlayMinRows is the fewest list rows the detail strip may leave. The
+	// strip gives up a line at a time to keep them, and goes only when not
+	// even one of its lines fits.
 	overlayMinRows = 3
 	// overlayChrome is the lines every overlay spends around its list: the
 	// top edge, the filter, the rule beneath it, the blank line that sets the
@@ -60,6 +64,9 @@ type helpOverlay struct {
 	total    int
 	fullRows int
 	keyWidth int
+	// details are every entry's explanation, unfiltered, which is what the
+	// detail strip is sized from for the same reason.
+	details  []string
 	filtered bool
 	cursor   int
 	offset   int
@@ -86,10 +93,11 @@ type helpLayout struct {
 	width, height int
 	// inner is the width inside the frame and its padding.
 	inner int
-	// window is how many list rows are drawn, and detail whether the selected
-	// shortcut's explanation fits beneath them.
-	window int
-	detail bool
+	// window is how many list rows are drawn, and detailLines how many lines
+	// the selected shortcut's explanation gets beneath them, none when not
+	// even one fits.
+	window      int
+	detailLines int
 }
 
 // openHelp shows the overlay with an empty filter that already has the
@@ -105,6 +113,7 @@ func (a *App) openHelp() tea.Cmd {
 	o.total, o.fullRows = len(o.matches), len(o.rows)
 	for _, m := range o.matches {
 		o.keyWidth = max(o.keyWidth, lenOf(m.entry.label()))
+		o.details = append(o.details, m.entry.detail)
 	}
 	o.keyWidth = min(o.keyWidth, overlayKeyWidth)
 	a.resizeHelp()
@@ -352,16 +361,31 @@ func (a *App) helpLayout() helpLayout {
 	}
 	l.inner = max(l.width-4, 1)
 
+	// The strip and the rule above it come out of what the list would have
+	// had, but never below overlayMinRows of it.
 	extra := 0
-	if room-(overlayDetailLines+1) >= overlayMinRows {
-		l.detail = true
-		extra = overlayDetailLines + 1
+	if lines := min(a.detailNeed(l.inner), room-1-overlayMinRows); lines > 0 {
+		l.detailLines = lines
+		extra = lines + 1
 	}
 	l.window = max(min(room-extra, a.overlay.fullRows), 1)
 	l.height = overlayChrome + extra + l.window
 	l.x = max((a.width-l.width)/2, 0)
 	l.y = max((a.height-l.height)/2, 0)
 	return l
+}
+
+// detailNeed is how many lines the longest explanation takes at width, up to
+// overlayDetailMax.
+func (a *App) detailNeed(width int) int {
+	need := 1
+	for _, detail := range a.overlay.details {
+		need = max(need, len(wrapLines(detail, width, overlayDetailMax)))
+		if need == overlayDetailMax {
+			break
+		}
+	}
+	return need
 }
 
 // renderHelpOverlay draws the overlay over a finished screen.
@@ -394,14 +418,14 @@ func (a *App) helpBox(l helpLayout) []string {
 		box = append(box, row(line))
 	}
 
-	if l.detail {
+	if l.detailLines > 0 {
 		detail := ""
 		if len(o.matches) > 0 {
 			detail = o.matches[o.cursor].entry.detail
 		}
-		lines := wrapLines(detail, l.inner, overlayDetailLines)
+		lines := wrapLines(detail, l.inner, l.detailLines)
 		box = append(box, rule)
-		for i := 0; i < overlayDetailLines; i++ {
+		for i := 0; i < l.detailLines; i++ {
 			text := ""
 			if i < len(lines) {
 				text = lines[i]
