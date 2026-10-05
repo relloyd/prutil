@@ -101,6 +101,12 @@ list query that force it to walk `contexts`.
   `on / off`; a key that does one thing once goes under "Do now on this PR"
   with a title ending `now`. `TestEachAgentShortcutSaysWhetherItActsNowOrKeepsGoing`
   holds both, and README's Keys table is grouped the same way.
+- An overlay explanation fits three lines at 80 columns
+  (`TestExplanationsAreWrittenToFitThreeLinesAt80Columns`); the title says
+  what the key is, so the explanation need not repeat it. The strip beneath
+  the list is sized from the longest explanation at the current width, never
+  from the selected one, so the box keeps its height as the cursor moves, and
+  it gives up lines before the list drops below `overlayMinRows`.
 - The footer has no room for `s settings`; it is reachable through `?`.
 - Tests must not run a `tea.Tick` command. `drain` calls the command, so
   draining one blocks for the whole interval. Send the message the tick would
