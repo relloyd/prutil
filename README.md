@@ -34,14 +34,18 @@ And, if you switch them on: new pull requests you open are watched without
 pressing `w`, and your desktop tells you when a pull request is approved or its
 checks pass.
 
-**When you press a key**, on the selected pull request:
+**When you press a key**, on the selected pull request. Two keys are switches
+that keep going in the background until pressed again:
 
-- `w` watches or stops watching it.
-- `W` sends its open review feedback to an agent now, `F` its failed checks, and
+- `w` switches watching on or off: everything under "On its own" above.
+- `P` switches the checks passed comment on or off, on a watched pull request.
+
+The rest act once, now:
+
+- `W` sends its open review feedback to an agent, `F` its failed checks, and
   `N` only the feedback it has not sent before.
 - `R` posts a comment, `/gemini review` by default, to ask a review bot for a
   review. prutil never posts it on its own.
-- `P` arms or disarms the checks passed comment on a watched pull request.
 - `+` adopts somebody else's pull request so the rest of this works on it too.
 
 prutil itself posts nothing to GitHub except the `R` and `P` comments.
@@ -185,6 +189,12 @@ says what it is.
 
 ## Keys
 
+The keys are grouped as `?` groups them. Two kinds act on the selected pull
+request: a switch keeps doing something for it in the background until you
+press it again, and a "now" key does one thing straight away.
+
+### Moving about
+
 | Key | Action |
 | --- | --- |
 | left click | select a pull request in the list |
@@ -192,19 +202,49 @@ says what it is.
 | `g` / `G` or `home` / `end` | jump to the first or last item |
 | `l` or `→` | focus detail from the list, or drill into the selected detail section |
 | `h`, `←` or `esc` | go back one level |
+
+### Pull requests
+
+| Key | Action |
+| --- | --- |
 | `enter` | open the selected pull request, or the selected check, in your browser; on the WATCH heading, drill in as `l` does |
 | `y` or `c` | copy the selected pull request's URL, or the selected check's, to the clipboard |
-| `r` | refresh from GitHub |
-| `a` | auto-refresh: reload every 30s, five times over. press again to add five more |
-| `w` | watch the selected open pull request, or stop watching it |
-| `W` | send the selected pull request's open review feedback to a coding agent now, creating one when needed; on a failed check, send the failed checks |
-| `F` | send the selected pull request's failed checks to a coding agent now, without waiting for running checks |
-| `R` | post the configured AI review comment, such as `/gemini review`, on the selected open pull request. press twice to confirm |
-| `P` | on a watched pull request, post the configured checks passed comment, such as `/deploy staging`, each time its checks pass on a new commit. press again to stop |
-| `N` | read the selected open pull request's review threads now and send only the feedback not sent before |
 | `tab` | switch between your open and your recently closed pull requests |
 | `+` | adopt a pull request somebody else opened: pick a recent repository and one of its pull requests, or paste a URL. it joins your open list and its author is trusted on it |
 | `-` | release the selected adopted pull request: it stops being watched and its author stops being trusted on it. press twice to confirm |
+
+### Refreshing
+
+| Key | Action |
+| --- | --- |
+| `r` | refresh from GitHub now |
+| `a` | keep refreshing in the background: every 30s, five times over, then stop. press again to add five more |
+
+### Keep doing for this PR: switches
+
+Each press turns it on or off. While it is on, prutil acts by itself, with
+nothing more to press.
+
+| Key | Action |
+| --- | --- |
+| `w` | watch on / off: poll the pull request and send new review feedback and failed checks to an agent by itself |
+| `P` | post when checks pass on / off: on a watched pull request, post the configured checks passed comment, such as `/deploy staging`, each time every check on a new commit passes |
+
+### Do now on this PR
+
+Each press does one thing, once, whether or not the pull request is watched.
+
+| Key | Action |
+| --- | --- |
+| `W` | send the open review feedback to a coding agent now, even what was sent before, creating one when needed; on a failed check, send the failed checks |
+| `F` | send the failed checks to a coding agent now, without waiting for running checks |
+| `N` | read the review threads now and send only the feedback not sent before |
+| `R` | post the configured AI review comment, such as `/gemini review`, now. press twice to confirm |
+
+### General
+
+| Key | Action |
+| --- | --- |
 | `s` or `,` | open settings: desktop notifications, what is watched, poll timing, PR comments, coding agent and security |
 | `?` | open the shortcut overlay: type to filter, `enter` to run the highlighted shortcut, `esc` or `?` to close |
 | `q` or `ctrl+c` | quit |
