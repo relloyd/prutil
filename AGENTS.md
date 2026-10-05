@@ -95,6 +95,12 @@ list query that force it to walk `contexts`.
   filter. The `s` settings pane (`internal/ui/settings.go`) takes input the
   same way while open, with its own `settingsKeyMap`, and both panes float
   over the screen through `floatOver` in `internal/ui/frame.go`.
+- An overlay title says what one press does, because filtering hides the
+  section headings. A key that keeps doing something for a pull request until
+  pressed again goes under "Keep doing for this PR" with a title ending
+  `on / off`; a key that does one thing once goes under "Do now on this PR"
+  with a title ending `now`. `TestEachAgentShortcutSaysWhetherItActsNowOrKeepsGoing`
+  holds both, and README's Keys table is grouped the same way.
 - The footer has no room for `s settings`; it is reachable through `?`.
 - Tests must not run a `tea.Tick` command. `drain` calls the command, so
   draining one blocks for the whole interval. Send the message the tick would

@@ -135,11 +135,11 @@ func TestAnExplanationOnlyMatchesWhenItContainsTheQuery(t *testing.T) {
 	for _, m := range app.overlay.matches {
 		titles = append(titles, m.entry.title)
 	}
-	assert.Equal(t, "send feedback to agent", firstTitle(t, app), "a title match ranks above an explanation that mentions it")
+	assert.Equal(t, "send feedback to agent now", firstTitle(t, app), "a title match ranks above an explanation that mentions it")
 	assert.ElementsMatch(t, []string{
-		"send feedback to agent", "watch / unwatch", "send failed checks to agent", "post AI review comment",
-		"post when checks pass", "send new feedback only",
-	}, titles, "the agent shortcuts are found through their section and explanations")
+		"send feedback to agent now", "watch on / off", "send failed checks to agent now", "post AI review comment now",
+		"send new feedback now",
+	}, titles, "the agent shortcuts are found through their titles and explanations")
 	assert.NotContains(t, titles, "refresh", "letters scattered across a long sentence are not a match")
 	assert.NotContains(t, titles, "go back")
 }
@@ -150,8 +150,8 @@ func TestAKeyTypedExactlyRanksItsOwnShortcutFirst(t *testing.T) {
 		query string
 		want  string
 	}{
-		{name: "a capital W finds the handoff rather than watching", query: "W", want: "send feedback to agent"},
-		{name: "a lower-case w finds watching rather than the handoff", query: "w", want: "watch / unwatch"},
+		{name: "a capital W finds the handoff rather than watching", query: "W", want: "send feedback to agent now"},
+		{name: "a lower-case w finds watching rather than the handoff", query: "w", want: "watch on / off"},
 		{name: "a capital G finds the bottom", query: "G", want: "jump to the bottom"},
 		{name: "a named key such as tab finds its shortcut", query: "tab", want: "switch open / closed"},
 		{name: "a chord typed out finds the binding that answers to it", query: "ctrl+c", want: "quit"},
@@ -341,7 +341,7 @@ func TestPastingFillsTheOverlayFilter(t *testing.T) {
 
 	send(t, app, tea.PasteMsg{Content: "unwatch"})
 	assert.Equal(t, "unwatch", app.overlay.input.Value())
-	assert.Equal(t, "watch / unwatch", firstTitle(t, app))
+	assert.Equal(t, "watch on / off", firstTitle(t, app), "the old word still finds it")
 }
 
 func TestTheShortcutOverlayFitsEveryTerminalSize(t *testing.T) {
@@ -410,4 +410,24 @@ func TestTheOverlaySetsItsLastLineOffFromTheBottomEdge(t *testing.T) {
 				"the line above the bottom edge is blank, so the two do not read as one")
 		})
 	}
+}
+
+func TestEachAgentShortcutSaysWhetherItActsNowOrKeepsGoing(t *testing.T) {
+	endings := map[string]string{
+		"Keep doing for this PR": " on / off",
+		"Do now on this PR":      " now",
+	}
+	seen := 0
+	for _, section := range defaultKeys().helpSections(false) {
+		ending, ok := endings[section.title]
+		if !ok {
+			continue
+		}
+		seen++
+		for _, entry := range section.entries {
+			assert.Truef(t, strings.HasSuffix(entry.title, ending),
+				"%q is under %s, so its title ends %q: filtering hides the heading", entry.title, section.title, ending)
+		}
+	}
+	assert.Equal(t, len(endings), seen, "both sections are in the overlay")
 }

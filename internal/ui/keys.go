@@ -86,23 +86,23 @@ func defaultKeys() keyMap {
 		),
 		Handoff: key.NewBinding(
 			key.WithKeys("W"),
-			key.WithHelp("W", "send feedback to agent"),
+			key.WithHelp("W", "send feedback to agent now"),
 		),
 		CheckHandoff: key.NewBinding(
 			key.WithKeys("F"),
-			key.WithHelp("F", "send failed checks to agent"),
+			key.WithHelp("F", "send failed checks to agent now"),
 		),
 		TriggerReview: key.NewBinding(
 			key.WithKeys("R"),
-			key.WithHelp("R", "post AI review comment"),
+			key.WithHelp("R", "post AI review comment now"),
 		),
 		PostOnPass: key.NewBinding(
 			key.WithKeys("P"),
-			key.WithHelp("P", "post when checks pass"),
+			key.WithHelp("P", "post when checks pass on / off"),
 		),
 		Notify: key.NewBinding(
 			key.WithKeys("N"),
-			key.WithHelp("N", "send new feedback only"),
+			key.WithHelp("N", "send new feedback now"),
 		),
 		NextTab: key.NewBinding(
 			key.WithKeys("tab"),
@@ -236,26 +236,32 @@ func (k keyMap) helpSections(mouse bool) []helpSection {
 			{binding: k.Release, title: "release an adopted pull request",
 				detail: "Stop working on the selected adopted pull request: it stops being watched, and its author stops being trusted on it. Press twice to confirm."},
 		}},
+		// Each title says what one press does: a "now" does one thing straight
+		// away, an "on / off" keeps doing something for that pull request until
+		// it is pressed again. Filtering drops the section headings, so the
+		// titles have to say it on their own.
 		{title: "Refreshing", entries: []helpEntry{
-			{binding: k.Refresh, title: "refresh",
-				detail: "Reload the list and its checks from GitHub, and wake anything the watcher has backed off."},
-			{binding: k.Auto, title: "auto-refresh",
-				detail: fmt.Sprintf("Reload every %s, %d times over. Press again to add %d more.",
+			{binding: k.Refresh, title: "refresh now",
+				detail: "Reload the list and its checks from GitHub now, and wake anything the watcher has backed off."},
+			{binding: k.Auto, title: "auto-refresh for " + model.HumanDuration(autoRefreshInterval*autoRefreshBurst),
+				detail: fmt.Sprintf("Keep reloading in the background: every %s, %d times over, then stop. Press again to add %d more.",
 					model.HumanDuration(autoRefreshInterval), autoRefreshBurst, autoRefreshBurst)},
 		}},
-		{title: "Watching and agents", entries: []helpEntry{
-			{binding: k.Watch, title: "watch / unwatch",
-				detail: "Watch the selected pull request for review feedback and failing checks, or stop watching it."},
-			{binding: k.Handoff, title: "send feedback to agent",
-				detail: "Send the selected pull request's open review feedback to a coding agent now, even what was sent before, creating an agent when none is on it. On a failed check in the detail pane, send the failed checks instead."},
-			{binding: k.CheckHandoff, title: "send failed checks to agent",
-				detail: "Send the selected pull request's failed checks to a coding agent now, without waiting for running checks. With no agent on it, herdr.fallback decides whether one is created."},
-			{binding: k.TriggerReview, title: "post AI review comment",
-				detail: "Post the configured AI review comment, such as /gemini review, on the selected open pull request. prutil posts it itself; no agent is involved. Press twice to confirm."},
-			{binding: k.PostOnPass, title: "post when checks pass",
-				detail: "On a watched pull request, post the configured checks passed comment, such as /deploy staging, each time every check on a new head commit passes. Press again to stop. Never posted while the pull request is held."},
-			{binding: k.Notify, title: "send new feedback only",
-				detail: "Read the selected open pull request's review threads now and send only the feedback not sent before, as the watcher would. With no agent on it, herdr.fallback decides whether one is created."},
+		{title: "Keep doing for this PR", entries: []helpEntry{
+			{binding: k.Watch, title: "watch on / off",
+				detail: "Switch watching on, or off to unwatch it. While it is on, prutil polls the pull request and sends new review feedback and failed checks to a coding agent by itself, until you switch it off or the pull request closes."},
+			{binding: k.PostOnPass, title: "post when checks pass on / off",
+				detail: "Switch the checks passed comment on or off for a watched pull request. While it is on, the configured comment, such as /deploy staging, is posted each time every check on a new commit passes, and never while the pull request is held."},
+		}},
+		{title: "Do now on this PR", entries: []helpEntry{
+			{binding: k.Handoff, title: "send feedback to agent now",
+				detail: "Send the open review feedback to a coding agent now, even what was sent before, creating an agent when none is on it. On a failed check in the detail pane, send the failed checks instead."},
+			{binding: k.CheckHandoff, title: "send failed checks to agent now",
+				detail: "Send the failed checks to a coding agent now, without waiting for running checks. With no agent on it, herdr.fallback decides whether one is created."},
+			{binding: k.Notify, title: "send new feedback now",
+				detail: "Read the review threads now and send only the feedback not sent before, as the watcher would. With no agent on it, herdr.fallback decides whether one is created."},
+			{binding: k.TriggerReview, title: "post AI review comment now",
+				detail: "Post the configured AI review comment, such as /gemini review, now. prutil posts it itself; no agent is involved. Press twice to confirm."},
 		}},
 		{title: "General", entries: []helpEntry{
 			{binding: k.Settings, title: "settings",
