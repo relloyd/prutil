@@ -674,6 +674,7 @@ security:
     - COLLABORATOR
   trusted_authors:
     - "gemini-code-assist[bot]"  # [bot] matches only a GitHub App
+    - "copilot-pull-request-reviewer[bot]"  # GitHub Copilot code review
   require_sandbox: true        # automatic handoffs only to sandboxed agents
 ```
 

@@ -596,7 +596,7 @@ func trustPolicy() model.TrustPolicy {
 	return model.TrustPolicy{
 		Viewer:       "relloyd",
 		Associations: []string{"OWNER", "COLLABORATOR"},
-		Authors:      []string{"gemini-code-assist[bot]"},
+		Authors:      []string{"gemini-code-assist[bot]", "copilot-pull-request-reviewer[bot]"},
 	}
 }
 
@@ -648,6 +648,16 @@ func TestTrustDecidesOneParticipantAtATime(t *testing.T) {
 		{
 			name:    "a person who registered the bot's login is not",
 			who:     model.Participant{Login: "gemini-code-assist", Association: "NONE"},
+			trusted: false,
+		},
+		{
+			name:    "Copilot code review is trusted as the app GitHub reports it as",
+			who:     model.Participant{Login: "copilot-pull-request-reviewer", Association: "CONTRIBUTOR", Bot: true},
+			trusted: true,
+		},
+		{
+			name:    "a person who registered Copilot's reviewer login is not",
+			who:     model.Participant{Login: "copilot-pull-request-reviewer", Association: "CONTRIBUTOR"},
 			trusted: false,
 		},
 		{

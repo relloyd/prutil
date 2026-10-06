@@ -235,7 +235,7 @@ security:
   # Authors whose review comments may be handed to an agent without asking.
   trusted_associations: [OWNER, COLLABORATOR]
   # Extra authors by login. A name ending in [bot] matches only a GitHub App.
-  trusted_authors: ["gemini-code-assist[bot]"]
+  trusted_authors: ["gemini-code-assist[bot]", "copilot-pull-request-reviewer[bot]"]
 ```
 
 Two notes on the defaults:
@@ -244,7 +244,9 @@ Two notes on the defaults:
   in a large organisation implies no write access at all. A reader whose
   organisation is small enough for membership to mean something adds it.
 - `gemini-code-assist[bot]` is listed because prutil's own `review.comment`
-  default summons it. A trusted bot can still quote somebody else, but an
+  default summons it, and `copilot-pull-request-reviewer[bot]`, GitHub's
+  Copilot code review, because it is the other review bot a reader is likely
+  to ask for. Both are GitHub Apps, which the `[bot]` suffix requires. A trusted bot can still quote somebody else, but an
   untrusted author in the same thread makes that thread untrusted anyway.
 
 **Hold and notify.** A pull request is held when any unresolved thread on it

@@ -200,8 +200,30 @@ func TestTheTrustBoundaryShipsStrict(t *testing.T) {
 
 	assert.Equal(t, []string{"OWNER", "COLLABORATOR"}, cfg.Security.TrustedAssociations,
 		"MEMBER is not trusted: in a large organisation it implies no write access")
-	assert.Equal(t, []string{"gemini-code-assist[bot]"}, cfg.Security.TrustedAuthors,
-		"prutil's own review.comment default summons this bot")
+	assert.Equal(t, []string{"gemini-code-assist[bot]", "copilot-pull-request-reviewer[bot]"}, cfg.Security.TrustedAuthors,
+		"prutil's own review.comment default summons the first, and Copilot code review is the other likely one")
+}
+
+func TestBothReviewBotsAreTrustedOutOfTheBoxButNotPeopleUsingTheirLogins(t *testing.T) {
+	policy := home.DefaultConfig().TrustPolicy()
+	policy.Viewer = "relloyd"
+	held := func(who model.Participant) bool {
+		threads := []model.ReviewThread{{ID: "PRRT_1", Participants: []model.Participant{who}, ParticipantsComplete: true}}
+		return model.HoldFor(threads, policy).Held()
+	}
+
+	// What GitHub's GraphQL API reports for each bot's review comments: the
+	// app's login without the [bot] suffix, as a Bot.
+	for _, login := range []string{"gemini-code-assist", "copilot-pull-request-reviewer"} {
+		t.Run(login, func(t *testing.T) {
+			app := model.Participant{Login: login, Association: "CONTRIBUTOR", Bot: true}
+			assert.False(t, held(app), "the review bot's comments are not held")
+
+			person := app
+			person.Bot = false
+			assert.True(t, held(person), "a person who registered the bot's login is held")
+		})
+	}
 }
 
 func TestAnAbsentSecurityBlockKeepsTheDefaultTrustBoundary(t *testing.T) {
@@ -218,7 +240,7 @@ func TestAnEmptyTrustListIsADeliberateChoiceAndIsHonoured(t *testing.T) {
 
 	assert.Empty(t, cfg.Security.TrustedAssociations,
 		"writing the key empty trusts nobody by association, which is stricter than the default")
-	assert.Equal(t, []string{"gemini-code-assist[bot]"}, cfg.Security.TrustedAuthors,
+	assert.Equal(t, []string{"gemini-code-assist[bot]", "copilot-pull-request-reviewer[bot]"}, cfg.Security.TrustedAuthors,
 		"and says nothing about the other key")
 }
 
@@ -227,7 +249,7 @@ func TestTheTrustPolicyLeavesTheViewerToWhoeverReadThePullRequest(t *testing.T) 
 
 	assert.Equal(t, model.TrustPolicy{
 		Associations: []string{"OWNER", "COLLABORATOR"},
-		Authors:      []string{"gemini-code-assist[bot]"},
+		Authors:      []string{"gemini-code-assist[bot]", "copilot-pull-request-reviewer[bot]"},
 		Marker:       model.DefaultSelfTestMarker,
 	}, policy)
 	assert.Empty(t, policy.Viewer,
@@ -248,6 +270,7 @@ func TestTheWrittenTemplateNamesTheTrustBoundary(t *testing.T) {
 	assert.Contains(t, template, "security:")
 	assert.Contains(t, template, "trusted_associations:")
 	assert.Contains(t, template, "gemini-code-assist[bot]")
+	assert.Contains(t, template, "copilot-pull-request-reviewer[bot]")
 	assert.NotContains(t, template, "MEMBER\n", "MEMBER is described, never shipped as trusted")
 
 	cfg, err := home.ParseConfig(home.DefaultConfigTemplate())
