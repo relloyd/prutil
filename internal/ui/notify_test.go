@@ -53,7 +53,7 @@ func statuses(msgs []tea.Msg) []statusMsg {
 func pollOnce(t *testing.T, app *App) []statusMsg {
 	t.Helper()
 	var out []statusMsg
-	for _, msg := range drain(send(t, app, notifyTickMsg{})) {
+	for _, msg := range drain(send(t, app, listReadTickMsg{seq: app.listReadSeq})) {
 		reply, ok := msg.(notifyPollMsg)
 		require.True(t, ok, "a tick is answered by a read, got %T", msg)
 		out = append(out, statuses(drain(send(t, app, reply)))...)
@@ -125,7 +125,7 @@ func TestATurnedOffNotificationStaysQuietAndDoesNotRaiseOldNewsLater(t *testing.
 
 func TestThePollReadsEveryOpenPullRequestNotOnlyTheWatchedOnes(t *testing.T) {
 	app, client, _ := newTestApp(t, 120, 40)
-	require.True(t, app.notifyPending, "loading the list started the wait for the first read")
+	require.True(t, app.listReadWaiting, "loading the list started the wait for the first read")
 
 	snap := client.snapshots["PR_7"]
 	snap.ReviewDecision = model.ReviewChangesRequested
@@ -145,7 +145,7 @@ func TestThePollReadsEveryOpenPullRequestNotOnlyTheWatchedOnes(t *testing.T) {
 	assert.Equal(t, "relloyd/other#7 approved", shown[0].Title)
 	assert.Equal(t, "Rework the config loader", shown[0].Body, "the title comes from the list")
 	assert.Contains(t, lines, statusMsg("relloyd/other#7 approved"))
-	assert.True(t, app.notifyPending, "the reply waits for the next read")
+	assert.True(t, app.listReadWaiting, "the reply waits for the next read")
 }
 
 func TestAPollThatSaysNothingNewRaisesNothing(t *testing.T) {
@@ -163,11 +163,11 @@ func TestNothingIsReadWhileEveryNotificationIsOff(t *testing.T) {
 	app, client, _ := newTestApp(t, 120, 40)
 	app.homeCfg.Notifications.Set(home.NotifyApproved, false)
 
-	assert.Nil(t, send(t, app, notifyTickMsg{}), "the outstanding wait ends the run")
-	assert.False(t, app.notifyPending)
+	assert.Nil(t, send(t, app, listReadTickMsg{seq: app.listReadSeq}), "the outstanding wait ends the run")
+	assert.False(t, app.listReadWaiting)
 	assert.Empty(t, client.batches())
 
-	assert.Nil(t, app.scheduleNotifications(), "and nothing starts another")
+	assert.Nil(t, app.scheduleListRead(), "and nothing starts another")
 	assert.Nil(t, app.noticeAfterLoad(prsMsg{view: viewOpen, prs: samplePRs(), at: app.now()}),
 		"a list load does not restart it either")
 }
@@ -176,26 +176,30 @@ func TestTurningANotificationBackOnStartsTheReadsAgain(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	openSettingsPane(t, app)
 	send(t, app, press("space"))
-	send(t, app, notifyTickMsg{})
-	require.False(t, app.notifyPending)
+	require.False(t, app.listReadWaiting, "turning the only one off ends the wait")
 
 	cmd := send(t, app, press("space"))
 	assert.NotNil(t, cmd, "turning one on schedules the next read")
-	assert.True(t, app.notifyPending)
+	assert.True(t, app.listReadWaiting)
 
 	assert.Nil(t, send(t, app, press("space")), "turning it off schedules nothing")
-	assert.Nil(t, app.scheduleNotifications(), "the wait already under way is the only one")
+	assert.False(t, app.listReadWaiting)
 }
 
-func TestThereIsOnlyEverOneWaitOrReadOutstanding(t *testing.T) {
-	app, _, _ := newTestApp(t, 120, 40)
-	require.True(t, app.notifyPending)
+func TestThereIsOnlyEverOneReadOutstanding(t *testing.T) {
+	app, client, _ := newTestApp(t, 120, 40)
+	stale := app.listReadSeq
+	app.scheduleListRead()
+	assert.Nil(t, send(t, app, listReadTickMsg{seq: stale}), "a wait since replaced reads nothing")
 
-	assert.Nil(t, app.scheduleNotifications(), "a list load while a wait is under way adds nothing")
-	cmd := send(t, app, notifyTickMsg{})
+	cmd := send(t, app, listReadTickMsg{seq: app.listReadSeq})
 	require.NotNil(t, cmd)
-	assert.True(t, app.notifyPending, "the read is outstanding until its reply lands")
-	assert.Nil(t, app.scheduleNotifications())
+	assert.True(t, app.notifyReading, "the read is outstanding until its reply lands")
+
+	app.scheduleListRead()
+	assert.Nil(t, send(t, app, listReadTickMsg{seq: app.listReadSeq}), "a tick while it is out reads nothing more")
+	drain(cmd)
+	assert.Len(t, client.batches(), 1)
 }
 
 func TestWithoutANotifierNothingIsRead(t *testing.T) {
@@ -204,8 +208,8 @@ func TestWithoutANotifierNothingIsRead(t *testing.T) {
 	send(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
 	send(t, app, prsMsg{gen: app.gen, prs: samplePRs()})
 
-	assert.False(t, app.notifyPending)
-	assert.Nil(t, send(t, app, notifyTickMsg{}))
+	assert.False(t, app.listReadWaiting)
+	assert.Nil(t, send(t, app, listReadTickMsg{seq: app.listReadSeq}))
 	assert.Empty(t, client.batches())
 
 	lines := reload(t, app, withDecision(pr7, model.ReviewApproved))
@@ -219,7 +223,7 @@ func TestAFailedReadIsKeptForTheSettingsAndTriedAgain(t *testing.T) {
 	lines := pollOnce(t, app)
 	assert.Empty(t, lines, "a laptop without a network is not told so every two minutes")
 	assert.EqualError(t, app.notifyErr, "could not resolve host")
-	assert.True(t, app.notifyPending, "the next read is already waited for")
+	assert.True(t, app.listReadWaiting, "the next read is already waited for")
 
 	client.watchErr = nil
 	pollOnce(t, app)

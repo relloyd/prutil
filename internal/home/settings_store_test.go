@@ -1,6 +1,7 @@
 package home
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -76,4 +77,52 @@ func TestStoreSaveSequence(t *testing.T) {
 	cfg, err := store.LoadConfig()
 	require.NoError(t, err)
 	assert.Equal(t, roots, cfg.Discovery.Roots)
+}
+
+// oldIntervals is a configuration written before watch.list_interval
+// replaced the two keys in it. The comment is the reader's note on one of
+// them, so it goes with it.
+const oldIntervals = `watch:
+  # mine
+  auto_watch_interval: 5m
+  base_interval: 3m
+notifications:
+  interval: 2m
+  events:
+    approved: true
+`
+
+func TestWritingTheListIntervalTakesOutTheKeysItReplaced(t *testing.T) {
+	store := OpenIn(t.TempDir())
+	require.NoError(t, os.WriteFile(store.Path(ConfigFile), []byte(oldIntervals), 0o600))
+
+	err := store.SaveSetting([]string{"watch", "list_interval"}, "4m", func(c *Config) {
+		c.Watch.ListInterval = Duration(4 * time.Minute)
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(store.Path(ConfigFile))
+	require.NoError(t, err)
+	assert.Equal(t, `watch:
+  base_interval: 3m
+  list_interval: 4m
+notifications:
+  events:
+    approved: true
+`, string(data), "the old keys go, and everything else stays as the reader wrote it")
+}
+
+func TestResettingTheListIntervalLandsOnTheDefaultNotOnAnOldKey(t *testing.T) {
+	store := OpenIn(t.TempDir())
+	require.NoError(t, os.WriteFile(store.Path(ConfigFile),
+		[]byte("watch:\n  auto_watch_interval: 5m\nnotifications:\n  interval: 3m\n"), 0o600))
+
+	err := store.ResetSetting([]string{"watch", "list_interval"}, func(c *Config) {
+		c.Watch.ListInterval = Duration(DefaultListInterval)
+	})
+	require.NoError(t, err)
+
+	cfg, err := store.LoadConfig()
+	require.NoError(t, err)
+	assert.Equal(t, Duration(DefaultListInterval), cfg.Watch.ListInterval)
 }

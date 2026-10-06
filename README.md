@@ -54,7 +54,7 @@ Replies, commits and re-run checks come from the agent.
 | Feature | Trigger | Switched by | Default |
 | --- | --- | --- | --- |
 | [Watch a pull request](#watching-and-handing-work-to-an-agent) | `w` | per pull request | not watched |
-| [Watch new pull requests](#watching-new-pull-requests-automatically) | on its own, every 5 minutes and after `r` | `watch.auto_watch` (New PR watching) | off |
+| [Watch new pull requests](#watching-new-pull-requests-automatically) | on its own, every 2 minutes and after `r` | `watch.auto_watch` (New PR watching), `watch.list_interval` | off |
 | Watch new drafts too | with the above | `watch.auto_watch_drafts` (Draft PR watching) | off |
 | Send review feedback to an agent | on its own when watched; `W` now; `N` now, new feedback only | `herdr.prompt`, `herdr.skill` | on when watched |
 | [Treat your own comments as feedback](#your-own-review-comments-as-feedback) | on its own when watched | `watch.self_review` for all of them; `watch.self_test_marker` for one | off; marker on |
@@ -64,7 +64,7 @@ Replies, commits and re-run checks come from the agent.
 | [Require a sandboxed agent](#sandboxed-agents) | every automatic send | `security.require_sandbox` | on |
 | Post an AI review comment | `R`, pressed twice | `review.comment`, `review.repos` | `/gemini review` |
 | [Post a comment when checks pass](#posting-a-comment-when-checks-pass) | on its own once armed with `P`, once per head commit | `checks_passed.comment`, `checks_passed.repos` | off, no comment |
-| [Desktop notification on approval](#desktop-notifications) | on its own, every 2 minutes | `notifications.events.approved`, `notifications.interval` | on |
+| [Desktop notification on approval](#desktop-notifications) | on its own, every 2 minutes | `notifications.events.approved`, `watch.list_interval` | on |
 | Desktop notification when checks pass | on its own, every 2 minutes | `notifications.events.checks_passed` | off |
 | [Adopt somebody else's pull request](#adopting-somebody-elses-pull-request) | `+` to adopt, `-` to release | per pull request | none |
 | [Auto-refresh](#auto-refresh) | `a` | per press | off |
@@ -78,6 +78,7 @@ in [`config.yaml`](#configuration).
 | Word | Means |
 | --- | --- |
 | watch | prutil polls the pull request and acts on what it finds. Nothing to do with watching a repository on GitHub. |
+| poll, re-read | a watched pull request is polled, on the POLL TIMING intervals. The rest of your open pull requests are only re-read, every `watch.list_interval`, and only while a notification or new PR watching is on. |
 | auto-watch | watching new pull requests without pressing `w`. Not the same as auto-refresh (`a`), which only reloads the screen. |
 | feedback | an unresolved review thread whose newest comment is not yours. |
 | send | giving feedback or failed checks to a coding agent through herdr. The log, `handoffs.jsonl`, calls each one a handoff. |
@@ -294,12 +295,13 @@ exactly as it was. A configuration that does not parse, or that is written in a
 shape prutil does not edit (such as a flow mapping), is left alone, and the pane
 reports why.
 
-While any notification is on, prutil reads every open pull request every two
-minutes (**Notification poll interval** in `s`, `notifications.interval`), using
-the watcher's cheap query: one request, and one rate limit point, per hundred
-pull requests. A watched pull request is also read on the watcher's own
-schedule, and a refresh reads the whole list, so either may notice a change
-sooner. The first reading of each pull request after prutil starts only records
+While any notification is on, prutil re-reads every open pull request every two
+minutes (**Open list re-read interval** under `POLL TIMING` in `s`,
+`watch.list_interval`), using the watcher's cheap query: one request, and one
+rate limit point, per hundred pull requests. With new PR watching on, the same
+interval runs the whole search instead, which serves the notifications too. A
+watched pull request is also read on the watcher's own schedule, and a refresh
+reads the whole list, so either may notice a change sooner. The first reading of each pull request after prutil starts only records
 where it stands; a pull request approved while prutil was not running is not
 announced.
 
@@ -428,16 +430,17 @@ the thread is handed over again only when it gains a new latest comment.
 `watch.auto_watch`, auto-watch for short, watches every pull request you open
 from the moment it is switched on, so a new one is on the loop without anybody
 pressing `w`. It is off by default; `s` toggles it as **New PR watching** under
-`WATCHING`, where the two settings below it live too: **Draft PR
-watching** (`auto_watch_drafts`) and **New PR search interval**
-(`auto_watch_interval`). The header reads `· new PR watching` while it is on.
+`WATCHING`, with **Draft PR watching** (`auto_watch_drafts`) below it. The
+header reads `· new PR watching` while it is on.
 
-Nothing else re-reads the open list on its own — the watcher and the
-notifications only ask about pull requests prutil already has — so while
-auto-watch is on the list is searched for new ones every `auto_watch_interval`
-(5 minutes by default, at least one), and after every `r` and `a` too. That
-interval only finds them: once a pull request is watched it is polled on the
-watcher's own schedule, not this one. A pull request is watched when:
+Nothing else finds a new pull request — the watcher and the notifications only
+ask about pull requests prutil already has — so while auto-watch is on the list
+is searched for new ones every `watch.list_interval` (**Open list re-read
+interval** under `POLL TIMING`; 2 minutes by default, at least one), and after
+every `r` and `a` too. It is the same interval the notifications use, and one
+search serves both. That interval only finds them: once a pull request is
+watched it is polled on the watcher's own schedule, not this one. A pull request
+is watched when:
 
 - you opened it, and the list's own search found it. Somebody else's that a
   custom `-query` lists, and one you adopted, are left alone;
@@ -634,6 +637,8 @@ herdr:
   # Repo, Number, URL, Title, HeadRef, BaseRef, Checks and Note.
   check_prompt: "..."
 watch:
+  list_interval: 2m         # how often your open pull requests are re-read for
+                            # notifications and new PR watching; at least 1m
   active_interval: 30s      # while checks are still running
   base_interval: 2m         # once nothing is in progress
   max_interval: 30m         # where the backoff stops growing
@@ -645,7 +650,6 @@ watch:
   self_review: false        # treat every unresolved comment of yours as feedback
   auto_watch: false         # watch every pull request you open from now on
   auto_watch_drafts: false  # include drafts before they are ready for review
-  auto_watch_interval: 5m   # how often the open list is re-read to find them
   self_test_marker: "<!-- prutil:test -->"  # "" turns it off
 review:
   comment: "/gemini review"  # comment posted by R to trigger an AI review; "" turns it off
@@ -656,7 +660,6 @@ checks_passed:
   repos:
     acme/widgets: "/deploy staging"  # optional per-repository override
 notifications:
-  interval: 2m              # how often every open pull request is read while one is on
   events:
     approved: true          # a pull request is approved; s in prutil toggles it
     checks_passed: false    # every check on a pull request's head commit passed

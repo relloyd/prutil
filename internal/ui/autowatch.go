@@ -3,11 +3,8 @@ package ui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
-
-	"github.com/relloyd/prutil/internal/home"
 )
 
 // autoWatchBurst is the most pull requests one load arms automatically. The
@@ -16,75 +13,32 @@ import (
 // once, should not be a burst of agents.
 const autoWatchBurst = 5
 
-// autoWatchTickMsg is the wait between two re-reads of the open list running
-// out. seq names the wait, so one a later load replaced is dropped.
-type autoWatchTickMsg struct {
-	seq int
-}
-
 // autoWatching reports whether new pull requests are being armed on their own.
 // Without a store nothing can be armed, so there is nothing to look for.
 func (a *App) autoWatching() bool {
 	return a.homeCfg.Watch.AutoWatch && a.store != nil
 }
 
-// autoWatchInterval is the wait between two re-reads of the open list.
-func (a *App) autoWatchInterval() time.Duration {
-	if d := a.homeCfg.Watch.AutoWatchInterval.Duration(); d > 0 {
-		return d
-	}
-	return home.DefaultAutoWatchInterval
-}
-
-// scheduleAutoWatch waits one interval and then asks for the open list again.
-//
-// It is scheduled after every load of the open list, whoever asked for it, so
-// that r or a reads the list and restarts the wait rather than a tick landing
-// straight after them. Bumping the sequence is what drops the wait it replaces.
-func (a *App) scheduleAutoWatch() tea.Cmd {
-	a.autoWatchSeq++
-	if !a.autoWatching() {
-		return nil
-	}
-	seq := a.autoWatchSeq
-	return tea.Tick(a.autoWatchInterval(), func(time.Time) tea.Msg { return autoWatchTickMsg{seq: seq} })
-}
-
-// autoWatchTick re-reads the open list, which is the only way a pull request
-// opened since it was last read is ever seen: the watcher and the notification
-// poll ask only about pull requests prutil already holds.
-func (a *App) autoWatchTick(msg autoWatchTickMsg) tea.Cmd {
-	if msg.seq != a.autoWatchSeq || !a.autoWatching() {
-		return nil
-	}
-	if a.views[viewOpen].loading {
-		// The load in flight schedules the next wait when it lands.
-		return nil
-	}
-	return a.withSpinner(a.load(viewOpen))
-}
-
 // setAutoWatch follows the setting being switched on or off. Switching it on is
 // the moment new is measured from, so a pull request opened while it was off is
-// not armed the moment it is switched back on.
+// not armed the moment it is switched back on. The background read is
+// rescheduled either way: it is the search while auto-watch is on, and the
+// cheaper read, or nothing, while it is off.
 func (a *App) setAutoWatch() tea.Cmd {
 	if !a.autoWatching() {
 		a.state.StopAutoWatch()
-		a.autoWatchSeq++
-		if err := a.saveState(); err != nil {
-			return status(err.Error())
-		}
-		return nil
+	} else {
+		a.state.StartAutoWatch(a.now())
 	}
-	a.state.StartAutoWatch(a.now())
+	next := a.scheduleListRead()
 	if err := a.saveState(); err != nil {
-		return status(err.Error())
+		return tea.Batch(next, status(err.Error()))
 	}
-	return a.scheduleAutoWatch()
+	return next
 }
 
 // applyAutoWatch arms the reader's new pull requests in a freshly loaded open
-// list, and schedules the next look.
+// list. The next look is noticeAfterLoad's to schedule.
 //
 // A pull request is new when the reader opened it, the list's own search found
 // it, it was created after auto-watch was switched on, and auto-watch has not
@@ -95,20 +49,20 @@ func (a *App) setAutoWatch() tea.Cmd {
 // Nothing is armed until prutil knows who the reader is, because an author it
 // cannot compare against is not known to be them.
 func (a *App) applyAutoWatch(msg prsMsg) tea.Cmd {
-	if msg.view != viewOpen || msg.own == nil {
+	if msg.view != viewOpen || msg.own == nil || !a.autoWatching() {
 		return nil
-	}
-	next := a.scheduleAutoWatch()
-	if !a.autoWatching() {
-		return next
 	}
 	if a.state.AutoWatch == nil {
 		// Switched on in the file rather than in the pane: from now, then.
-		return tea.Batch(next, a.setAutoWatch())
+		a.state.StartAutoWatch(a.now())
+		if err := a.saveState(); err != nil {
+			return status(err.Error())
+		}
+		return nil
 	}
 	viewer := a.viewer
 	if viewer == "" {
-		return next
+		return nil
 	}
 
 	aw := a.state.AutoWatch
@@ -156,15 +110,15 @@ func (a *App) applyAutoWatch(msg prsMsg) tea.Cmd {
 	}
 
 	if !changed {
-		return next
+		return nil
 	}
 	if err := a.saveState(); err != nil {
-		return tea.Batch(next, status(err.Error()))
+		return status(err.Error())
 	}
 	if len(armed) == 0 {
-		return next
+		return nil
 	}
-	return tea.Batch(next, a.syncWatch(), status(fmt.Sprintf("watching %d new %s automatically: %s",
+	return tea.Batch(a.syncWatch(), status(fmt.Sprintf("watching %d new %s automatically: %s",
 		len(armed), plural(len(armed), "pull request"), strings.Join(armed, ", "))))
 }
 

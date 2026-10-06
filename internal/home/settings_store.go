@@ -55,8 +55,24 @@ func (s *Store) applySave(manualMsg string, edit func(data []byte) ([]byte, erro
 func (s *Store) SaveSetting(path []string, value string, mutator func(c *Config)) error {
 	msg := fmt.Sprintf("set %s to %s", dotted(path), value)
 	return s.applySave(msg, func(data []byte) ([]byte, error) {
+		data, err := dropSuperseded(data, path)
+		if err != nil {
+			return nil, err
+		}
 		return setScalar(data, path, value)
 	}, mutator)
+}
+
+// dropSuperseded takes out of the file the keys the setting at path
+// replaced, if any are there.
+func dropSuperseded(data []byte, path []string) ([]byte, error) {
+	for _, old := range supersededKeys[dotted(path)] {
+		var err error
+		if data, err = deleteKey(data, old); err != nil {
+			return nil, err
+		}
+	}
+	return data, nil
 }
 
 // SaveBlockScalar writes a multiline block scalar into config.yaml at path.
@@ -95,6 +111,10 @@ func (s *Store) SaveSequence(path []string, items []string, mutator func(c *Conf
 func (s *Store) ResetSetting(path []string, mutator func(c *Config)) error {
 	msg := fmt.Sprintf("reset %s", dotted(path))
 	return s.applySave(msg, func(data []byte) ([]byte, error) {
+		data, err := dropSuperseded(data, path)
+		if err != nil {
+			return nil, err
+		}
 		return deleteKey(data, path)
 	}, mutator)
 }

@@ -68,6 +68,19 @@ type settingDescriptor struct {
 	saveInput func(a *App, input string) error
 	// reset reverts the setting to its built-in default in config.yaml and memory.
 	reset func(a *App) error
+	// after is settingMeta.after: what runs once a typed entry or a reset has
+	// been saved. step and toggle return it themselves; saveInput and reset
+	// answer with an error alone, so the pane runs it for them, and a
+	// rescheduled timer is not dropped on the floor.
+	after func(a *App) tea.Cmd
+}
+
+// runAfter is the after hook, or nothing when the setting has none.
+func (d settingDescriptor) runAfter(a *App) tea.Cmd {
+	if d.after == nil {
+		return nil
+	}
+	return d.after(a)
 }
 
 // defCfg is what every setting compares itself against to say whether it is at
@@ -150,6 +163,7 @@ func (m settingMeta) base(kind settingKind) settingDescriptor {
 		defaultText: m.def,
 		kind:        kind,
 		path:        m.path,
+		after:       m.after,
 	}
 }
 
@@ -205,7 +219,6 @@ func durationSetting(m settingMeta, f field[home.Duration], min, step time.Durat
 		if err := save(a, v); err != nil {
 			return err
 		}
-		m.run(a)
 		return nil
 	}
 	return d
@@ -268,7 +281,6 @@ func intSetting(m settingMeta, f field[int], min, step int, format string) setti
 		if err := save(a, n); err != nil {
 			return err
 		}
-		m.run(a)
 		return nil
 	}
 	return d
@@ -299,7 +311,6 @@ func stringSetting(m settingMeta, f field[string], empty, emptyNotice string) se
 		} else {
 			m.saved(a, fmt.Sprintf("%s set to %q", m.noticeLabel(), v))
 		}
-		m.run(a)
 		return nil
 	}
 	return d
@@ -347,22 +358,6 @@ func allSettings() []settingDescriptor {
 	}
 	return append(rows, []settingDescriptor{
 		// ---------------------------------------------------------------------
-		// DESKTOP NOTIFICATIONS, after the rows above
-		// ---------------------------------------------------------------------
-		durationSetting(settingMeta{
-			id:      "notifications.interval",
-			section: "DESKTOP NOTIFICATIONS",
-			title:   "Notification poll interval",
-			detail:  "How often prutil reads your open pull requests in the background while any notification is enabled.",
-			def:     "2m",
-			path:    []string{"notifications", "interval"},
-			after:   func(a *App) tea.Cmd { return a.scheduleNotifications() },
-		}, field[home.Duration]{
-			get: func(c *home.Config) home.Duration { return c.Notifications.Interval },
-			set: func(c *home.Config, v home.Duration) { c.Notifications.Interval = v },
-		}, 15*time.Second, 30*time.Second),
-
-		// ---------------------------------------------------------------------
 		// WATCHING
 		// ---------------------------------------------------------------------
 		boolSetting(settingMeta{
@@ -383,7 +378,7 @@ func allSettings() []settingDescriptor {
 			section: "WATCHING",
 			title:   "New PR watching",
 			detail: "Watch every pull request you open from now on without pressing w. Those already open are " +
-				"left alone, and one you stop watching stays stopped. The open list is searched for them on the interval below.",
+				"left alone, and one you stop watching stays stopped. Searched for every open list re-read interval.",
 			def:   "off",
 			path:  []string{"watch", "auto_watch"},
 			label: "New pull request watching",
@@ -405,20 +400,6 @@ func allSettings() []settingDescriptor {
 			get: func(c *home.Config) bool { return c.Watch.AutoWatchDrafts },
 			set: func(c *home.Config, v bool) { c.Watch.AutoWatchDrafts = v },
 		}),
-		durationSetting(settingMeta{
-			id:      "watch.auto_watch_interval",
-			section: "WATCHING",
-			title:   "New PR search interval",
-			detail: "How often your open pull requests are searched for new ones to watch, while new PR watching is on. " +
-				"Pull requests already watched are polled on the intervals below. Each search is one request.",
-			def:   "5m",
-			path:  []string{"watch", "auto_watch_interval"},
-			label: "New pull request search interval",
-			after: func(a *App) tea.Cmd { return a.scheduleAutoWatch() },
-		}, field[home.Duration]{
-			get: func(c *home.Config) home.Duration { return c.Watch.AutoWatchInterval },
-			set: func(c *home.Config, v home.Duration) { c.Watch.AutoWatchInterval = v },
-		}, time.Minute, time.Minute),
 		stringSetting(settingMeta{
 			id:      "watch.self_test_marker",
 			section: "WATCHING",
@@ -435,6 +416,19 @@ func allSettings() []settingDescriptor {
 		// ---------------------------------------------------------------------
 		// POLL TIMING
 		// ---------------------------------------------------------------------
+		durationSetting(settingMeta{
+			id:      "watch.list_interval",
+			section: "POLL TIMING",
+			title:   "Open list re-read interval",
+			detail: "How often your open pull requests are re-read while new PR watching or a notification is on: " +
+				"searched with new PR watching, otherwise a cheap read. Watched ones use the intervals below.",
+			def:   "2m",
+			path:  []string{"watch", "list_interval"},
+			after: func(a *App) tea.Cmd { return a.scheduleListRead() },
+		}, field[home.Duration]{
+			get: func(c *home.Config) home.Duration { return c.Watch.ListInterval },
+			set: func(c *home.Config, v home.Duration) { c.Watch.ListInterval = v },
+		}, time.Minute, 30*time.Second),
 		durationSetting(settingMeta{
 			id:      "watch.active_interval",
 			section: "POLL TIMING",
@@ -772,6 +766,7 @@ func notificationSetting(kind notification) settingDescriptor {
 		defaultText: onOff(defCfg.Notifications.Enabled(kind.event)),
 		kind:        settingKindBool,
 		path:        []string{"notifications", "events", string(kind.event)},
+		after:       func(a *App) tea.Cmd { return a.scheduleListRead() },
 		getDisplay:  func(a *App) string { return onOff(enabled(a)) },
 		getRaw:      func(a *App) string { return strconv.FormatBool(enabled(a)) },
 		isEnabled:   enabled,
@@ -796,7 +791,7 @@ func notificationSetting(kind notification) settingDescriptor {
 			default:
 				a.settings.setNotice(fmt.Sprintf("%s is %s", kind.setting, state), false)
 			}
-			return a.scheduleNotifications()
+			return a.scheduleListRead()
 		},
 		reset: func(a *App) error {
 			return a.setNotification(kind.event, defCfg.Notifications.Enabled(kind.event))
