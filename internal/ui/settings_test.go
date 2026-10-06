@@ -877,18 +877,18 @@ func TestTheTrustListsAreManagedFromTheSettingsPane(t *testing.T) {
 	send(t, app, press("enter"))
 	require.Equal(t, settingsModeSubPane, app.settings.mode)
 	assert.Equal(t, subPaneTrustedAuthors, app.settings.subPane.kind)
-	assert.Equal(t, []string{"gemini-code-assist[bot]"}, app.subPaneEntries(),
+	assert.Equal(t, []string{"gemini-code-assist[bot]", "copilot-pull-request-reviewer[bot]"}, app.subPaneEntries(),
 		"the shipped default is what the pane opens on")
 
 	send(t, app, press("a"))
 	app.settings.subPane.valInput.SetValue("colleague")
 	send(t, app, press("enter"))
 
-	assert.Equal(t, []string{"gemini-code-assist[bot]", "colleague"}, app.homeCfg.Security.TrustedAuthors)
+	assert.Equal(t, []string{"gemini-code-assist[bot]", "copilot-pull-request-reviewer[bot]", "colleague"}, app.homeCfg.Security.TrustedAuthors)
 	assert.Contains(t, app.settings.notice, `Added trusted author "colleague" · saved`)
 
 	send(t, app, press("d"))
-	assert.Equal(t, []string{"colleague"}, app.homeCfg.Security.TrustedAuthors,
+	assert.Equal(t, []string{"copilot-pull-request-reviewer[bot]", "colleague"}, app.homeCfg.Security.TrustedAuthors,
 		"the cursor was on the first entry, so that is the one removed")
 }
 
@@ -945,7 +945,7 @@ func TestATrustedAuthorHasToLookLikeALogin(t *testing.T) {
 		assert.Contains(t, app.settings.notice, "is not a GitHub login", bad)
 	}
 
-	assert.Equal(t, []string{"gemini-code-assist[bot]"}, app.homeCfg.Security.TrustedAuthors,
+	assert.Equal(t, []string{"gemini-code-assist[bot]", "copilot-pull-request-reviewer[bot]"}, app.homeCfg.Security.TrustedAuthors,
 		"none of them was saved")
 
 	send(t, app, press("a"))
@@ -964,7 +964,9 @@ func TestEmptyingATrustListIsNotTheSameAsLeavingItAtItsDefault(t *testing.T) {
 
 	cursorOn(t, app, "security.trusted_authors")
 	send(t, app, press("enter"))
-	send(t, app, press("d"))
+	for range defCfg.Security.TrustedAuthors {
+		send(t, app, press("d"))
+	}
 
 	require.Empty(t, app.homeCfg.Security.TrustedAuthors)
 	assert.False(t, descriptor.isDefault(app),

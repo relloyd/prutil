@@ -354,12 +354,16 @@ func DefaultConfig() Config {
 //
 // gemini-code-assist[bot] is here because prutil's own review.comment default
 // summons it, so out of the box the reader's own trigger is not something that
-// then holds the pull request. A trusted bot can still quote somebody else, but
-// an untrusted author anywhere in the thread holds it anyway.
+// then holds the pull request. copilot-pull-request-reviewer[bot] is GitHub's
+// own Copilot code review, the other review bot a reader is likely to ask for,
+// whether with an R comment of their own or from GitHub's reviewer menu; the
+// GitHub App's login is the one GitHub's documentation names for requesting
+// it. A trusted bot can still quote somebody else, but an untrusted author
+// anywhere in the thread holds it anyway.
 func defaultSecurity() SecurityConfig {
 	return SecurityConfig{
 		TrustedAssociations: []string{"OWNER", "COLLABORATOR"},
-		TrustedAuthors:      []string{"gemini-code-assist[bot]"},
+		TrustedAuthors:      []string{"gemini-code-assist[bot]", "copilot-pull-request-reviewer[bot]"},
 		RequireSandbox:      true,
 	}
 }
