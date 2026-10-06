@@ -18,7 +18,6 @@ func TestApprovalNotificationsAreOnUntilSomebodySaysOtherwise(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, cfg.Notifications.Enabled(home.NotifyApproved))
 	assert.True(t, cfg.Notifications.Any())
-	assert.Equal(t, home.DefaultNotificationInterval, cfg.Notifications.Interval.Duration())
 
 	assert.True(t, home.NotificationConfig{}.Enabled(home.NotifyApproved),
 		"a zero configuration, which the tests build apps on, still has the defaults")
@@ -40,10 +39,10 @@ func TestAnEmptyNotificationsSectionKeepsTheDefaults(t *testing.T) {
 	}
 }
 
-func TestTheNotificationIntervalIsClampedLikeEveryOtherPoll(t *testing.T) {
-	cfg, err := home.ParseConfig([]byte("notifications:\n  interval: 1s\n"))
+func TestTheListIntervalIsClampedToAMinute(t *testing.T) {
+	cfg, err := home.ParseConfig([]byte("watch:\n  list_interval: 1s\n"))
 	require.NoError(t, err)
-	assert.Equal(t, 15*time.Second, cfg.Notifications.Interval.Duration())
+	assert.Equal(t, time.Minute, cfg.Watch.ListInterval.Duration())
 }
 
 func TestOneConfigurationCannotChangeAnothersDefaultNotifications(t *testing.T) {

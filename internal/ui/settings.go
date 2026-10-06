@@ -516,7 +516,7 @@ func (a *App) handleEditKey(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		a.settings.mode = settingsModeNormal
 		a.settings.input.Blur()
-		return nil
+		return item.runAfter(a)
 	default:
 		var cmd tea.Cmd
 		a.settings.input, cmd = a.settings.input.Update(msg)
@@ -894,7 +894,7 @@ func (a *App) resetCurrentSetting(item settingDescriptor) tea.Cmd {
 		}
 	}
 	a.settings.setNotice(fmt.Sprintf("%s reset to default · saved", item.title), false)
-	return nil
+	return item.runAfter(a)
 }
 
 // jumpSection moves the selection to the next or previous section.
@@ -1369,8 +1369,8 @@ func (a *App) settingsNotice() (string, lipgloss.Style) {
 		return "the last check for changes failed: " + a.notifyErr.Error(), a.styles.Error
 	}
 	return "Changes are saved as you make them. " +
-		"prutil checks your open pull requests every " + humanInterval(a.notifyInterval()) +
-		" while a notification is on.", a.styles.Muted
+		"prutil reads your open pull requests every " + humanInterval(a.listInterval()) +
+		" while a notification or new PR watching is on.", a.styles.Muted
 }
 
 // humanInterval writes a poll interval the way a sentence would.

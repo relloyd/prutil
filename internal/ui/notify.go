@@ -195,31 +195,12 @@ func (a *App) notificationsWanted() bool {
 	return a.notifier != nil && a.homeCfg.Notifications.Any() && len(a.views[viewOpen].prs) > 0
 }
 
-// notifyInterval is the gap between two reads of the open pull requests.
-func (a *App) notifyInterval() time.Duration {
-	if d := a.homeCfg.Notifications.Interval.Duration(); d > 0 {
-		return d
-	}
-	return home.DefaultNotificationInterval
-}
-
-// scheduleNotifications starts the wait before the next read, unless one is
-// already under way. Only one wait or read is ever outstanding, so calling it
-// after every list load and every toggle is safe.
-func (a *App) scheduleNotifications() tea.Cmd {
-	if a.notifyPending || !a.notificationsWanted() {
-		return nil
-	}
-	a.notifyPending = true
-	return tea.Tick(a.notifyInterval(), func(time.Time) tea.Msg { return notifyTickMsg{} })
-}
-
 // pollNotifications reads every open pull request with the watcher's cheap
 // query: one request per hundred of them, whatever repositories they are in.
-// A notification turned off since the wait began ends the run here.
+// It is the background read while auto-watch is off; see listread.go. Only
+// one is ever outstanding, and its reply schedules the next wait.
 func (a *App) pollNotifications() tea.Cmd {
-	a.notifyPending = false
-	if !a.notificationsWanted() {
+	if a.notifyReading {
 		return nil
 	}
 
@@ -236,7 +217,7 @@ func (a *App) pollNotifications() tea.Cmd {
 		return nil
 	}
 
-	a.notifyPending = true
+	a.notifyReading = true
 	client, at := a.client, a.now()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
@@ -258,17 +239,14 @@ func (a *App) pollNotifications() tea.Cmd {
 // laptop that has lost its network it would otherwise say so every couple of
 // minutes, and the next read tries again anyway.
 func (a *App) applyNotifyPoll(msg notifyPollMsg) tea.Cmd {
-	a.notifyPending = false
+	a.notifyReading = false
 	a.notifyErr = msg.err
 	var announce tea.Cmd
 	if msg.err == nil {
 		announce = a.notice(readingsOfSnapshots(msg.snaps, msg.at))
 	}
-	return tea.Batch(announce, a.scheduleNotifications())
+	return tea.Batch(announce, a.scheduleListRead())
 }
-
-// notifyTickMsg says the wait before the next notification read is over.
-type notifyTickMsg struct{}
 
 // notifyPollMsg carries one notification read.
 type notifyPollMsg struct {

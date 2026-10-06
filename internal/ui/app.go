@@ -252,9 +252,11 @@ type App struct {
 	// from a spent run carries an older number and is dropped, so a run that
 	// has ended cannot restart itself.
 	autoSeq int
-	// autoWatchSeq names the wait before the open list is next re-read for
-	// new pull requests, the same way autoSeq names a run of ticks.
-	autoWatchSeq int
+	// listReadSeq names the wait before the open list is next re-read in the
+	// background, the same way autoSeq names a run of ticks; listReadWaiting
+	// is whether that wait is under way. See listread.go.
+	listReadSeq     int
+	listReadWaiting bool
 
 	// live is Config.Clock. focused is whether the terminal has focus, which
 	// starts true because a terminal is not obliged to say so when it starts,
@@ -304,10 +306,10 @@ type App struct {
 
 	// notifier shows desktop notifications, when there is one.
 	notifier desktop.Notifier
-	// notifyPending is whether a wait or a read for notifications is under
-	// way, of which there is only ever one; notifyErr is how the last read
-	// failed, for the settings pane to report.
-	notifyPending bool
+	// notifyReading is whether the cheap background read is under way, of
+	// which there is only ever one; notifyErr is how the last one failed, for
+	// the settings pane to report.
+	notifyReading bool
 	notifyErr     error
 }
 
@@ -656,8 +658,8 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		state.loading = false
 		state.err = msg.err
 		if msg.view == viewOpen {
-			// A refused read must not end the search for new pull requests.
-			return a, a.scheduleAutoWatch()
+			// A refused read must not end the background reads.
+			return a, a.scheduleListRead()
 		}
 		return a, nil
 
@@ -762,15 +764,12 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.applyAdoptLookup(msg)
 		return a, nil
 
-	case autoWatchTickMsg:
-		return a, a.autoWatchTick(msg)
+	case listReadTickMsg:
+		return a, a.listReadTick(msg)
 
 	case adoptPullsMsg:
 		a.applyAdoptPulls(msg)
 		return a, nil
-
-	case notifyTickMsg:
-		return a, a.pollNotifications()
 
 	case notifyPollMsg:
 		return a, a.applyNotifyPoll(msg)
@@ -1323,13 +1322,13 @@ func (a *App) loadOpen(gen int) tea.Cmd {
 }
 
 // noticeAfterLoad compares a freshly loaded open list with what was last read,
-// and makes sure the notification reads are running now there is a list to
-// read.
+// and starts the wait before the next background read afresh: the list just
+// loaded is as new as that read would be.
 func (a *App) noticeAfterLoad(msg prsMsg) tea.Cmd {
 	if msg.view != viewOpen {
 		return nil
 	}
-	return tea.Batch(a.notice(readingsOfPRs(msg.prs, msg.at)), a.scheduleNotifications())
+	return tea.Batch(a.notice(readingsOfPRs(msg.prs, msg.at)), a.scheduleListRead())
 }
 
 // loadClosed fetches the first page of the recently closed sweep and returns

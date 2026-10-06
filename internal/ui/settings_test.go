@@ -374,8 +374,8 @@ func TestClickingASettingTogglesItAndClicksElsewhereDoNothing(t *testing.T) {
 	send(t, app, tea.MouseClickMsg{X: l.x + 4, Y: l.y + 2, Button: tea.MouseRight})
 	assert.False(t, app.homeCfg.Notifications.Enabled(home.NotifyApproved), "only the left button toggles")
 
-	// The heading, then every notification row and the poll interval.
-	second := l.y + 2 + len(notifications) + 1
+	// The heading, then every notification row.
+	second := l.y + 2 + len(notifications)
 	send(t, app, click(l.x+4, second))
 	assert.False(t, app.homeCfg.Watch.SelfReview, "a click on the second heading changes nothing")
 
@@ -406,7 +406,7 @@ func TestMovingTheSelectionStaysInsideTheListAndClearsTheNotice(t *testing.T) {
 
 func TestTheSettingsExplainTheSelectedNotificationAndHowOftenPrutilLooks(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
-	app.homeCfg.Notifications.Interval = home.Duration(2 * time.Minute)
+	app.homeCfg.Watch.ListInterval = home.Duration(2 * time.Minute)
 	openSettingsPane(t, app)
 
 	screen := plain(app.render())
@@ -460,33 +460,29 @@ func TestTheSettingsFitEveryTerminalSize(t *testing.T) {
 
 func TestSettingsSteppingAndCycling(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
-	app.homeCfg.Notifications.Interval = home.Duration(2 * time.Minute)
+	app.homeCfg.Watch.ListInterval = home.Duration(2 * time.Minute)
 	openSettingsPane(t, app)
 
 	// Cursor starts on notifications.approved (item 0)
 	assert.Equal(t, 0, app.settings.cursor)
 
-	// Move down to notifications.interval, past the other notifications
-	for app.settings.cursor < settingIndex(t, "notifications.interval") {
-		send(t, app, press("j"))
-	}
-
-	// Step interval up with +
-	send(t, app, press("+"))
-	assert.Equal(t, home.Duration(2*time.Minute+30*time.Second), app.homeCfg.Notifications.Interval)
-	assert.Contains(t, app.settings.notice, "Notification poll interval set to 2m30s · saved")
-
-	// Step interval down with -
-	send(t, app, press("-"))
-	assert.Equal(t, home.Duration(2*time.Minute), app.homeCfg.Notifications.Interval)
-
 	// Jump to next section with tab (WATCHING)
 	send(t, app, press("tab"))
 	assert.Equal(t, settingIndex(t, "watch.self_review"), app.settings.cursor)
 
-	// Jump to next section with tab (POLL TIMING)
+	// Jump to next section with tab (POLL TIMING), whose first row is the
+	// open list re-read interval
 	send(t, app, press("tab"))
-	assert.Equal(t, settingIndex(t, "watch.active_interval"), app.settings.cursor)
+	assert.Equal(t, settingIndex(t, "watch.list_interval"), app.settings.cursor)
+
+	// Step interval up with +
+	send(t, app, press("+"))
+	assert.Equal(t, home.Duration(2*time.Minute+30*time.Second), app.homeCfg.Watch.ListInterval)
+	assert.Contains(t, app.settings.notice, "Open list re-read interval set to 2m30s · saved")
+
+	// Step interval down with -
+	send(t, app, press("-"))
+	assert.Equal(t, home.Duration(2*time.Minute), app.homeCfg.Watch.ListInterval)
 
 	// Jump to next section with tab (PR COMMENTS)
 	send(t, app, press("tab"))
@@ -530,6 +526,46 @@ func TestSettingsInlineTextEditing(t *testing.T) {
 	assert.Equal(t, settingsModeNormal, app.settings.mode)
 	assert.Equal(t, "/claude review", app.homeCfg.Review.CommentFor(""))
 	assert.Contains(t, app.settings.notice, "AI review comment set to \"/claude review\" · saved")
+}
+
+func TestTypingOrResettingTheListIntervalRestartsTheWait(t *testing.T) {
+	tests := []struct {
+		name string
+		do   func(t *testing.T, app *App) tea.Cmd
+		want home.Duration
+	}{
+		{
+			name: "a value typed in starts a wait of the new length",
+			do: func(t *testing.T, app *App) tea.Cmd {
+				send(t, app, press("enter"))
+				app.settings.input.SetValue("3m")
+				return send(t, app, press("enter"))
+			},
+			want: home.Duration(3 * time.Minute),
+		},
+		{
+			name: "a reset starts a wait of the default length",
+			do: func(t *testing.T, app *App) tea.Cmd {
+				return send(t, app, press("d"))
+			},
+			want: home.Duration(home.DefaultListInterval),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			app, _, _ := newTestApp(t, 120, 40)
+			openSettingsPane(t, app)
+			cursorOn(t, app, "watch.list_interval")
+			before := app.listReadSeq
+
+			cmd := tc.do(t, app)
+
+			assert.Equal(t, tc.want, app.homeCfg.Watch.ListInterval)
+			assert.NotNil(t, cmd, "the wait the change started is not dropped")
+			assert.Greater(t, app.listReadSeq, before, "the old wait is replaced")
+			assert.True(t, app.listReadWaiting)
+		})
+	}
 }
 
 func TestSettingsSubPaneMapAndSequence(t *testing.T) {

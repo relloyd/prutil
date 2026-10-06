@@ -259,11 +259,17 @@ type WatchConfig struct {
 	// armed once it is marked ready for review, since a draft's checks
 	// failing is usually the author still pushing, not work for an agent.
 	AutoWatchDrafts bool `yaml:"auto_watch_drafts"`
-	// AutoWatchInterval is how often the open list is re-read, looking for new
-	// pull requests, while AutoWatch is on. Nothing else re-reads it on its
-	// own: the watcher and the notifications ask only about pull requests
-	// prutil already knows.
-	AutoWatchInterval Duration `yaml:"auto_watch_interval"`
+	// ListInterval is how often the open pull requests are re-read in the
+	// background, while AutoWatch or any desktop notification is on. With
+	// AutoWatch on it is the whole search, which is the only thing that finds
+	// a pull request opened since the list was last read; otherwise it is the
+	// watcher's cheap query over the pull requests already listed. Watched
+	// pull requests are polled on the intervals above, whatever this says.
+	//
+	// It replaces watch.auto_watch_interval and notifications.interval, which
+	// were two speeds for one job. A file that still names them and not this
+	// takes the shorter of the two; see legacyListInterval.
+	ListInterval Duration `yaml:"list_interval"`
 	// SelfTestMarker lets you count one of your own review comments as
 	// feedback by writing this string in it, which is how the watcher is tried
 	// against a real pull request without waiting for a reviewer. It answers
@@ -320,7 +326,7 @@ func DefaultConfig() Config {
 			IdleInterval:        Duration(10 * time.Second),
 			DormantAfter:        3,
 			ForcePreciseEvery:   5,
-			AutoWatchInterval:   Duration(DefaultAutoWatchInterval),
+			ListInterval:        Duration(DefaultListInterval),
 			SelfTestMarker:      defaultMarker(),
 		},
 		Review: ReviewConfig{
@@ -365,18 +371,65 @@ func ParseConfig(data []byte) (Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return DefaultConfig(), fmt.Errorf("could not read the configuration: %w", err)
 	}
+	if d, ok := legacyListInterval(data); ok {
+		cfg.Watch.ListInterval = d
+	}
 	cfg.clamp()
 	return cfg, nil
 }
 
-// DefaultAutoWatchInterval is how often the open list is re-read for new pull
-// requests while auto-watch is on. A new pull request is rarely urgent in its
-// first five minutes, and the search behind the list is one request.
-const DefaultAutoWatchInterval = 5 * time.Minute
+// supersededKeys are the keys a setting replaced, by the dotted path of the
+// key that replaced them. A file naming them is still honoured, through
+// legacyListInterval, and the settings pane takes them out whenever it writes
+// or resets their replacement, so a file it has touched holds one answer
+// rather than three, and a reset lands on the default rather than on
+// whichever old key was left behind.
+var supersededKeys = map[string][][]string{
+	"watch.list_interval": {
+		{"watch", "auto_watch_interval"},
+		{"notifications", "interval"},
+	},
+}
 
-// minAutoWatchInterval is the shortest gap between two of those reads. Each
-// is a whole search, the costliest request prutil makes on a schedule.
-const minAutoWatchInterval = time.Minute
+// legacyListInterval is the shorter of watch.auto_watch_interval and
+// notifications.interval, for a file that names either of them and not
+// watch.list_interval. The shorter, because each was somebody asking for
+// their open pull requests to be read at least that often.
+func legacyListInterval(data []byte) (Duration, bool) {
+	var keys struct {
+		Watch struct {
+			List      *Duration `yaml:"list_interval"`
+			AutoWatch *Duration `yaml:"auto_watch_interval"`
+		} `yaml:"watch"`
+		Notifications struct {
+			Interval *Duration `yaml:"interval"`
+		} `yaml:"notifications"`
+	}
+	if err := yaml.Unmarshal(data, &keys); err != nil || keys.Watch.List != nil {
+		return 0, false
+	}
+	var found []Duration
+	for _, d := range []*Duration{keys.Watch.AutoWatch, keys.Notifications.Interval} {
+		if d != nil {
+			found = append(found, *d)
+		}
+	}
+	if len(found) == 0 {
+		return 0, false
+	}
+	return slices.Min(found), true
+}
+
+// DefaultListInterval is how often the open pull requests are re-read in the
+// background. An approval a couple of minutes late is still news, and so is a
+// new pull request; a request every few seconds would be a poor trade for
+// either.
+const DefaultListInterval = 2 * time.Minute
+
+// minListInterval is the shortest gap between two of those reads. With
+// auto-watch on each is a whole search, the costliest request prutil makes on
+// a schedule.
+const minListInterval = time.Minute
 
 // minPollInterval is the shortest gap prutil will leave between two polls of
 // the same pull request, whatever the configuration says. A typo in a
@@ -414,14 +467,13 @@ func (c *Config) clamp() {
 	for _, d := range []*Duration{
 		&w.ActiveInterval, &w.BaseInterval, &w.MaxInterval,
 		&w.NotifiedInterval, &w.MaxNotifiedInterval,
-		&c.Notifications.Interval,
 	} {
 		if *d < floor {
 			*d = floor
 		}
 	}
-	if w.AutoWatchInterval < Duration(minAutoWatchInterval) {
-		w.AutoWatchInterval = Duration(minAutoWatchInterval)
+	if w.ListInterval < Duration(minListInterval) {
+		w.ListInterval = Duration(minListInterval)
 	}
 	if w.IdleInterval < Duration(time.Second) {
 		w.IdleInterval = Duration(time.Second)

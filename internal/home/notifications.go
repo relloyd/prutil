@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // NotificationEvent names a change to a pull request that prutil can raise a
@@ -64,20 +63,11 @@ func (e NotificationEvent) defaultOn() bool {
 	return false
 }
 
-// DefaultNotificationInterval is how often every open pull request is read
-// for the changes a notification is raised on. An approval a couple of
-// minutes late is still news; a request every few seconds for every pull
-// request the reader has open would be a poor trade for it.
-const DefaultNotificationInterval = 2 * time.Minute
-
 // NotificationConfig governs the desktop notifications prutil raises itself.
 // They are separate from herdr.toast, which is the notification herdr shows
-// when prutil hands work to an agent.
+// when prutil hands work to an agent. How often the open pull requests are
+// read for them is watch.list_interval, which auto-watch shares.
 type NotificationConfig struct {
-	// Interval is how often every open pull request is read while any
-	// notification is on. Watched pull requests are also read on the
-	// watcher's own schedule, which is often sooner.
-	Interval Duration `yaml:"interval"`
 	// Events turns each notification on or off. An event the file does not
 	// mention takes its default.
 	Events map[NotificationEvent]bool `yaml:"events"`
@@ -93,7 +83,7 @@ func defaultNotifications() NotificationConfig {
 	for _, d := range notificationDefaults {
 		events[d.event] = d.on
 	}
-	return NotificationConfig{Interval: Duration(DefaultNotificationInterval), Events: events}
+	return NotificationConfig{Events: events}
 }
 
 // Enabled reports whether a change of this kind raises a notification.

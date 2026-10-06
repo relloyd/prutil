@@ -622,9 +622,8 @@ func fastWatch() home.Config {
 	cfg.Watch = home.WatchConfig{
 		ActiveInterval: tiny, BaseInterval: tiny, MaxInterval: tiny,
 		NotifiedInterval: tiny, MaxNotifiedInterval: tiny, IdleInterval: tiny,
-		DormantAfter: 3, ForcePreciseEvery: 5,
+		DormantAfter: 3, ForcePreciseEvery: 5, ListInterval: tiny,
 	}
-	cfg.Notifications.Interval = tiny
 	return cfg
 }
 

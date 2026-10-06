@@ -290,18 +290,61 @@ func assertIndependent(t *testing.T, a, b reflect.Value, path string) {
 	}
 }
 
-func TestAutoWatchShipsOffWithAFiveMinuteInterval(t *testing.T) {
+func TestAutoWatchShipsOffAndTheOpenListIsReReadEveryTwoMinutes(t *testing.T) {
 	cfg := home.DefaultConfig()
 
 	assert.False(t, cfg.Watch.AutoWatch)
 	assert.False(t, cfg.Watch.AutoWatchDrafts)
-	assert.Equal(t, home.Duration(5*time.Minute), cfg.Watch.AutoWatchInterval)
+	assert.Equal(t, home.Duration(2*time.Minute), cfg.Watch.ListInterval)
 }
 
-func TestTheWrittenTemplateNamesAutoWatch(t *testing.T) {
+func TestTheWrittenTemplateNamesAutoWatchAndOneListInterval(t *testing.T) {
 	template := string(home.DefaultConfigTemplate())
 
 	assert.Contains(t, template, "auto_watch: false")
 	assert.Contains(t, template, "auto_watch_drafts: false")
-	assert.Contains(t, template, "auto_watch_interval: 5m")
+	assert.Contains(t, template, "list_interval: 2m")
+	assert.NotContains(t, template, "auto_watch_interval")
+	assert.NotContains(t, template, "\n  interval:", "notifications has no interval of its own")
+}
+
+func TestTheListIntervalFallsBackToTheKeysItReplaced(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want time.Duration
+	}{
+		{
+			name: "a file naming neither old key nor the new one takes the default",
+			src:  "watch:\n  base_interval: 5m\n",
+			want: 2 * time.Minute,
+		},
+		{
+			name: "a file written before the change takes the shorter of the two old keys",
+			src:  "watch:\n  auto_watch_interval: 5m\nnotifications:\n  interval: 3m\n",
+			want: 3 * time.Minute,
+		},
+		{
+			name: "one old key on its own is honoured",
+			src:  "watch:\n  auto_watch_interval: 10m\n",
+			want: 10 * time.Minute,
+		},
+		{
+			name: "the new key wins over the old ones",
+			src:  "watch:\n  list_interval: 4m\n  auto_watch_interval: 1m\nnotifications:\n  interval: 1m\n",
+			want: 4 * time.Minute,
+		},
+		{
+			name: "an old notification interval below a minute is brought up to one",
+			src:  "notifications:\n  interval: 15s\n",
+			want: time.Minute,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := home.ParseConfig([]byte(tc.src))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.Watch.ListInterval.Duration())
+		})
+	}
 }

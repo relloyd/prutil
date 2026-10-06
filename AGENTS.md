@@ -464,9 +464,9 @@ fires once per new reply, and not on every poll while the hold stands.
 `watch.auto_watch` arms the reader's new pull requests (`internal/ui/autowatch.go`).
 Nothing else discovers one: the watcher and the notification poll address pull
 requests by the node ids the open list came with. So while it is on,
-`scheduleAutoWatch` re-reads the open list every `auto_watch_interval`, and every
-load of that list, whoever asked for it, reschedules the wait and runs
-`applyAutoWatch`.
+the background read in `internal/ui/listread.go` re-runs the search every
+`watch.list_interval`, and every load of that list, whoever asked for it,
+reschedules the wait and runs `applyAutoWatch`.
 
 `home.State.AutoWatch` is what keeps it to new pull requests, and to each once.
 `Since` is when it was switched on, and a pull request created before it is not
@@ -546,14 +546,37 @@ notification nor a watch option costs an entry and nothing else. Do not give
 every place the pane touches a setting.
 
 Readings come from three places: the open list loading, the watcher's
-snapshots, and a poll of every open pull request that runs only while a
-notification is on (`scheduleNotifications`; `notifyPending` keeps it to one
-wait or request at a time). Every reading is stamped with when it was asked for,
+snapshots, and the background read (below) of every open pull request. Every reading is stamped with when it was asked for,
 and `App.notice` ignores one older than what it holds, or a slow list load
 could undo an approval a poll had already seen and have it announced twice. The
 first reading of a pull request is a baseline and never announced. Readings are
 recorded even while every notification is off, so turning one on does not
 announce old news.
+
+## The background read
+
+`watch.list_interval` is the one wait between background reads of the open
+list (`internal/ui/listread.go`), shared by auto-watch and the desktop
+notifications. At its end `listReadTick` runs the search while auto-watch is
+on, because only the search finds a new pull request, and otherwise
+`pollNotifications`, the watcher's cheap query over what is already listed.
+Never both: every load of the open list is a reading for the notifications
+too. Watched pull requests are the watcher's, on the POLL TIMING intervals,
+and nothing here touches them.
+
+- **One wait, named by `listReadSeq`.** `scheduleListRead` replaces whatever
+  wait is under way, and ends the run when nothing wants a read. It is called
+  after every load of the open list, after every cheap read, and from the
+  `after` hook of every setting it depends on. Do not give a feature its own
+  timer again: two settings for one job is what this replaced.
+- **`notifyReading` keeps the cheap read to one at a time.** A tick that finds
+  one out does nothing, and the reply schedules the next wait.
+- **The old keys still answer.** `watch.auto_watch_interval` and
+  `notifications.interval` are read by `legacyListInterval`, the shorter of the
+  two, when the file does not name `watch.list_interval`. `supersededKeys` has
+  the settings pane take them out whenever it writes or resets the new key;
+  without that a reset would land on an old key rather than on the default,
+  and fail the store's check that the file now says what it meant to.
 
 ## The checks passed comment
 
@@ -638,6 +661,12 @@ share a constructor with.
 
 A map the pane manages is a `mapSubPane` entry and a list is a `listSubPane`
 entry, in `internal/ui/settings.go`; neither needs a new arm in a switch.
+
+A setting's `after` hook runs once a change is saved. `step` and `toggle`
+return it themselves; a typed entry and a reset report an error alone, so the
+pane runs `settingDescriptor.runAfter` for them. Do not call `after` from inside
+`saveInput`: the command it returns, such as a rescheduled wait, would be
+dropped.
 
 Save through the `App` helpers (`saveSetting`, `resetSetting` and the rest), never
 `a.store` directly. They write the file first and move `a.homeCfg` only once that

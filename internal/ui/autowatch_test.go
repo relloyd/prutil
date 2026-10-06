@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/relloyd/prutil/internal/home"
 	"github.com/relloyd/prutil/internal/model"
 )
 
@@ -243,14 +244,15 @@ func TestAutoWatchSwitchedOnInTheFileStartsFromTheFirstLoad(t *testing.T) {
 	assert.False(t, app.armed(earlier.Key()))
 }
 
-func TestTheTickReReadsTheOpenList(t *testing.T) {
+func TestTheTickReReadsTheOpenListWhileAutoWatchIsOn(t *testing.T) {
 	app, client := newAutoWatchApp(t)
-	app.scheduleAutoWatch()
+	app.scheduleListRead()
 	before := client.listCalls
 
-	msgs := drain(send(t, app, autoWatchTickMsg{seq: app.autoWatchSeq}))
+	msgs := drain(send(t, app, listReadTickMsg{seq: app.listReadSeq}))
 
 	assert.Equal(t, before+1, client.listCalls)
+	assert.Empty(t, client.batches(), "the search is the notifications' reading too, so nothing else is read")
 	var loaded bool
 	for _, msg := range msgs {
 		_, ok := msg.(prsMsg)
@@ -261,23 +263,41 @@ func TestTheTickReReadsTheOpenList(t *testing.T) {
 
 func TestAStaleTickIsDropped(t *testing.T) {
 	app, client := newAutoWatchApp(t)
-	app.scheduleAutoWatch()
-	stale := app.autoWatchSeq
-	app.scheduleAutoWatch()
+	app.scheduleListRead()
+	stale := app.listReadSeq
+	app.scheduleListRead()
+	before := client.listCalls
 
-	cmd := send(t, app, autoWatchTickMsg{seq: stale})
+	cmd := send(t, app, listReadTickMsg{seq: stale})
 
 	assert.Nil(t, cmd, "a load since replaced the wait it belonged to")
-	assert.Zero(t, client.listCalls, "nothing was read")
+	assert.Equal(t, before, client.listCalls, "nothing was read")
+	assert.Empty(t, client.batches())
 }
 
-func TestATickIsIgnoredOnceAutoWatchIsOff(t *testing.T) {
-	app, _ := newAutoWatchApp(t)
-	app.scheduleAutoWatch()
-	seq := app.autoWatchSeq
+func TestOnceAutoWatchIsOffTheTickReadsOnlyWhatIsListed(t *testing.T) {
+	app, client := newAutoWatchApp(t)
+	app.scheduleListRead()
+	seq := app.listReadSeq
 	app.homeCfg.Watch.AutoWatch = false
+	before := client.listCalls
 
-	assert.Nil(t, send(t, app, autoWatchTickMsg{seq: seq}))
+	drain(send(t, app, listReadTickMsg{seq: seq}))
+
+	assert.Equal(t, before, client.listCalls, "no search: nothing needs to find a new pull request")
+	assert.Len(t, client.batches(), 1, "the notifications still get their cheap read")
+}
+
+func TestSwitchingAutoWatchOffWithEveryNotificationOffEndsTheReads(t *testing.T) {
+	app, client := newAutoWatchApp(t)
+	app.homeCfg.Notifications.Set(home.NotifyApproved, false)
+	app.homeCfg.Watch.AutoWatch = false
+	before := client.listCalls
+
+	assert.Nil(t, app.setAutoWatch(), "nothing wants a read, so no wait is started")
+	assert.False(t, app.listReadWaiting)
+	assert.Nil(t, send(t, app, listReadTickMsg{seq: app.listReadSeq}))
+	assert.Equal(t, before, client.listCalls)
 }
 
 func TestTheLoadAsksWhoTheReaderIsOnlyWhileAutoWatchNeedsIt(t *testing.T) {
