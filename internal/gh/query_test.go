@@ -87,3 +87,15 @@ func TestBrowsingARepositoryLeavesOutTheViewersOwn(t *testing.T) {
 	assert.Equal(t, "is:open is:pr repo:acme/widgets -author:@me archived:false sort:updated-desc",
 		OthersInRepoQuery("acme/widgets"))
 }
+
+func TestChecksDetailQueryPagesTheCurrentHeadWithoutWideningCheapQueries(t *testing.T) {
+	for _, field := range []string{
+		"oid", "contexts(first: 100, after: $after)", "pageInfo { hasNextPage endCursor }",
+		"databaseId", "startedAt", "checkSuite", "createdAt", "app { id slug }",
+		"workflowRun { event workflow { id name } }",
+	} {
+		assert.Contains(t, detailQuery, field)
+	}
+	assert.NotContains(t, listQuery, "contexts(", "the open list must still fetch only the rollup")
+	assert.NotContains(t, watchQuery, "contexts(", "the watcher must remain a cheap tripwire")
+}

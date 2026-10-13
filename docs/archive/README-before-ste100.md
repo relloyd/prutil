@@ -86,7 +86,7 @@ in [`config.yaml`](#configuration).
 | held | prutil found a comment it will not send unasked, from somebody outside the trust boundary or with hidden text in it. |
 | notification | a desktop notification from your operating system, such as an approval. |
 | toast | herdr's own notification that a send happened, `herdr.toast`. |
-| check | a CI check on the pull request's head commit; the rollup is GitHub's verdict over all of them. |
+| check | a CI check on the pull request's head commit. GitHub's rollup can include old runs of the same check on that commit; prutil uses the newest run of each check for its verdict, and counts a workflow triggered by two events, such as `test (push)` and `test (pull_request)`, as two checks. |
 
 ## Self-healing pull requests
 
@@ -177,7 +177,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | Mark | Means |
 | --- | --- |
 | `●` | the checks: green passed, red failed, amber still running |
-| `○` | GitHub reports no checks for the head commit |
+| `○` | no checks, or a failing GitHub rollup still waiting for check detail to verify it |
 | `◉` | watched, and being polled (`w`) |
 | `◎` | watched, but not being polled: it has gone quiet, or is not in the list. `r` wakes it |
 | `↗` | the checks passed comment is armed (`P`) |
@@ -246,14 +246,16 @@ Each press does one thing, once, whether or not the pull request is watched.
 
 | Key | Action |
 | --- | --- |
+| `n` | open notification history: view session notifications in a popup or toggle sidebar focus |
+| `p` | in the notification history, pin it as a sidebar beside the detail pane, or unpin it |
 | `s` or `,` | open settings: desktop notifications, what is watched, poll timing, PR comments, coding agent and security |
 | `?` | open the shortcut overlay: type to filter, `enter` to run the highlighted shortcut, `esc` or `?` to close |
 | `q` or `ctrl+c` | quit |
 
 Below 80 columns the two panes collapse into one: the list fills the terminal,
 clicking a row selects it, `l` swaps to detail, and `h` swaps back. When WATCH
-is available, select it above CHECKS and press `l` or `enter` again to see its
-full schedule, activity and handoff details.
+is shown, the detail pane opens with it selected; press `l` or `enter` again to
+see its full schedule, activity and handoff details.
 
 The footer has one line, so it lists the actions and leaves moving about to the
 arrow keys. `?` opens an overlay listing every shortcut with a sentence on what
@@ -298,7 +300,10 @@ reports why.
 While any notification is on, prutil re-reads every open pull request every two
 minutes (**Open list re-read interval** under `POLL TIMING` in `s`,
 `watch.list_interval`), using the watcher's cheap query: one request, and one
-rate limit point, per hundred pull requests. With new PR watching on, the same
+rate limit point, per hundred pull requests. When a rollup is ambiguous,
+prutil also reads that pull request's check detail before treating it as
+passed. A failing rollup is read once per head commit, whether or not any
+notification is on, and not again until the head changes. With new PR watching on, the same
 interval runs the whole search instead, which serves the notifications too. A
 watched pull request is also read on the watcher's own schedule, and a refresh
 reads the whole list, so either may notice a change sooner. The first reading of each pull request after prutil starts only records
@@ -388,8 +393,10 @@ word in is left alone. `W` does the same thing on demand, for a pull request
 you have not armed or one you want looked at again now.
 
 Watching also monitors the pull-request check rollup. When the rollup fails,
-prutil fetches the individual checks and waits until every check is terminal.
-It then sends all failed checks together to the agent working on the pull
+prutil fetches the individual checks. A title edit or a rerun can leave old
+failures on the same commit, even after the newest run passed. Only the newest
+attempt of each check counts. Once every current check is terminal, prutil
+sends any current failures together to the agent working on the pull
 request, so the agent can decide whether they share a cause. The default check prompt asks
 the agent to fix failures related to the pull request with a follow-up commit,
 re-trigger unrelated failures with `gh`, and ask for human assistance when it
@@ -402,6 +409,12 @@ known, even while other checks are pending, and even if they were sent for
 this head commit before. Like the watcher, it follows `herdr.fallback` when no
 agent is on the pull request. When a failed check is selected, `W` sends the
 same thing, and may set a workspace up whatever `herdr.fallback` says.
+If GitHub stops answering partway through the check pages, prutil shows the
+checks it did read with a **partial** warning. It does not automatically act on
+those checks or claim they all passed. Pressing `F` (or `W` on a visible
+failure) asks for a separate confirmation before sending only those visible
+failures; a pull request held for review security needs its own confirmation
+as well. Review feedback continues to be handled independently.
 
 Automatic investigations are recorded against the head commit, so a restart
 does not resend the same failure. Pushing a new head allows a new investigation.
@@ -575,7 +588,10 @@ watch or handoff activity. It shows the current state-machine tier, cadence and
 next check; work currently in flight; a bounded activity feed from this TUI
 session; and the three most recent durable handoff attempts for that pull
 request. The activity feed resets when prutil exits; `handoffs.jsonl` is the
-cross-session record.
+cross-session record. The `›` after the heading marks the fuller page behind
+it. Focusing the detail pane selects WATCH, the topmost item, so pressing `l`,
+`→` or `enter` again opens it, and `j` moves on to the checks. While WATCH is
+selected, the heading and the footer both say `watch log`.
 
 ### What the watching costs
 

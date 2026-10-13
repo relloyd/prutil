@@ -141,14 +141,25 @@ func (f *fakeClient) closedFinishCallCount() int {
 	return f.closedFinishCalls
 }
 
-func (f *fakeClient) Checks(_ context.Context, key model.Key) ([]model.Check, error) {
+func (f *fakeClient) Checks(_ context.Context, key model.Key) (gh.ChecksResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checkCalls[key]++
 	if f.checksErr != nil {
-		return nil, f.checksErr
+		return gh.ChecksResult{}, f.checksErr
 	}
-	return f.checks[key], nil
+	result := gh.ChecksResult{Checks: f.checks[key]}
+	for _, pr := range f.prs {
+		if pr.Key() != key {
+			continue
+		}
+		result.HeadOID = pr.HeadOID
+		if snap, ok := f.snapshots[pr.NodeID]; ok && snap.HeadOID != "" {
+			result.HeadOID = snap.HeadOID
+		}
+		break
+	}
+	return result, nil
 }
 
 func (f *fakeClient) ReviewThreads(_ context.Context, _ model.Key) (gh.Review, error) {

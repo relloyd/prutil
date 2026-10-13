@@ -21,6 +21,11 @@ const (
 	minDetailWidth = 32
 	// minListWidth is the narrowest useful list pane.
 	minListWidth = 30
+	// minTrayWidth is the narrowest useful notification tray pane.
+	minTrayWidth = 26
+	// minSidebarWidth is the narrowest terminal the notification sidebar is
+	// drawn in: every pane at its narrowest, and the gaps between them.
+	minSidebarWidth = minListWidth + minDetailWidth + minTrayWidth + 2*paneGap
 )
 
 // View implements tea.Model.
@@ -63,6 +68,9 @@ func (a *App) render() string {
 	}
 	if a.adopt.open {
 		lines = a.renderAdopt(lines)
+	}
+	if a.tray.popupOpen {
+		lines = a.renderTrayPopup(lines)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -110,6 +118,9 @@ func (a *App) renderHeader() []string {
 		// find out how long it has left.
 		left += a.styles.Auto.Render(fmt.Sprintf(" · auto-refresh ×%d", a.autoLeft))
 	}
+	if unread := a.tray.unreadCount(); unread > 0 {
+		left += a.styles.Accent.Render(fmt.Sprintf(" · %d new", unread))
+	}
 	if len(meta) > 0 {
 		left += a.styles.Meta.Render(" · " + strings.Join(meta, " · "))
 	}
@@ -139,10 +150,15 @@ func (a *App) modeText() string {
 	}
 }
 
+// sidebarVisible reports whether the notification history sidebar fits and is enabled.
+func (a *App) sidebarVisible() bool {
+	return a.homeCfg.Notifications.Sidebar && !a.narrow() && a.width >= minSidebarWidth
+}
+
 // renderBody draws the list and, when there is room, the detail pane beside it.
 func (a *App) renderBody() []string {
 	height := a.bodyHeight()
-	listWidth, detailWidth := a.paneWidths()
+	listWidth, detailWidth, trayWidth := a.bodyWidths()
 
 	if a.narrow() {
 		if a.focus == paneDetail {
@@ -154,6 +170,15 @@ func (a *App) renderBody() []string {
 	left := clipLines(a.renderList(listWidth, height), height, listWidth)
 	right := clipLines(a.renderDetail(detailWidth, height), height, detailWidth)
 	border := a.styles.PaneBorder.Render("│")
+
+	if a.sidebarVisible() {
+		tray := clipLines(a.renderTrayPane(trayWidth, height), height, trayWidth)
+		out := make([]string, height)
+		for i := range out {
+			out[i] = left[i] + " " + border + right[i] + " " + border + tray[i]
+		}
+		return out
+	}
 
 	out := make([]string, height)
 	for i := range out {
@@ -177,8 +202,15 @@ func (a *App) footerLines() []string {
 		notice = a.styles.Error.Render("config: " + ansi.Truncate(a.homeNote, max(a.width-8, 10), ellipsis))
 	}
 
+	// → means something different on the WATCH heading, so the footer says
+	// what it does there. A copy, because View must not change the key map.
+	keys := a.keys
+	if a.onWatchHeading() {
+		keys.Into.SetHelp(keys.Into.Help().Key, "watch log")
+	}
+
 	lines := []string{notice}
-	for _, line := range strings.Split(a.help.View(a.keys), "\n") {
+	for _, line := range strings.Split(a.help.View(keys), "\n") {
 		// The help component drops bindings that do not fit, but it gives up at
 		// some widths, so the line is clipped here as well.
 		lines = append(lines, ansi.Truncate(line, a.width, ellipsis))
@@ -191,13 +223,9 @@ func (a *App) bodyHeight() int {
 	return max(a.height-headerHeight-len(a.footerLines()), 1)
 }
 
-// paneWidths splits the terminal between the list and the detail pane. In
-// narrow mode both panes are the full width, because only one is drawn.
-func (a *App) paneWidths() (listWidth, detailWidth int) {
-	if a.narrow() {
-		return a.width, a.width
-	}
-
+// twoPaneWidths calculates the standard two-pane layout dividing available width
+// between the pull request list and the detail pane.
+func (a *App) twoPaneWidths() (listWidth, detailWidth int) {
 	listWidth = max(a.width*42/100, minListWidth)
 	detailWidth = a.width - listWidth - paneGap
 	if detailWidth < minDetailWidth {
@@ -209,6 +237,51 @@ func (a *App) paneWidths() (listWidth, detailWidth int) {
 		detailWidth = max(a.width-listWidth-paneGap, 1)
 	}
 	return listWidth, detailWidth
+}
+
+// bodyWidths calculates the column widths for all visible body panes (list,
+// detail, and optional notification tray sidebar). When the notification sidebar
+// is active and terminal width allows, it allocates roughly 30% width (bounded
+// between 34 and 44 columns) to the notification pane.
+func (a *App) bodyWidths() (listWidth, detailWidth, trayWidth int) {
+	if a.narrow() {
+		return a.width, a.width, 0
+	}
+	if !a.sidebarVisible() {
+		lw, dw := a.twoPaneWidths()
+		return lw, dw, 0
+	}
+
+	avail := a.width - 2*paneGap
+	maxTray := a.width - minListWidth - minDetailWidth - 2*paneGap
+	target := max(a.width*30/100, 34)
+	trayWidth = min(target, 44)
+	if trayWidth > maxTray {
+		trayWidth = maxTray
+	}
+	if trayWidth < minTrayWidth {
+		trayWidth = minTrayWidth
+	}
+	rem := avail - trayWidth
+
+	listWidth = max(rem*42/100, minListWidth)
+	detailWidth = rem - listWidth
+	if detailWidth < minDetailWidth {
+		detailWidth = minDetailWidth
+		listWidth = rem - detailWidth
+	}
+	if listWidth < minListWidth {
+		listWidth = minListWidth
+		detailWidth = max(rem-listWidth, 1)
+	}
+	return listWidth, detailWidth, trayWidth
+}
+
+// paneWidths splits the terminal between the list and the detail pane. In
+// narrow mode both panes are the full width, because only one is drawn.
+func (a *App) paneWidths() (listWidth, detailWidth int) {
+	lw, dw, _ := a.bodyWidths()
+	return lw, dw
 }
 
 // centeredNotice renders a short message inside a pane.

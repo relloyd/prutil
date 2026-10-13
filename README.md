@@ -108,7 +108,7 @@ also change it in [`config.yaml`](#configuration).
 | held | prutil found a comment that it does not send unless you tell it to. The comment is from a person outside the trust boundary, or it contains hidden text. |
 | notification | A desktop notification from your operating system, for example an approval. |
 | toast | The notification from herdr that tells you a send occurred (`herdr.toast`). |
-| check | A CI check on the head commit of the pull request. The rollup is the verdict of GitHub for all the checks. |
+| check | A CI check on the head commit of the pull request. The rollup is the verdict of GitHub for all the checks. The rollup can include old runs of the same check on that commit. prutil uses only the newest run of each check for its verdict. A workflow that two events start, for example `test (push)` and `test (pull_request)`, counts as two checks. |
 
 ## Self-healing pull requests
 
@@ -211,7 +211,7 @@ prutil -query 'is:open is:pr author:@me org:acme sort:created-desc'
 | Mark | Meaning |
 | --- | --- |
 | `●` | The checks. Green means passed. Red means failed. Amber means still running |
-| `○` | GitHub reports no checks for the head commit |
+| `○` | No checks. Or GitHub reports a failing rollup, and prutil has not yet read the check detail to verify it |
 | `◉` | Watched, and prutil polls it (`w`) |
 | `◎` | Watched, but prutil does not poll it. It is quiet, or it is not in the list. `r` wakes it |
 | `↗` | The checks passed comment is armed (`P`) |
@@ -282,6 +282,8 @@ watched.
 
 | Key | Action |
 | --- | --- |
+| `n` | Open the notification history. It shows the notifications of this session in a popup. When the history is a sidebar, `n` moves the focus to it or away from it |
+| `p` | In the notification history, pin the history as a sidebar next to the detail pane, or remove it |
 | `s` or `,` | Open the settings: desktop notifications, what is watched, poll timing, PR comments, coding agent, and security |
 | `?` | Open the shortcut overlay. Type to filter. Push `enter` to run the highlighted shortcut. Push `esc` or `?` to close it |
 | `q` or `ctrl+c` | Quit |
@@ -293,8 +295,8 @@ When the terminal is less than 80 columns wide, the two panes become one pane:
 - `l` changes to the detail pane.
 - `h` changes back to the list.
 
-When WATCH is available, select it above CHECKS. Push `l` or `enter` again to
-see its full schedule, activity, and handoff details.
+When WATCH shows, the detail pane opens with WATCH selected. Push `l` or
+`enter` again to see its full schedule, activity, and handoff details.
 
 The footer has one line. It shows the actions and does not show the keys for
 moving about. Use the arrow keys to move about.
@@ -364,6 +366,12 @@ While a notification is on, prutil re-reads each open pull request every two
 minutes. The setting is **Open list re-read interval** under `POLL TIMING` in
 `s` (`watch.list_interval`). The read uses the cheap query of the watcher. It
 costs one request, and one rate limit point, for each hundred pull requests.
+
+When a rollup does not give a clear verdict, prutil also reads the check detail
+of that pull request. It does this before it treats the pull request as
+passed. prutil reads a failing rollup one time for each head commit, also when
+no notification is on. It does not read it again until the head commit
+changes.
 
 When new PR watching is on, the same interval runs the whole search. The search
 also serves the notifications.
@@ -506,13 +514,16 @@ that conversation.
 `W` does the same thing on demand. Use it for a pull request that you did not
 arm, or when you want prutil to look at a pull request again now.
 
-Watching also monitors the check rollup of the pull request. When the rollup
-fails, prutil does these steps:
+Watching also monitors the check rollup of the pull request. A title edit or a
+rerun can leave old failures on the same commit. This can occur also when the
+newest run passed. Only the newest attempt of each check counts. When the
+rollup fails, prutil does these steps:
 
 1. It fetches the individual checks.
-2. It waits until each check is in a final state.
-3. It sends all the failed checks together to the agent that works on the pull
-   request. The agent can then decide if the failures have a common cause.
+2. It waits until each current check is in a final state.
+3. It sends all the current failed checks together to the agent that works on
+   the pull request. The agent can then decide if the failures have a common
+   cause.
 
 The default check prompt asks the agent to do these actions:
 
@@ -532,6 +543,14 @@ prutil sent them for this head commit before. Like the watcher, it follows
 
 When a failed check is selected, `W` sends the same thing. `W` can set up a
 workspace, whatever `herdr.fallback` says.
+
+GitHub can stop its answer partway through the check pages. Then prutil shows
+the checks that it read, with a **partial** warning. prutil does not act on
+these checks automatically. It does not tell you that they all passed. If you
+push `F`, or `W` on a visible failure, prutil asks for a separate confirmation.
+Then it sends only the visible failures. A pull request that is held for review
+security needs its own confirmation also. prutil continues to handle review
+feedback independently.
 
 prutil records each automatic investigation against the head commit. A restart
 does not send the same failure again. A new head commit allows a new
@@ -771,6 +790,12 @@ request has watch or handoff activity. The section shows these items:
 
 The activity feed resets when prutil exits. `handoffs.jsonl` is the record that
 continues across sessions.
+
+The `›` after the heading shows that a fuller page is behind it. When the
+detail pane gets the focus, prutil selects WATCH, which is the topmost item.
+Push `l`, `→`, or `enter` again to open the page. Push `j` to move to the
+checks. While WATCH is selected, the heading and the footer both show
+`watch log`.
 
 ### What the watching costs
 

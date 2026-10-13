@@ -132,5 +132,5 @@ func (a *App) secondsShown(now time.Time) bool {
 // which is every age: how long ago a pull request was updated, opened or
 // closed, and when the watcher last did something.
 func (a *App) minutesShown() bool {
-	return len(a.cur().prs) > 0 || a.adopt.open
+	return len(a.cur().prs) > 0 || a.adopt.open || (len(a.tray.items) > 0 && (a.tray.popupOpen || a.sidebarVisible()))
 }

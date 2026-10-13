@@ -53,6 +53,27 @@ func TestRenderFitsEveryTerminalSize(t *testing.T) {
 	}
 }
 
+func TestPartialChecksFitEveryTerminalSize(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{40, 12}, {79, 24}, {120, 8}} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			app, _, _ := newTestApp(t, size.width, size.height)
+			app.checks[samplePRs()[0].Key()] = checkState{
+				loaded: true, err: errors.New("GitHub did not return page two of the checks"),
+				checks: []model.Check{{Name: "Validate PR title", Status: model.StatusFailure}},
+			}
+			for _, focus := range []pane{paneList, paneDetail} {
+				app.focus = focus
+				rendered := lines(app)
+				assert.LessOrEqual(t, len(rendered), size.height)
+				for i, line := range rendered {
+					assert.LessOrEqual(t, ansi.StringWidth(line), size.width,
+						"partial check line %d overflows %dx%d", i, size.width, size.height)
+				}
+			}
+		})
+	}
+}
+
 func TestExpandedWatchFitsEveryTerminalSize(t *testing.T) {
 	sizes := []struct{ width, height int }{
 		{40, 12}, {60, 20}, {79, 24}, {120, 8},

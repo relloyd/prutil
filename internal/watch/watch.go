@@ -87,8 +87,10 @@ type entry struct {
 	// atCap counts consecutive polls at the cap with nothing changing.
 	atCap int
 	// last is the previous reading, and seen whether there has been one.
-	last model.Snapshot
-	seen bool
+	last            model.Snapshot
+	seen            bool
+	effectiveHead   string
+	effectiveRollup model.Status
 }
 
 // New builds an engine over a configuration whose intervals have already been
@@ -171,7 +173,8 @@ func tierOf(got *entry) Tier {
 	switch {
 	case got.dormant:
 		return TierDormant
-	case got.seen && got.last.Busy():
+	case got.seen && (got.last.Busy() ||
+		got.last.HeadOID == got.effectiveHead && got.effectiveRollup == model.StatusPending):
 		return TierActive
 	case got.notified:
 		return TierNotified
@@ -227,10 +230,18 @@ func (e *Engine) Observe(snaps []model.Snapshot, now time.Time) []model.Key {
 		}
 
 		moved := !got.seen || snap.Moved(got.last)
+		if got.effectiveHead != snap.HeadOID {
+			got.effectiveHead = ""
+			got.effectiveRollup = model.StatusUnknown
+		}
 		got.last, got.seen = snap, true
 		got.sincePrecise++
 
-		e.reschedule(got, snap, moved, now)
+		scheduled := snap
+		if snap.Rollup == model.StatusFailure && got.effectiveHead == snap.HeadOID {
+			scheduled.Rollup = got.effectiveRollup
+		}
+		e.reschedule(got, scheduled, moved, now)
 
 		if moved || got.sincePrecise >= e.cfg.ForcePreciseEvery {
 			got.sincePrecise = 0
@@ -238,6 +249,22 @@ func (e *Engine) Observe(snaps []model.Snapshot, now time.Time) []model.Key {
 		}
 	}
 	return precise
+}
+
+// ReconcileChecks corrects polling cadence from complete check detail without
+// treating a provisional raw rollup as new review feedback.
+func (e *Engine) ReconcileChecks(key model.Key, head string, rollup model.Status, now time.Time) {
+	got, ok := e.prs[key]
+	if !ok || !got.seen || got.last.HeadOID != head {
+		return
+	}
+	wasBusy := got.last.Busy() || got.effectiveHead == head && got.effectiveRollup == model.StatusPending
+	got.effectiveHead, got.effectiveRollup = head, rollup
+	if rollup == model.StatusPending || wasBusy {
+		scheduled := got.last
+		scheduled.Rollup = rollup
+		e.reschedule(got, scheduled, true, now)
+	}
 }
 
 // reschedule moves one pull request up or down the ladder after a reading.

@@ -102,28 +102,36 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }` + openPRFields
 
-// detailQuery fetches the individual checks attached to a pull request's head
-// commit, covering both GitHub Actions check runs and legacy commit statuses.
+// detailQuery pages through the individual checks attached to a pull request's
+// head commit, covering both GitHub Actions check runs and legacy statuses.
+// The head OID lets the caller reject pages read across a force push.
 const detailQuery = `
-query($owner: String!, $name: String!, $number: Int!) {
+query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       commits(last: 1) {
         nodes {
           commit {
+            oid
             statusCheckRollup {
               state
-              contexts(first: 100) {
+              contexts(first: 100, after: $after) {
+                pageInfo { hasNextPage endCursor }
                 nodes {
                   __typename
                   ... on CheckRun {
+                    databaseId
                     name
                     status
                     conclusion
                     detailsUrl
                     startedAt
                     completedAt
-                    checkSuite { workflowRun { workflow { name } } }
+                    checkSuite {
+                      createdAt
+                      app { id slug }
+                      workflowRun { event workflow { id name } }
+                    }
                   }
                   ... on StatusContext {
                     context

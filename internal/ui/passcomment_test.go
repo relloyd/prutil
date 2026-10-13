@@ -34,6 +34,7 @@ func setRollup(client *fakeClient, head string, rollup model.Status) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	client.snapshots["PR_42"] = model.Snapshot{NodeID: "PR_42", HeadOID: head, UpdatedAt: testNow, Rollup: rollup}
+	client.checks[passKey] = []model.Check{{Name: "build", Status: rollup}}
 }
 
 // nextPoll moves the clock past the watcher's interval and drives one beat.
@@ -74,6 +75,50 @@ func TestTheChecksPassedCommentIsPostedOncePerHeadCommit(t *testing.T) {
 	setRollup(client, "def", model.StatusSuccess)
 	nextPoll(t, app)
 	assert.Len(t, passComments(client), 2, "a new commit whose checks pass is posted for again")
+}
+
+func TestPassedCommentWaitsForDetailWhenOldFailuresKeepTheRollupRed(t *testing.T) {
+	app, client := passApp(t)
+	send(t, app, press("P"))
+	setRollup(client, "abc", model.StatusFailure)
+	client.checks[passKey] = []model.Check{{Name: "build", Status: model.StatusSuccess}}
+
+	nextPoll(t, app)
+
+	require.Len(t, passComments(client), 1, "verified success posts despite the stale failed rollup")
+	assert.Equal(t, "abc", app.state.Get(passKey.String()).LastPassCommentHead)
+	nextPoll(t, app)
+	assert.Len(t, passComments(client), 1, "the same head is not posted twice")
+}
+
+func TestAStaleFailureRollupWaitsForVerifiedSuccessBeforePosting(t *testing.T) {
+	app, client := passApp(t)
+	send(t, app, press("P"))
+	require.True(t, app.state.PostOnPass(passKey.String()))
+	app.views[viewOpen].prs[0].HeadOID = "abc"
+
+	setRollup(client, "abc", model.StatusFailure)
+	send(t, app, watchSnapshotMsg{keys: []model.Key{passKey}, snaps: []model.Snapshot{
+		{Key: passKey, NodeID: "PR_42", HeadOID: "abc", Rollup: model.StatusFailure},
+	}, at: app.now()})
+	assert.False(t, app.runtimeOf(passKey).postingPass, "the raw failure is not a passed verdict")
+
+	send(t, app, checksErrMsg{
+		gen: app.gen, key: passKey, headOID: "abc", err: errors.New("page two unavailable"),
+		checks: []model.Check{{Name: "build", Status: model.StatusSuccess}},
+	})
+	assert.False(t, app.runtimeOf(passKey).postingPass, "a partial success must not start a deployment")
+	send(t, app, watchSnapshotMsg{keys: []model.Key{passKey}, snaps: []model.Snapshot{
+		{Key: passKey, NodeID: "PR_42", HeadOID: "abc", Rollup: model.StatusSuccess},
+	}, at: app.now()})
+	assert.False(t, app.runtimeOf(passKey).postingPass, "a later raw rollup cannot override incomplete detail")
+
+	send(t, app, checksMsg{
+		gen: app.gen, key: passKey, headOID: "abc",
+		checks: []model.Check{{Name: "build", Status: model.StatusSuccess}},
+	})
+	assert.True(t, app.runtimeOf(passKey).postingPass,
+		"the complete latest-success reading starts the existing trusted comment path")
 }
 
 func TestPressingPAgainStopsTheChecksPassedComment(t *testing.T) {
@@ -131,6 +176,7 @@ func TestArmingOnChecksThatHaveAlreadyPassedAsksFirst(t *testing.T) {
 	app, client, _ := newTestApp(t, 120, 40)
 	app.homeCfg.ChecksPassed.Comment = "/deploy staging"
 	send(t, app, press("w"))
+	setRollup(client, "abc", model.StatusSuccess)
 	nextPoll(t, app)
 
 	cmd := send(t, app, press("P"))

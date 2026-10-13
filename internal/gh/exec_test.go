@@ -59,7 +59,7 @@ esac
 
 	checks, err := client.Checks(context.Background(), prs[1].Key())
 	require.NoError(t, err)
-	assert.Len(t, checks, 4)
+	assert.Len(t, checks.Checks, 4)
 }
 
 func TestExecRunnerReportsStderrFromAFailedCall(t *testing.T) {
@@ -88,12 +88,13 @@ func TestNewExecRunnerReportsAMissingBinary(t *testing.T) {
 }
 
 func TestChecksSkipsAPullRequestWithoutARollup(t *testing.T) {
-	stubGH(t, `echo '{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}'`)
+	stubGH(t, `echo '{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"oid":"head-no-rollup","statusCheckRollup":null}}]}}}}}'`)
 
 	runner, err := gh.NewExecRunner()
 	require.NoError(t, err)
 
 	checks, err := gh.New(runner, 1).Checks(context.Background(), model.Key{Repo: "a/b", Number: 1})
 	require.NoError(t, err)
-	assert.Empty(t, checks)
+	assert.Equal(t, "head-no-rollup", checks.HeadOID)
+	assert.Empty(t, checks.Checks)
 }

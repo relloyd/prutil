@@ -374,8 +374,8 @@ func TestClickingASettingTogglesItAndClicksElsewhereDoNothing(t *testing.T) {
 	send(t, app, tea.MouseClickMsg{X: l.x + 4, Y: l.y + 2, Button: tea.MouseRight})
 	assert.False(t, app.homeCfg.Notifications.Enabled(home.NotifyApproved), "only the left button toggles")
 
-	// The heading, then every notification row.
-	second := l.y + 2 + len(notifications)
+	// The heading, then every notification row (events plus sidebar).
+	second := l.y + 2 + len(notifications) + 1
 	send(t, app, click(l.x+4, second))
 	assert.False(t, app.homeCfg.Watch.SelfReview, "a click on the second heading changes nothing")
 

@@ -75,6 +75,29 @@ func TestStatusDoesNotExistForAnUnarmedPullRequest(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestVerifiedPendingRerunPollsQuicklyWithoutRereadingReviewThreads(t *testing.T) {
+	e := engine(t)
+	e.Sync([]model.Key{key}, start)
+	e.Observe([]model.Snapshot{snap(start, model.StatusFailure)}, start)
+
+	e.ReconcileChecks(key, "abc", model.StatusPending, start)
+	got, ok := e.Status(key)
+	require.True(t, ok)
+	assert.Equal(t, watch.TierActive, got.Tier)
+	assert.Equal(t, 30*time.Second, got.Interval)
+	assert.Equal(t, 5, got.PollsUntilPrecise, "check-detail reconciliation does not announce new review feedback")
+
+	next := e.Observe([]model.Snapshot{snap(start, model.StatusFailure)}, start.Add(30*time.Second))
+	assert.Empty(t, next, "an unchanged raw rollup is not a new review")
+	got, _ = e.Status(key)
+	assert.Equal(t, watch.TierActive, got.Tier, "the raw failure does not undo the verified pending state")
+
+	e.ReconcileChecks(key, "abc", model.StatusSuccess, start.Add(30*time.Second))
+	got, _ = e.Status(key)
+	assert.Equal(t, watch.TierSettled, got.Tier)
+	assert.Equal(t, 2*time.Minute, got.Interval)
+}
+
 func TestSyncForgetsWhatIsNoLongerArmedAndLeavesTheRestAlone(t *testing.T) {
 	e := engine(t)
 	e.Sync([]model.Key{key, other}, start)

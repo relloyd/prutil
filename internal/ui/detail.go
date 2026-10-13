@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -27,27 +28,38 @@ func (a *App) renderDetail(width, height int) []string {
 	// Keep a check heading and at least one check line visible below watcher
 	// diagnostics, even in a short terminal.
 	watchBudget := max(height-len(lines)-4, 0)
-	if watch := a.watchDetail(pr, width, watchBudget, a.section == detailWatch); len(watch) > 0 {
+	focused := a.focus == paneDetail
+	if watch := a.watchDetail(pr, width, watchBudget, focused && a.section == detailWatch); len(watch) > 0 {
 		lines = append(lines, watch...)
 		lines = append(lines, "")
 	}
 	state := a.checks[pr.Key()]
 
 	switch {
-	case state.err != nil:
-		lines = append(lines, a.styles.Error.Render("checks unavailable"))
-		lines = append(lines, wrapLines(state.err.Error(), width, 3)...)
+	case state.err != nil && len(state.checks) == 0:
+		lines = append(lines, sectionPad+a.styles.Error.Render("checks unavailable"))
+		for _, line := range wrapLines(state.err.Error(), width-sectionIndent, 3) {
+			lines = append(lines, sectionPad+line)
+		}
 		return lines
 	case !state.loaded:
-		lines = append(lines, a.styles.Meta.Render(a.spin.View()+" loading checks…"))
+		lines = append(lines, sectionPad+a.styles.Meta.Render(a.spin.View()+" loading checks…"))
 		return lines
 	case len(state.checks) == 0:
-		lines = append(lines, a.styles.Meta.Render("no checks on the head commit"))
+		lines = append(lines, sectionPad+a.styles.Meta.Render("no checks on the head commit"))
 		return lines
 	}
 
-	lines = append(lines, a.sectionHeading(fmt.Sprintf("CHECKS (%d)", len(state.checks)),
-		a.section == detailChecks))
+	lines = append(lines, a.partialCheckLines(state, width)...)
+	// The chip goes on the check that is selected rather than on its heading
+	// as well, so there is one mark for the one thing selected. The heading
+	// brightens to say which section the cursor is in.
+	checksHeading := fmt.Sprintf("CHECKS (%d)", len(state.checks))
+	if focused && a.section == detailChecks {
+		lines = append(lines, sectionPad+a.styles.Title.Render(checksHeading))
+	} else {
+		lines = append(lines, a.sectionHeading(checksHeading, false))
+	}
 
 	window := checkWindow(height, len(lines))
 	start := min(a.detailOffset, max(len(state.checks)-1, 0))
@@ -62,15 +74,49 @@ func (a *App) renderDetail(width, height int) []string {
 	return lines
 }
 
-// sectionHeading renders one of the selectable detail sections.
+// sectionIndent is how far everything under the pull request's header sits in
+// from the pane's edge: the section headings, and every line beneath them. The
+// headings need the room for the selection bar, and what they head lines up
+// with them rather than sitting outdented beneath.
+const sectionIndent = 2
+
+// sectionPad is sectionIndent as the spaces it takes.
+var sectionPad = strings.Repeat(" ", sectionIndent)
+
+// sectionHeading renders one of the detail sections. selected puts the chip
+// on it, which is only ever right while the detail pane has the focus: a chip
+// drawn before then leaves → with nothing visible to change.
 func (a *App) sectionHeading(text string, selected bool) string {
-	prefix := "  "
+	prefix := sectionPad
 	style := a.styles.SectionHdr
 	if selected {
 		prefix = a.styles.SelectBar.Render("▌") + " "
 		style = a.styles.Title
 	}
 	return prefix + style.Render(text)
+}
+
+// drillHint is what follows a section heading with a page of its own behind
+// it: the chevron always, so the page can be seen to be there at a glance, and
+// where → goes once the heading is selected. CHECKS has no page, and no
+// chevron, which is part of what makes WATCH's mean something.
+const (
+	drillHint         = " ›"
+	drillHintSelected = " › watch log"
+)
+
+// drillHeading is sectionHeading for a section that → drills into. The hint
+// gives way to the heading in a pane too narrow for both, the longer one first.
+func (a *App) drillHeading(text string, selected bool, width int) string {
+	used := sectionIndent + lenOf(text)
+	hint := drillHint
+	if selected && used+lenOf(drillHintSelected) <= width {
+		hint = drillHintSelected
+	}
+	if used+lenOf(hint) > width {
+		hint = ""
+	}
+	return a.sectionHeading(text, selected) + a.styles.Muted.Render(hint)
 }
 
 // detailHeader renders everything above the check list.
@@ -153,11 +199,11 @@ func (a *App) detailHeader(pr model.PullRequest, width int) []string {
 // renderCheck draws one check run as a single line: state, name, and how long
 // it took, with the duration pushed to the right-hand edge.
 func (a *App) renderCheck(check model.Check, width int, selected bool) string {
-	prefix := "  "
+	prefix := sectionPad
 	if selected {
 		prefix = a.styles.SelectBar.Render("▌") + " "
 	}
-	inner := max(width-2, 1)
+	inner := max(width-sectionIndent, 1)
 
 	right := ""
 	if d := model.HumanDuration(check.Duration(a.now())); d != "" {
@@ -194,6 +240,20 @@ func (a *App) renderCheck(check model.Check, width int, selected bool) string {
 	return prefix + justify(inner, left, right)
 }
 
+// partialCheckLines warns that the checks on screen are not all of them. It is
+// a function of its own because checksHeight has to count it too, or the
+// scroll clamp works to a taller window than the one drawn.
+func (a *App) partialCheckLines(state checkState, width int) []string {
+	if state.err == nil || len(state.checks) == 0 {
+		return nil
+	}
+	lines := []string{sectionPad + a.styles.Error.Render("partial checks · automatic check actions paused")}
+	for _, line := range wrapLines(state.err.Error(), width-sectionIndent, 2) {
+		lines = append(lines, sectionPad+line)
+	}
+	return lines
+}
+
 // checksHeight is the number of lines the check list may occupy, used by the
 // scroll clamp before anything has been rendered.
 func (a *App) checksHeight() int {
@@ -210,7 +270,8 @@ func (a *App) checksHeight() int {
 	if len(watch) > 0 {
 		gap = 1
 	}
-	return checkWindow(a.bodyHeight(), len(header)+len(watch)+gap+1)
+	partial := a.partialCheckLines(a.checks[pr.Key()], detailWidth)
+	return checkWindow(a.bodyHeight(), len(header)+len(watch)+gap+len(partial)+1)
 }
 
 // checkWindow is the number of check lines that fit beneath a header of the

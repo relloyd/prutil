@@ -115,7 +115,10 @@ type watchRow struct {
 	heading bool
 }
 
-// renderWatchRow turns one row into a line of at most width columns.
+// renderWatchRow turns one row into a line of at most width columns. Every
+// row but a blank sits at sectionIndent, lined up with its heading; the indent
+// is added here rather than written into the row, so wrapRow and the scroll
+// arithmetic that counts its output never have to know about it.
 func (a *App) renderWatchRow(row watchRow, width int) string {
 	switch {
 	case row.blank:
@@ -123,7 +126,7 @@ func (a *App) renderWatchRow(row watchRow, width int) string {
 	case row.heading:
 		return a.sectionHeading(row.text, false)
 	default:
-		return row.style.Render(truncatePlain(row.text, width))
+		return sectionPad + row.style.Render(truncatePlain(row.text, width-sectionIndent))
 	}
 }
 
@@ -141,7 +144,8 @@ const wrapIndent = 2
 const minWrapWidth = 12
 
 // wrapRow splits one row into the lines it takes at width, keeping any
-// indentation the row already has. maxLines of zero means as many as it needs;
+// indentation the row already has and leaving room for the sectionIndent that
+// renderWatchRow puts in front of it. maxLines of zero means as many as it needs;
 // otherwise the last line ends in an ellipsis when text was dropped.
 func wrapRow(row watchRow, width, maxLines int) []watchRow {
 	if row.blank || row.heading {
@@ -149,7 +153,7 @@ func wrapRow(row watchRow, width, maxLines int) []watchRow {
 	}
 	body := strings.TrimLeft(row.text, " ")
 	lead := row.text[:len(row.text)-len(body)]
-	room := width - len(lead) - wrapIndent
+	room := width - sectionIndent - len(lead) - wrapIndent
 	if room < minWrapWidth {
 		return []watchRow{row}
 	}
@@ -185,7 +189,7 @@ func (a *App) watchDetail(pr model.PullRequest, width, budget int, selected bool
 		return nil
 	}
 
-	lines := []string{a.sectionHeading("WATCH", selected)}
+	lines := []string{a.drillHeading("WATCH", selected, width)}
 	// The state line is always shown, and may take a second line when the
 	// budget has room for one.
 	for _, row := range wrapRow(a.compactState(facts), width, max(min(2, budget-1), 1)) {

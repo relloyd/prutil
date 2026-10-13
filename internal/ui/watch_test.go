@@ -438,7 +438,7 @@ func pump(t *testing.T, app *App, cmd tea.Cmd) {
 		switch msg.(type) {
 		case watchTickMsg:
 			continue
-		case watchSnapshotMsg, watchReviewMsg, watchErrMsg, handoffMsg:
+		case watchSnapshotMsg, watchReviewMsg, watchErrMsg, handoffMsg, checksMsg:
 			pump(t, app, send(t, app, msg))
 		default:
 			send(t, app, msg)
@@ -861,17 +861,56 @@ func TestTheDetailExplainsTheCurrentWatchScheduleAndActivity(t *testing.T) {
 	assert.Contains(t, screen, "started watching")
 }
 
+func TestTheDetailPaneShowsOneChipAndOnlyOnceItHasTheFocus(t *testing.T) {
+	chips := func(app *App) []string {
+		var marked []string
+		for _, line := range detailColumn(plain(app.render())) {
+			if strings.HasPrefix(line, "▌") {
+				marked = append(marked, line)
+			}
+		}
+		return marked
+	}
+
+	for _, tc := range []struct {
+		name    string
+		watched bool
+		want    string
+	}{
+		{name: "A watched pull request's detail pane lands on its WATCH heading.", watched: true, want: "▌ WATCH › watch log"},
+		{name: "One with no WATCH section lands on its first check.", watched: false, want: "▌ ✓ test · CI"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app, _, _ := newTestApp(t, 120, 40)
+			if tc.watched {
+				send(t, app, press("w"))
+			}
+			assert.Empty(t, chips(app), "nothing in the detail pane is selected while the list has the focus")
+
+			send(t, app, press("l"))
+			marked := chips(app)
+			require.Len(t, marked, 1, "one mark for the one thing selected, so CHECKS carries none of its own")
+			assert.True(t, strings.HasPrefix(marked[0], tc.want), "the chip is on %q, not %q", tc.want, marked[0])
+
+			send(t, app, press("h"))
+			assert.Empty(t, chips(app), "and it goes again when the focus leaves")
+		})
+	}
+}
+
 func TestTheWatchSectionCanBeSelectedAndDrilledInto(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 
 	send(t, app, press("w"))
 	send(t, app, press("l"))
 	require.Equal(t, paneDetail, app.focus)
-	require.Equal(t, detailChecks, app.section)
+	require.Equal(t, detailWatch, app.section, "focus lands on the topmost item, which is WATCH")
+	assert.Contains(t, plain(app.render()), "▌ WATCH")
 
+	send(t, app, press("j"))
+	assert.Equal(t, detailChecks, app.section)
 	send(t, app, press("k"))
 	assert.Equal(t, detailWatch, app.section)
-	assert.Contains(t, plain(app.render()), "▌ WATCH")
 
 	send(t, app, press("l"))
 	assert.Equal(t, detailWatchPage, app.page)
@@ -1217,6 +1256,95 @@ func TestEverySectionHeadingLinesUpWithTheOthers(t *testing.T) {
 	}
 }
 
+func TestEveryWatchLineLinesUpWithItsHeading(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 60)
+	send(t, app, press("w"))
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	app.recordWatchActivity(pr.Key(), "started a change check")
+
+	_, width := app.paneWidths()
+	pad := strings.Repeat(" ", sectionIndent)
+	compact := app.watchDetail(pr, width, 20, false)
+	require.Greater(t, len(compact), 1, "the compact section has rows beneath its heading")
+	for _, line := range compact {
+		assert.True(t, strings.HasPrefix(plain(line), pad), "the compact section is not outdented: %q", plain(line))
+	}
+
+	page := app.renderWatchPage(pr, width, app.bodyHeight())
+	for _, line := range page {
+		if plain(line) == "" {
+			continue
+		}
+		assert.True(t, strings.HasPrefix(plain(line), pad), "the page is not outdented: %q", plain(line))
+	}
+}
+
+func TestTheWatchHeadingShowsThereIsAPageBehindIt(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("w"))
+	pr, ok := app.selectedPR()
+	require.True(t, ok)
+	_, width := app.paneWidths()
+
+	assert.Equal(t, "  WATCH ›", plain(app.watchDetail(pr, width, 20, false)[0]),
+		"the chevron is there before the heading is selected")
+	assert.Equal(t, "▌ WATCH › watch log", plain(app.watchDetail(pr, width, 20, true)[0]),
+		"and says where → goes once it is")
+
+	column := detailColumn(plain(app.render()))
+	idx := slices.IndexFunc(column, func(l string) bool { return strings.Contains(l, "CHECKS") })
+	require.GreaterOrEqual(t, idx, 0)
+	assert.NotContains(t, column[idx], "›", "CHECKS has no page behind it")
+}
+
+func TestTheWatchHeadingDropsItsHintBeforeItsName(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	for _, tc := range []struct {
+		name     string
+		width    int
+		selected bool
+		want     string
+	}{
+		{name: "A pane with room for the whole hint shows it.", width: 30, selected: true, want: "▌ WATCH › watch log"},
+		{name: "A pane too narrow for where it goes keeps the chevron.", width: 12, selected: true, want: "▌ WATCH ›"},
+		{name: "A pane too narrow for the chevron keeps the heading.", width: 8, selected: false, want: "  WATCH"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := app.drillHeading("WATCH", tc.selected, tc.width)
+			assert.Equal(t, tc.want, plain(line))
+			assert.LessOrEqual(t, ansi.StringWidth(line), tc.width)
+		})
+	}
+}
+
+func TestTheFooterSaysWhereRightGoesOnTheWatchHeading(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	send(t, app, press("w"))
+	footer := plain(strings.Join(app.footerLines(), "\n"))
+	assert.Contains(t, footer, "→/l detail", "in the list, → is the ordinary binding")
+
+	send(t, app, press("l"))
+	require.Equal(t, detailWatch, app.section)
+	footer = plain(strings.Join(app.footerLines(), "\n"))
+	assert.Contains(t, footer, "→/l watch log")
+	assert.Contains(t, footer, "q quit", "the longer label still fits at 120 columns")
+	assert.NotContains(t, footer, "…")
+	assert.Equal(t, "detail", app.keys.Into.Help().Desc, "the key map itself is left alone")
+
+	send(t, app, press("j"))
+	require.Equal(t, detailChecks, app.section)
+	footer = plain(strings.Join(app.footerLines(), "\n"))
+	assert.Contains(t, footer, "→/l detail", "on a check, → is the ordinary binding")
+
+	send(t, app, press("k"))
+
+	send(t, app, press("l"))
+	require.Equal(t, detailWatchPage, app.page)
+	footer = plain(strings.Join(app.footerLines(), "\n"))
+	assert.Contains(t, footer, "→/l detail", "inside the log there is nowhere further to go")
+}
+
 func TestOnePullRequestsWatcherStateLivesInOneEntry(t *testing.T) {
 	// Seven maps written from six places and cleaned up from four is how a
 	// cleanup comes to reach five of them. One entry is cleared in one place.
@@ -1467,6 +1595,7 @@ func TestAFailedCheckStillGoesToAnAgentWhenNothingIsHeld(t *testing.T) {
 	send(t, app, press("w"))
 	poll(t, app)
 	sent := len(dispatcher.requests())
+	app.mutate(key).headOID = "sha-new"
 
 	pump(t, app, send(t, app, checksMsg{
 		gen: app.gen, key: key, checkHandoff: true, headOID: "sha-new",
@@ -1737,7 +1866,6 @@ func onFailedCheck(t *testing.T, app *App) {
 	t.Helper()
 	send(t, app, press("l"))
 	require.Equal(t, paneDetail, app.focus)
-	require.Equal(t, detailChecks, app.section)
 	for range 4 {
 		if app.selectedFailedCheck() {
 			return
@@ -1888,6 +2016,7 @@ func TestAnAutomaticCheckHandoffIsNotManualAndKnowsTheViewer(t *testing.T) {
 
 	send(t, app, press("w"))
 	poll(t, app)
+	app.mutate(key).headOID = "sha-new"
 	pump(t, app, send(t, app, checksMsg{
 		gen: app.gen, key: key, checkHandoff: true, headOID: "sha-new",
 		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
@@ -1967,7 +2096,10 @@ func TestTheWatchPageWrapsALongEntryRatherThanCuttingItOff(t *testing.T) {
 	_, width := app.paneWidths()
 	start := slices.IndexFunc(column, func(l string) bool { return strings.Contains(l, "prutil will not") })
 	require.GreaterOrEqual(t, start, 0)
-	assert.True(t, strings.HasPrefix(column[start+1], "  "), "a continuation is indented: %q", column[start+1])
+	continuation := strings.Repeat(" ", sectionIndent+wrapIndent)
+	assert.Equal(t, sectionIndent, len(column[start])-len(strings.TrimLeft(column[start], " ")),
+		"an entry lines up with its heading: %q", column[start])
+	assert.True(t, strings.HasPrefix(column[start+1], continuation), "a continuation is indented further: %q", column[start+1])
 	for _, line := range column {
 		assert.LessOrEqual(t, ansi.StringWidth(line), width, "every line fits the pane: %q", line)
 	}
@@ -2007,10 +2139,11 @@ func TestTheCompactSectionWrapsAnEntryToThreeLinesAtMost(t *testing.T) {
 	_, width := app.paneWidths()
 	lines := app.watchDetail(pr, width, 20, false)
 
+	continuation := strings.Repeat(" ", sectionIndent+wrapIndent)
 	var entry []string
 	for _, line := range lines {
 		plainLine := ansi.Strip(line)
-		if strings.Contains(plainLine, "prutil will not") || (len(entry) > 0 && strings.HasPrefix(plainLine, "  ")) {
+		if strings.Contains(plainLine, "prutil will not") || (len(entry) > 0 && strings.HasPrefix(plainLine, continuation)) {
 			entry = append(entry, plainLine)
 		} else if len(entry) > 0 {
 			break

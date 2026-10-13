@@ -163,9 +163,45 @@ func (a *App) selectedFailedCheck() bool {
 // on GitHub, which is the same trade handOff makes.
 func (a *App) investigateChecks(by key.Binding, allowProvision bool) tea.Cmd {
 	if pr, ok := a.selectedPR(); ok && a.active == viewOpen {
-		if hold := a.runtimeOf(pr.Key()).hold; hold.Held() && !a.confirms(pr.Key(), confirmHeldChecks) {
+		key := pr.Key()
+		state := a.checks[key]
+		partial := state.err != nil && len(state.checks) > 0 &&
+			a.checkHeadMatches(key, state.headOID)
+		if partial && state.headOID == "" {
+			return status(key.String() + " has incomplete checks with no verified head; refresh before investigating")
+		}
+		if a.pending.key == key && a.pending.action == confirmPartialChecks &&
+			(a.pending.checkHead != state.headOID || !slices.Equal(a.pending.checks, state.checks)) {
+			a.pending = pendingConfirm{}
+			return status(fmt.Sprintf("%s checks changed · press %s to review them again", key, by.Help().Key))
+		}
+		if partial && model.CountChecks(state.checks).Failure == 0 {
+			return status(key.String() + " has no visible failed checks in the incomplete results")
+		}
+		pendingPartial := a.pending.key == key && a.pending.action == confirmPartialChecks &&
+			a.now().Sub(a.pending.at) < statusLifetime && a.pending.heldPassed
+		held := a.runtimeOf(key).hold.Held()
+		if held && !pendingPartial && !a.confirms(key, confirmHeldChecks) {
 			return status(fmt.Sprintf("%s is held, %s · press %s again to investigate anyway",
-				pr.Key(), holdReason(hold), by.Help().Key))
+				key, holdReason(a.runtimeOf(key).hold), by.Help().Key))
+		}
+		if partial {
+			// Asked before the confirmation, since the second press would only
+			// be refused: applyFailedChecks does not ask checkHandoff's question.
+			if a.runtimeOf(key).handing {
+				return status("already handing " + key.String() + " over")
+			}
+			if !a.confirms(key, confirmPartialChecks) {
+				a.pending.heldPassed = held
+				a.pending.checkHead = state.headOID
+				a.pending.checks = slices.Clone(state.checks)
+				return status(fmt.Sprintf("%s has incomplete checks: %s · press %s again to send only the visible failures",
+					key, state.err, by.Help().Key))
+			}
+			if a.hand == nil {
+				return status("cannot reach herdr: " + a.handErr.Error())
+			}
+			return a.applyFailedChecks(key, state.headOID, state.checks, true, allowProvision)
 		}
 	}
 	// Everything else, including saying why this is not an open pull request,
@@ -195,7 +231,11 @@ func (a *App) checkHandoff(force, allowProvision bool, headOID ...string) tea.Cm
 		entry.headOID = pr.HeadOID
 	}
 	state := a.checks[key]
-	if state.loaded && !force {
+	if state.loaded && !force && state.err != nil {
+		entry.handing = false
+		return nil
+	}
+	if state.loaded && !force && sameHead(state.headOID, entry.headOID) {
 		return a.applyFailedChecks(key, entry.headOID, state.checks, false, allowProvision)
 	}
 	return tea.Batch(a.loadChecksForHandoff(a.gen, key, entry.headOID, force, allowProvision), a.spin.Tick)
@@ -234,6 +274,9 @@ func (a *App) applyFailedChecks(key model.Key, headOID string, checks []model.Ch
 	pr, ok := a.prByKey(key)
 	if !ok {
 		return nil
+	}
+	if headOID != "" {
+		pr.HeadOID = headOID
 	}
 	// A held pull request holds its failed checks too. The check prompt carries
 	// no comment text, but the agent it starts reads the same pull request, and
@@ -403,7 +446,8 @@ func (a *App) applyWatch(msg watchSnapshotMsg) tea.Cmd {
 		a.setWatchOperation(key, "")
 		if snap, ok := snapshotFor(msg.snaps, key); ok {
 			entry := a.mutate(key)
-			entry.headOID, entry.rollup = snap.HeadOID, snap.Rollup
+			entry.headOID, entry.headAt = snap.HeadOID, msg.at
+			entry.rollup = a.provisionalCheckStatus(key, snap.HeadOID, snap.Rollup)
 		}
 		switch {
 		case !answered[key]:
@@ -422,10 +466,12 @@ func (a *App) applyWatch(msg watchSnapshotMsg) tea.Cmd {
 	}
 	for _, snap := range msg.snaps {
 		entry := a.runtimeOf(snap.Key)
-		if snap.Rollup == model.StatusFailure && a.armed(snap.Key) && !entry.handing {
+		effective := a.provisionalCheckStatus(snap.Key, snap.HeadOID, snap.Rollup)
+		if effective == model.StatusUnknown && snap.Rollup != model.StatusUnknown &&
+			a.armed(snap.Key) && !entry.handing {
 			cmds = append(cmds, a.loadChecksForHandoff(a.gen, snap.Key, snap.HeadOID, false, false))
 		}
-		cmds = append(cmds, a.postOnPass(snap.Key, snap.HeadOID, snap.Rollup))
+		cmds = append(cmds, a.postOnPass(snap.Key, snap.HeadOID, effective))
 	}
 	return tea.Batch(cmds...)
 }
@@ -634,6 +680,7 @@ func (a *App) stopForOtherAgent(key model.Key, hold model.Hold) tea.Cmd {
 	a.clearWatch(key, "stopped watching: "+why)
 
 	pr, _ := a.prByKey(key)
+	a.recordTrayNotification(key, pr.Title, "stopped watching", why, trayKindWatch)
 	if a.store != nil {
 		_ = a.store.AppendHandoff(home.Handoff{
 			At:      a.now(),
@@ -686,11 +733,16 @@ func (a *App) watchCaution(key model.Key) string {
 // this one only did not because the decision is made before Dispatch.
 func (a *App) announceHold(pr model.PullRequest, held, why string) tea.Cmd {
 	entry := a.mutate(pr.Key())
-	if a.hand == nil || entry.heldAnnounced == entry.holdMark {
+	if entry.heldAnnounced == entry.holdMark {
 		return nil
 	}
 	entry.heldAnnounced = entry.holdMark
 
+	a.recordTrayNotification(pr.Key(), pr.Title, held+" held", why, trayKindHold)
+
+	if a.hand == nil {
+		return nil
+	}
 	hand, title := a.hand, pr.Key().String()+": "+held+" held"
 	return func() tea.Msg {
 		hand.Notify(context.Background(), title, why+" · W to send it anyway")
@@ -1022,12 +1074,18 @@ func (a *App) applyHandoff(msg handoffMsg) error {
 		outcome = home.OutcomeFailed
 	}
 	event := "handoff " + outcome
-	if msg.result.Detail != "" {
-		event += ": " + msg.result.Detail
+	detail := msg.result.Detail
+	if detail != "" {
+		event += ": " + detail
 	} else if msg.err != nil {
-		event += ": " + msg.err.Error()
+		detail = msg.err.Error()
+		event += ": " + detail
 	}
 	a.recordWatchActivity(msg.pr.Key(), event)
+	if detail == "" && msg.pr.Title != "" {
+		detail = msg.pr.Title
+	}
+	a.recordTrayNotification(msg.pr.Key(), msg.pr.Title, "handoff "+outcome, detail, trayKindHandoff)
 	return recordErr
 }
 

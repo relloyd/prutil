@@ -352,10 +352,28 @@ func collectionSetting(m settingMeta, kind settingKind, count func(a *App) int, 
 // allSettings returns the complete registry of settings displayed in the pane,
 // grouped by their section headers.
 func allSettings() []settingDescriptor {
-	rows := make([]settingDescriptor, 0, len(notifications))
+	rows := make([]settingDescriptor, 0, len(notifications)+1)
 	for _, kind := range notifications {
 		rows = append(rows, notificationSetting(kind))
 	}
+	rows = append(rows, boolSetting(settingMeta{
+		id:      "notifications.sidebar",
+		section: "DESKTOP NOTIFICATIONS",
+		title:   "Notification sidebar",
+		detail:  fmt.Sprintf("Keep notification history open in a dedicated pane on the right-hand side of the screen when terminal width allows (at least %d columns).", minSidebarWidth),
+		def:     onOff(defCfg.Notifications.Sidebar),
+		path:    []string{"notifications", "sidebar"},
+		label:   "notification sidebar",
+		after: func(a *App) tea.Cmd {
+			if !a.sidebarVisible() && a.focus == paneNotifications {
+				a.focus = paneList
+			}
+			return nil
+		},
+	}, field[bool]{
+		get: func(c *home.Config) bool { return c.Notifications.Sidebar },
+		set: func(c *home.Config, v bool) { c.Notifications.Sidebar = v },
+	}))
 	return append(rows, []settingDescriptor{
 		// ---------------------------------------------------------------------
 		// WATCHING

@@ -6,39 +6,44 @@
           "nodes": [
             {
               "commit": {
+                "oid": "head-42",
                 "statusCheckRollup": {
                   "state": "FAILURE",
                   "contexts": {
+                    "pageInfo": { "hasNextPage": false, "endCursor": null },
                     "nodes": [
                       {
                         "__typename": "CheckRun",
+                        "databaseId": 1,
                         "name": "test",
                         "status": "COMPLETED",
                         "conclusion": "SUCCESS",
                         "detailsUrl": "https://github.com/relloyd/prutil/actions/runs/1/job/1",
                         "startedAt": "2026-09-03T10:00:00Z",
                         "completedAt": "2026-09-03T10:01:20Z",
-                        "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } }
+                        "checkSuite": { "createdAt": "2026-09-03T09:59:00Z", "app": { "id": "app-actions", "slug": "github-actions" }, "workflowRun": { "workflow": { "id": "workflow-ci", "name": "CI" } } }
                       },
                       {
                         "__typename": "CheckRun",
+                        "databaseId": 2,
                         "name": "lint",
                         "status": "COMPLETED",
                         "conclusion": "FAILURE",
                         "detailsUrl": "https://github.com/relloyd/prutil/actions/runs/1/job/2",
                         "startedAt": "2026-09-03T10:00:00Z",
                         "completedAt": "2026-09-03T10:00:12Z",
-                        "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } }
+                        "checkSuite": { "createdAt": "2026-09-03T09:59:00Z", "app": { "id": "app-actions", "slug": "github-actions" }, "workflowRun": { "workflow": { "id": "workflow-ci", "name": "CI" } } }
                       },
                       {
                         "__typename": "CheckRun",
+                        "databaseId": 3,
                         "name": "build",
                         "status": "IN_PROGRESS",
                         "conclusion": null,
                         "detailsUrl": "https://github.com/relloyd/prutil/actions/runs/1/job/3",
                         "startedAt": "2026-09-03T10:00:00Z",
                         "completedAt": null,
-                        "checkSuite": { "workflowRun": null }
+                        "checkSuite": { "createdAt": "2026-09-03T09:59:00Z", "app": { "id": "app-actions", "slug": "github-actions" }, "workflowRun": null }
                       },
                       {
                         "__typename": "StatusContext",

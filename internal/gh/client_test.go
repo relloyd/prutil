@@ -156,8 +156,10 @@ func TestChecksDecodesBothContextTypes(t *testing.T) {
 	runner := &fakeRunner{responses: [][]byte{fixture(t, "checks.json")}}
 	client := gh.New(runner, 1)
 
-	checks, err := client.Checks(context.Background(), model.Key{Repo: "relloyd/prutil", Number: 42})
+	result, err := client.Checks(context.Background(), model.Key{Repo: "relloyd/prutil", Number: 42})
 	require.NoError(t, err)
+	assert.Equal(t, "head-42", result.HeadOID)
+	checks := result.Checks
 	require.Len(t, checks, 4)
 
 	assert.Equal(t, "test", checks[0].Name)

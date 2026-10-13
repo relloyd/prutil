@@ -351,8 +351,16 @@ func TestChecksPassingIsNewsOncePerCommit(t *testing.T) {
 	app, _, _ := newTestApp(t, 120, 40)
 	app.homeCfg.Notifications.Set(home.NotifyChecksPassed, true)
 	reload(t, app, withRollup(pr7, "c1", model.StatusFailure))
+	send(t, app, checksMsg{
+		gen: app.gen, key: pr7, headOID: "c1", at: app.now(),
+		checks: []model.Check{{Name: "build", Status: model.StatusFailure}},
+	})
 
-	lines := reload(t, app, withRollup(pr7, "c1", model.StatusSuccess))
+	reload(t, app, withRollup(pr7, "c1", model.StatusSuccess))
+	lines := statuses(drain(send(t, app, checksMsg{
+		gen: app.gen, key: pr7, headOID: "c1", at: app.now(),
+		checks: []model.Check{{Name: "build", Status: model.StatusSuccess}},
+	})))
 	shown := notifierOf(t, app).notifications()
 	require.Len(t, shown, 1)
 	assert.Equal(t, "relloyd/other#7 checks passed", shown[0].Title)

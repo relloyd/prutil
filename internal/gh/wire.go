@@ -204,6 +204,10 @@ func (c commitConnection) rollup() *statusCheckRollup {
 type statusCheckRollup struct {
 	State    string `json:"state"`
 	Contexts struct {
+		PageInfo struct {
+			HasNextPage bool   `json:"hasNextPage"`
+			EndCursor   string `json:"endCursor"`
+		} `json:"pageInfo"`
 		Nodes []contextNode `json:"nodes"`
 	} `json:"contexts"`
 }
@@ -214,6 +218,7 @@ type contextNode struct {
 	TypeName string `json:"__typename"`
 
 	// CheckRun.
+	DatabaseID  int64      `json:"databaseId"`
 	Name        string     `json:"name"`
 	Status      string     `json:"status"`
 	Conclusion  string     `json:"conclusion"`
@@ -221,8 +226,15 @@ type contextNode struct {
 	StartedAt   *time.Time `json:"startedAt"`
 	CompletedAt *time.Time `json:"completedAt"`
 	CheckSuite  struct {
+		CreatedAt *time.Time `json:"createdAt"`
+		App       *struct {
+			ID   string `json:"id"`
+			Slug string `json:"slug"`
+		} `json:"app"`
 		WorkflowRun *struct {
+			Event    string `json:"event"`
 			Workflow struct {
+				ID   string `json:"id"`
 				Name string `json:"name"`
 			} `json:"workflow"`
 		} `json:"workflowRun"`
@@ -234,6 +246,54 @@ type contextNode struct {
 	TargetURL   string     `json:"targetUrl"`
 	Description string     `json:"description"`
 	CreatedAt   *time.Time `json:"createdAt"`
+}
+
+// checkKey identifies one logical check, not one attempt. A status context
+// and a check run may have the same name without being the same check, and
+// one workflow triggered by two events is two checks: GitHub shows test (push)
+// and test (pull_request) side by side, and a pass in one does not answer a
+// failure in the other.
+type checkKey struct {
+	kind, appID, workflowID, event, name string
+}
+
+func (n contextNode) key() checkKey {
+	if n.TypeName == "StatusContext" {
+		return checkKey{kind: n.TypeName, name: n.Context}
+	}
+	key := checkKey{kind: n.TypeName, name: n.Name}
+	if n.CheckSuite.App != nil {
+		key.appID = n.CheckSuite.App.ID
+	}
+	if n.CheckSuite.WorkflowRun != nil {
+		key.workflowID = n.CheckSuite.WorkflowRun.Workflow.ID
+		key.event = n.CheckSuite.WorkflowRun.Event
+	}
+	return key
+}
+
+func (n contextNode) timestamp() time.Time {
+	if n.TypeName == "StatusContext" {
+		return at(n.CreatedAt)
+	}
+	if n.StartedAt != nil {
+		return *n.StartedAt
+	}
+	return at(n.CheckSuite.CreatedAt)
+}
+
+func (n contextNode) newerThan(old contextNode) bool {
+	// A queued rerun has no startedAt. Its suite can predate an earlier run
+	// in the same suite, so prefer the increasing run ID when either run has
+	// no start time; the suite date is the fallback when IDs are unavailable.
+	if n.TypeName == "CheckRun" && (n.StartedAt == nil || old.StartedAt == nil) &&
+		n.DatabaseID != 0 && old.DatabaseID != 0 && n.DatabaseID != old.DatabaseID {
+		return n.DatabaseID > old.DatabaseID
+	}
+	if t, prior := n.timestamp(), old.timestamp(); !t.Equal(prior) {
+		return t.After(prior)
+	}
+	return n.TypeName == "CheckRun" && n.DatabaseID > old.DatabaseID
 }
 
 // toCheck normalises either half of the union into a model.Check.

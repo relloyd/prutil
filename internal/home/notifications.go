@@ -68,6 +68,9 @@ func (e NotificationEvent) defaultOn() bool {
 // when prutil hands work to an agent. How often the open pull requests are
 // read for them is watch.list_interval, which auto-watch shares.
 type NotificationConfig struct {
+	// Sidebar keeps the notification history visible as a permanent column
+	// beside the detail pane.
+	Sidebar bool `yaml:"sidebar"`
 	// Events turns each notification on or off. An event the file does not
 	// mention takes its default.
 	Events map[NotificationEvent]bool `yaml:"events"`

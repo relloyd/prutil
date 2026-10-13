@@ -99,6 +99,9 @@ func (a *App) togglePostOnPass() tea.Cmd {
 // passedNow reports whether every check on the pull request's head has
 // passed, by the newest reading prutil holds.
 func (a *App) passedNow(pr model.PullRequest) bool {
+	if state, ok := a.detailFor(pr.Key(), pr.HeadOID); ok {
+		return state.err == nil && model.CountChecks(state.checks).Rollup() == model.StatusSuccess
+	}
 	if got := a.runtimeOf(pr.Key()); got.headOID != "" && got.rollup != model.StatusUnknown {
 		return got.rollup == model.StatusSuccess
 	}

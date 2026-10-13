@@ -248,7 +248,7 @@ func TestSelectionFetchesChecksOnlyForTheCurrentSelection(t *testing.T) {
 	cmd = send(t, app, selectionMsg{gen: app.gen, key: second})
 	require.NotNil(t, cmd, "the selection still matches, so the checks are fetched")
 
-	assert.Contains(t, drain(cmd), checksMsg{gen: app.gen, key: second})
+	assert.Contains(t, drain(cmd), checksMsg{gen: app.gen, key: second, at: testNow})
 	assert.Equal(t, 1, client.callsFor(second))
 }
 

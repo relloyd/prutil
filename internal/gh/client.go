@@ -33,8 +33,9 @@ type Client interface {
 	// and fills the repositories that came up short. Passing the zero state
 	// does the whole fetch in one blocking call.
 	FinishClosedPullRequests(ctx context.Context, opts ClosedOptions, state ClosedSweepState) (ClosedResult, error)
-	// Checks returns the individual checks on a pull request's head commit.
-	Checks(ctx context.Context, key model.Key) ([]model.Check, error)
+	// Checks returns the latest attempt of each check on a pull request's
+	// head commit. Later-page errors return the checks read so far with an error.
+	Checks(ctx context.Context, key model.Key) (ChecksResult, error)
 	// WatchSnapshot reads the cheap tripwire fields for several pull requests
 	// at once, addressed by their GitHub node ids, whatever repositories they
 	// are spread across. One request and one rate limit point covers up to
@@ -526,28 +527,74 @@ func dedupe(prs []model.PullRequest) []model.PullRequest {
 	return out
 }
 
+// ChecksResult contains the checks and the exact commit they were read from.
+// Checks is normalized to the latest attempt of each logical check.
+type ChecksResult struct {
+	HeadOID string
+	Checks  []model.Check
+}
+
 // Checks implements Client.
-func (c *CLI) Checks(ctx context.Context, key model.Key) ([]model.Check, error) {
+func (c *CLI) Checks(ctx context.Context, key model.Key) (ChecksResult, error) {
 	owner, name := key.Owner()
 	if owner == "" || name == "" {
-		return nil, fmt.Errorf("malformed repository %q", key.Repo)
+		return ChecksResult{}, fmt.Errorf("malformed repository %q", key.Repo)
 	}
 
-	var resp detailResponse
 	vars := map[string]any{"owner": owner, "name": name, "number": key.Number}
-	if err := c.graphql(ctx, detailQuery, vars, &resp); err != nil {
-		return nil, err
-	}
+	result := ChecksResult{}
+	positions := make(map[checkKey]int)
+	latest := make([]contextNode, 0)
+	cursor := ""
+	for {
+		if cursor != "" {
+			vars["after"] = cursor
+		}
+		var resp detailResponse
+		if err := c.graphql(ctx, detailQuery, vars, &resp); err != nil {
+			return result, err
+		}
+		commits := resp.Repository.PullRequest.Commits
+		oid := commits.headOID()
+		if cursor == "" {
+			result.HeadOID = oid
+		} else if oid != result.HeadOID {
+			return result, fmt.Errorf("pull request %s#%d head changed during checks pagination: %q to %q",
+				key.Repo, key.Number, result.HeadOID, oid)
+		}
 
-	rollup := resp.Repository.PullRequest.Commits.rollup()
-	if rollup == nil {
-		return nil, nil
+		rollup := commits.rollup()
+		if rollup == nil {
+			if cursor != "" {
+				return result, fmt.Errorf("pull request %s#%d check rollup disappeared during pagination", key.Repo, key.Number)
+			}
+			return result, nil
+		}
+		for _, node := range rollup.Contexts.Nodes {
+			if node.TypeName != "CheckRun" && node.TypeName != "StatusContext" {
+				continue
+			}
+			group := node.key()
+			if i, found := positions[group]; found {
+				if node.newerThan(latest[i]) {
+					latest[i] = node
+					result.Checks[i] = node.toCheck()
+				}
+				continue
+			}
+			positions[group] = len(latest)
+			latest = append(latest, node)
+			result.Checks = append(result.Checks, node.toCheck())
+		}
+		if !rollup.Contexts.PageInfo.HasNextPage {
+			return result, nil
+		}
+		next := rollup.Contexts.PageInfo.EndCursor
+		if next == "" || next == cursor {
+			return result, fmt.Errorf("pull request %s#%d checks pagination has no new cursor", key.Repo, key.Number)
+		}
+		cursor = next
 	}
-	checks := make([]model.Check, 0, len(rollup.Contexts.Nodes))
-	for _, node := range rollup.Contexts.Nodes {
-		checks = append(checks, node.toCheck())
-	}
-	return checks, nil
 }
 
 // watchNodeLimit is how many node ids one nodes(ids:) query may name. GitHub

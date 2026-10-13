@@ -103,6 +103,7 @@ func DefaultConfigTemplate() []byte {
 	out.WriteString("  # changes. Press s in prutil to turn them on and off; it saves the change\n")
 	out.WriteString("  # here. herdr.toast is separate: it is herdr's own notification of a handoff.\n")
 	out.WriteString("  # While any is on, your open pull requests are read every watch.list_interval.\n")
+	_, _ = fmt.Fprintf(&out, "  sidebar: %t\n", cfg.Notifications.Sidebar)
 	out.WriteString("  events:\n")
 	for _, event := range NotificationEvents() {
 		_, _ = fmt.Fprintf(&out, "    %s: %t\n", event, cfg.Notifications.Enabled(event))

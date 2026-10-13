@@ -32,6 +32,8 @@ type keyMap struct {
 	NextTab       key.Binding
 	Adopt         key.Binding
 	Release       key.Binding
+	Notifications key.Binding
+	PinSidebar    key.Binding
 	Settings      key.Binding
 	Help          key.Binding
 	Quit          key.Binding
@@ -115,6 +117,16 @@ func defaultKeys() keyMap {
 		Release: key.NewBinding(
 			key.WithKeys("-"),
 			key.WithHelp("-", "release adopted PR"),
+		),
+		Notifications: key.NewBinding(
+			key.WithKeys("n"),
+			key.WithHelp("n", "notification history"),
+		),
+		// p answers only while the notification history has focus, so it
+		// cannot be mistaken for P on a pull request.
+		PinSidebar: key.NewBinding(
+			key.WithKeys("p"),
+			key.WithHelp("p", "pin sidebar"),
 		),
 		// s for settings, and , because that is where the settings are in
 		// every macOS application.
@@ -264,6 +276,10 @@ func (k keyMap) helpSections(mouse bool) []helpSection {
 				detail: "Post the configured AI review comment, such as /gemini review, now. prutil posts it itself; no agent is involved. Press twice to confirm."},
 		}},
 		{title: "General", entries: []helpEntry{
+			{binding: k.Notifications, title: "notification history",
+				detail: "Open notification history. Select an entry and press enter to jump to that pull request."},
+			{binding: k.PinSidebar, title: "pin notification sidebar",
+				detail: "In the notification history, keep it on screen as a column beside the detail pane, or take it off again. Saved to config.yaml."},
 			{binding: k.Settings, title: "settings",
 				detail: "View and edit settings: desktop notifications, what is watched, poll timing, PR comments, herdr and security. Each change is saved to config.yaml as you make it."},
 			{binding: k.Help, title: "keyboard shortcuts",
@@ -486,6 +502,64 @@ func defaultSettingsKeys() settingsKeyMap {
 		),
 		Down: key.NewBinding(
 			key.WithKeys("down", "j", "ctrl+n"),
+			key.WithHelp("↓", "down"),
+		),
+		Top: key.NewBinding(
+			key.WithKeys("g", "home"),
+			key.WithHelp("g", "top"),
+		),
+		Bottom: key.NewBinding(
+			key.WithKeys("G", "end"),
+			key.WithHelp("G", "bottom"),
+		),
+		Quit: key.NewBinding(
+			key.WithKeys("ctrl+c"),
+			key.WithHelp("ctrl+c", "quit"),
+		),
+	}
+}
+
+// trayKeyMap holds the keys the notification history popup reads while it is
+// open. They are apart from keyMap for the same reason as the settings pane's:
+// nothing pressed in the popup should reach the list behind it.
+type trayKeyMap struct {
+	Close  key.Binding
+	Open   key.Binding
+	Pin    key.Binding
+	Copy   key.Binding
+	Up     key.Binding
+	Down   key.Binding
+	Top    key.Binding
+	Bottom key.Binding
+	Quit   key.Binding
+}
+
+// defaultTrayKeys returns the bindings the popup reads. The key that opens it
+// also closes it, and so does q, the way it does in the settings pane.
+func defaultTrayKeys() trayKeyMap {
+	return trayKeyMap{
+		Close: key.NewBinding(
+			key.WithKeys("esc", "n", "q"),
+			key.WithHelp("esc", "close"),
+		),
+		Open: key.NewBinding(
+			key.WithKeys("enter"),
+			key.WithHelp("enter", "jump"),
+		),
+		Pin: key.NewBinding(
+			key.WithKeys("p"),
+			key.WithHelp("p", "pin sidebar"),
+		),
+		Copy: key.NewBinding(
+			key.WithKeys("y", "c"),
+			key.WithHelp("y", "copy URL"),
+		),
+		Up: key.NewBinding(
+			key.WithKeys("up", "k"),
+			key.WithHelp("↑", "up"),
+		),
+		Down: key.NewBinding(
+			key.WithKeys("down", "j"),
 			key.WithHelp("↓", "down"),
 		),
 		Top: key.NewBinding(
