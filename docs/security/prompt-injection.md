@@ -534,7 +534,15 @@ A `sandbox.Profile` has two hooks:
   arguments with the posture the vendor says they give.
 - `Inspect` asks about an agent that is already running.
 
-A kind with no `Launch` is started as it always was.
+A kind with no `Launch` is started as it always was. For profiled kinds,
+`Posture` maps the vendor's configuration onto four levels:
+
+| Posture (`Posture.String()`) | `Contained` | `Strict` | `BestEffort` | How each vendor reaches it | Automatic handoff (`require_sandbox: true`) |
+| --- | --- | --- | --- | --- | --- |
+| `sandboxed, strict` | true | true | false | **Claude:** `claude sandbox status` reports `enabled` and `strictMode` (`allowUnsandboxedCommands: false`, local domain proxy, Seatbelt read/write/socket rules). **Copilot:** `--experimental --sandbox` in argv and `settings.json` has `allowBypass: false`, `allowLocalNetwork: false`, and secret paths in `deniedPaths`. | accepted |
+| `sandboxed` | true | false | false | **Claude:** `claude sandbox status` reports `enabled` with `strictMode: false`. **agy:** `--sandbox` in argv, `enableTerminalSandbox: true`, `toolPermission: "proceed-in-sandbox"`, at least one restricted `read_url(domain)` rule, no wildcard or `regex:` URL rules, and no `unsandboxed` rules. | accepted |
+| `best-effort sandbox` | false | false | true | **agy:** `--sandbox` in argv, `enableTerminalSandbox` not false, `toolPermission` unset/`"ask"`/`"proceed-in-sandbox"`, no wildcard or `regex:` URL rules, and any `unsandboxed(...)` rules limited to named commands (no shells, interpreters, wrappers, globs, `regex:` patterns or shell syntax). | accepted only when `security.allow_unsafe_agy: true` |
+| `not sandboxed` / `sandbox unknown` | false | false | false | Any profiled agent whose flags or settings fail the checks above, or whose command line could not be read. | refused (`W` and `F` can still use it) |
 
 **Claude Code (built).** The profile keeps two files beneath the application
 directory:
@@ -607,15 +615,77 @@ deny a file *read* by path in 1.0.88, so the earlier plan to add those flags
 was not implementable. Domain-limited outbound network is likewise not an
 OS sandbox setting in this release; the profile cannot claim that guarantee.
 
-**Antigravity CLI (profile built, live probes pending).** Launch passes
-`--sandbox`; Inspect checks argv, rejecting
-`--dangerously-skip-permissions`. Both read
-`~/.gemini/antigravity-cli/settings.json` without changing it. Containment
-requires `enableTerminalSandbox: true`, `toolPermission:
-"proceed-in-sandbox"`, and limited `read_url(domain)` rules, with no
-`unsandboxed` or wildcard URL allow rules. Missing policy is not counted as
-contained. `Strict` stays false because a person may approve a bypass.
-There is no launch-time settings flag or vendor status command in 1.2.11.
+**Antigravity CLI (profile built, two verdicts, live probes partial).**
+Launch passes `--sandbox`; Inspect checks argv. Both read
+`~/.gemini/antigravity-cli/settings.json` without changing it. There is no
+launch-time settings flag or vendor status command in 1.2.11 / 1.4.9, so the
+profile reports one of two verdicts and the dispatcher decides what they are
+worth.
+
+*Contained* needs `--sandbox` on the command line, `enableTerminalSandbox:
+true`, `toolPermission: "proceed-in-sandbox"`, at least one restricted
+`read_url(domain)` rule, no wildcard URL rule, and no `unsandboxed` rule of any
+kind. A missing file is not counted as contained. `Strict` stays false because
+a person may approve a bypass.
+
+*BestEffort* is what the profile reports when the command line and settings
+pass a looser reading but not that one. It counts towards
+`security.require_sandbox` only when the reader sets
+`security.allow_unsafe_agy: true`, which is off by default; otherwise the
+posture's detail names the setting as the way out. The looser reading rests on
+the contributor's probes of agy 1.2.11 and 1.4.9, which found terminal commands
+running in agy's Standard Sandbox Mode (`BypassSandbox: false`: workspace-only
+writes, no network) on a normal launch, and the built-in file tools refused
+write access to the settings file. Those probes have not been repeated here.
+
+The opt-in exists because the contained policy leaves agy unable to work.
+Its terminal sandbox has no network and no domain proxy, so pushing and replying
+need `unsandboxed(git)` and `unsandboxed(gh)`, and the contained policy forbids
+every `unsandboxed` rule. Copilot and Claude do not have this problem, so the
+opt-in names agy and changes nothing for them.
+
+What the best-effort reading still refuses:
+
+- a command line with `--dangerously-skip-permissions`, without `--sandbox`, or
+  with any other spelling of a sandbox flag (`--no-sandbox`, `--sandbox=false`),
+  so a negated form cannot read as the one prutil asked for;
+- `enableTerminalSandbox: false` (left out, or `null`, keeps agy's default);
+- a `toolPermission` other than unset, `"ask"` or `"proceed-in-sandbox"`;
+- a `read_url` or `execute_url` rule that is empty or holds a glob or a
+  `regex:` pattern;
+- an `unsandboxed` rule that is bare or empty, holds a glob, a `regex:`
+  pattern or shell syntax (``; & | $ ` < >``), or whose first word is a shell,
+  an interpreter or a
+  command wrapper: `sh`, `bash`, `zsh`, `python`, `node`, `perl`, `ruby`, `env`,
+  `xargs`, `sudo`, `find`, `awk`, `make`, `npx` and the rest of
+  `escapeCommands` in `internal/sandbox/agy.go`. The first word is compared by
+  its base name with any version suffix removed, so `/usr/bin/python3.12` is
+  `python`.
+
+What it accepts, and why that is unsafe:
+
+- **Named commands that still run anything.** `unsandboxed(git)` permits
+  `git -c alias.x='!sh -c …' x` and `core.sshCommand`; `unsandboxed(gh)`
+  permits gh aliases and `gh extension install`. Either is a way out of the
+  sandbox for an agent that review feedback has talked into it, with the
+  reader's SSH keys, cloud credentials and the agy settings file within reach.
+  The deny list closes the obvious routes, not these. It is a list of things
+  known to be dangerous, not a list of things known to be safe.
+- **How agy matches a rule is unverified.** If `unsandboxed(git)` is a prefix
+  match on the command string, the shell-syntax check is all that stops
+  `git status; curl … | sh`, and it only sees the rule, not the command.
+- **Only user-level settings are read.** If agy also reads project or
+  workspace settings, a pull request's own branch could switch the sandbox off
+  and prutil would not see it. This is the gap the Claude profile closes by
+  asking the vendor from the agent's directory; agy offers no such question.
+- **The version is not checked.** Inspect does not ask agy what version it is.
+  A release that changes the default would be read the same way.
+
+So the opt-in is for readers who accept that an agy agent given feedback
+automatically is, at worst, an unsandboxed agent. Pair it with strict
+`trusted_associations` and `trusted_authors`, which decide whose feedback
+reaches the agent at all. The handoff log and the WATCH history record such a
+handoff as `best-effort sandbox`, so it is never mistaken for a contained one.
 
 ### 2c. Automatic handoffs go only to contained agents (built)
 
@@ -635,6 +705,13 @@ An agent that is on the pull request but not contained is not answered with
 one branch. The watcher reports it instead, naming the agent and `W` as the
 override. `W` and `F` can use the agent, because the reader chose it
 (`Request.Manual`).
+
+`herdr.prefer_active_agent` lets an agent of a kind other than
+`herdr.agent_kind` take the work when it is on the pull request. It is off by
+default. When it is on and the requirement is too, an agent of another kind
+with no profile is treated as not contained rather than exempt: the exemption
+for unprofiled kinds exists so that a reader who named such a kind is not
+stopped dead, and does not extend to a kind the reader never named.
 
 When the requirement is on, provisioning also refuses a launch that Claude says
 does not sandbox the agent.

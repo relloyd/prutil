@@ -483,7 +483,48 @@ func TestPrutilNeverHandsWorkToTheTerminalItIsRunningIn(t *testing.T) {
 	assert.Empty(t, control.prompted)
 }
 
-func TestOnlyTheConfiguredKindOfAgentIsConsidered(t *testing.T) {
+func TestPreferActiveAgentUsesAnAgentOfAnotherKindOnThePullRequest(t *testing.T) {
+	control := &fakeHerdr{agents: []herdr.Agent{
+		{Kind: "agy", Status: herdr.StatusIdle, CWD: "/work/retry", PaneID: "w2:p1"},
+	}}
+	checkouts := fakeGit{"/work/retry": {Repo: "relloyd/prutil", Branch: "feat/uploader-retry"}}
+
+	dispatcher, _ := dispatcherFor(t, control, checkouts, func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "opencode"
+		cfg.Herdr.PreferActiveAgent = true
+	})
+	res, err := dispatcher.Dispatch(context.Background(), request())
+
+	require.NoError(t, err)
+	assert.Equal(t, home.OutcomeSent, res.Outcome)
+	assert.Equal(t, "w2:p1", res.Target)
+	assert.Equal(t, "agy", res.Kind)
+	assert.Equal(t, []string{"w2:p1"}, control.prompted)
+}
+
+func TestTheConfiguredKindBreaksATieBetweenEquallyMatchedActiveAgents(t *testing.T) {
+	control := &fakeHerdr{agents: []herdr.Agent{
+		{Kind: "agy", Status: herdr.StatusIdle, CWD: "/work/retry-a", PaneID: "w1:p1"},
+		{Kind: "opencode", Status: herdr.StatusIdle, CWD: "/work/retry-b", PaneID: "w2:p1"},
+	}}
+	checkouts := fakeGit{
+		"/work/retry-a": {Repo: "relloyd/prutil", Branch: "feat/uploader-retry"},
+		"/work/retry-b": {Repo: "relloyd/prutil", Branch: "feat/uploader-retry"},
+	}
+
+	dispatcher, _ := dispatcherFor(t, control, checkouts, func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "opencode"
+		cfg.Herdr.PreferActiveAgent = true
+	})
+	res, err := dispatcher.Dispatch(context.Background(), request())
+
+	require.NoError(t, err)
+	assert.Equal(t, "w2:p1", res.Target, "opencode wins the tie even though agy has an earlier pane ID")
+	assert.Equal(t, "opencode", res.Kind)
+	assert.Equal(t, []string{"w2:p1"}, control.prompted)
+}
+
+func TestOnlyTheConfiguredKindOfAgentIsConsideredByDefault(t *testing.T) {
 	control := &fakeHerdr{agents: []herdr.Agent{
 		{Kind: "codex", Status: herdr.StatusIdle, CWD: "/work/retry", PaneID: "w2:p1"},
 	}}
@@ -494,7 +535,26 @@ func TestOnlyTheConfiguredKindOfAgentIsConsidered(t *testing.T) {
 	})
 	_, err := dispatcher.Dispatch(context.Background(), request())
 
-	require.ErrorIs(t, err, handoff.ErrNoAgent)
+	require.ErrorIs(t, err, handoff.ErrNoAgent, "an installation that set agent_kind keeps its restriction")
+	assert.Empty(t, control.prompted)
+}
+
+func TestTheRepoFallbackKeepsToTheConfiguredKindWhenPreferActiveAgentIsOn(t *testing.T) {
+	control := &fakeHerdr{agents: []herdr.Agent{
+		{Kind: "codex", Status: herdr.StatusIdle, CWD: "/work/main", PaneID: "w2:p1"},
+	}}
+	checkouts := fakeGit{"/work/main": {Repo: "relloyd/prutil", Branch: "main", Upstream: "refs/heads/main"}}
+
+	dispatcher, _ := dispatcherFor(t, control, checkouts, func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "claude"
+		cfg.Herdr.PreferActiveAgent = true
+		cfg.Herdr.Fallback = home.FallbackRepo
+	})
+	_, err := dispatcher.Dispatch(context.Background(), request())
+
+	require.ErrorIs(t, err, handoff.ErrNoAgent,
+		"an agent of another kind on other work in the repository is not reached through the fallback")
+	assert.Empty(t, control.prompted)
 }
 
 func TestAnAgentInAnotherRepositoryIsNotACandidate(t *testing.T) {
@@ -1530,6 +1590,70 @@ func TestPrutilWillNotStartAnAgentItsPolicyDoesNotSandbox(t *testing.T) {
 	assert.Contains(t, res.Detail, "require_sandbox", "and the reader is told the way out")
 }
 
+var bestEffort = sandbox.Posture{Known: true, BestEffort: true,
+	Detail: "agy sandbox policy is missing; best-effort sandbox only (security.allow_unsafe_agy)"}
+
+// agyBox is agy with no restrictive policy written: a best-effort sandbox.
+func agyBox() *fakeContainer {
+	return &fakeContainer{
+		supports: map[string]bool{"agy": true},
+		launch:   sandbox.Launch{Args: []string{"--sandbox"}, Posture: bestEffort},
+		postures: map[string]sandbox.Posture{"agy --sandbox": bestEffort},
+	}
+}
+
+func TestAnAgentOnABestEffortSandboxGetsWorkUnaskedOnlyOnceTheReaderOptsIn(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		optIn  bool
+		handed bool
+	}{
+		{"by default the watcher passes it over", false, false},
+		{"with allow_unsafe_agy the watcher hands it the work", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			control, checkouts := onTheBranch("agy", "agy", "--sandbox")
+			dispatcher := dispatcherWithSandbox(t, control, checkouts, agyBox(), func(cfg *home.Config) {
+				cfg.Herdr.AgentKind = "agy"
+				cfg.Security.AllowUnsafeAgy = tc.optIn
+			})
+
+			res, err := dispatcher.Dispatch(context.Background(), request())
+
+			if !tc.handed {
+				require.ErrorIs(t, err, handoff.ErrUncontained)
+				assert.Contains(t, res.Detail, "security.allow_unsafe_agy", "the way out is named")
+				assert.Empty(t, control.prompted)
+				assert.Empty(t, control.created, "and no second agent is started beside it")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, []string{"w3:p1"}, control.prompted)
+			assert.Equal(t, "best-effort sandbox", res.Sandbox, "and the log says what it was")
+		})
+	}
+}
+
+func TestPrutilStartsAnAgentOnABestEffortSandboxOnlyOnceTheReaderOptsIn(t *testing.T) {
+	control := provisioningControl()
+	dispatcher := dispatcherWithSandbox(t, control, fakeGit{}, agyBox(), func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "agy"
+	})
+	_, err := dispatcher.Dispatch(context.Background(), manual())
+	require.ErrorIs(t, err, handoff.ErrUncontained)
+	assert.Empty(t, control.started)
+
+	control = provisioningControl()
+	dispatcher = dispatcherWithSandbox(t, control, fakeGit{}, agyBox(), func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "agy"
+		cfg.Security.AllowUnsafeAgy = true
+	})
+	res, err := dispatcher.Dispatch(context.Background(), manual())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"--sandbox"}, control.startArgs[0])
+	assert.Equal(t, "best-effort sandbox", res.Sandbox)
+}
+
 func TestWithTheRequirementOffAnUnsandboxedPolicyStillStarts(t *testing.T) {
 	control := provisioningControl()
 	dispatcher := dispatcherWithSandbox(t, control, fakeGit{}, claudeBox(off), func(cfg *home.Config) {
@@ -1649,6 +1773,43 @@ func TestAKindWithNoProfileIsNotHeldToTheRequirement(t *testing.T) {
 	require.NoError(t, err, "requiring a sandbox prutil cannot start would stop the loop dead for that kind")
 	assert.Equal(t, []string{"w3:p1"}, control.prompted)
 	assert.Empty(t, box.inspected)
+}
+
+func TestAnUncontainedAgentOnlyInTheRepositoryIsNotSaidToBeOnThePullRequest(t *testing.T) {
+	control := &fakeHerdr{
+		agents:    []herdr.Agent{{Kind: "claude", Status: herdr.StatusIdle, CWD: "/work/main", PaneID: "w3:p1"}},
+		processes: map[string]herdr.Process{"w3:p1": {Argv: []string{"claude"}, CWD: "/work/main"}},
+	}
+	checkouts := fakeGit{"/work/main": {Repo: "relloyd/prutil", Branch: "main", Upstream: "refs/heads/main"}}
+	dispatcher := dispatcherWithSandbox(t, control, checkouts, claudeBox(strict), func(cfg *home.Config) {
+		cfg.Herdr.Fallback = home.FallbackRepo
+	})
+
+	res, err := dispatcher.Dispatch(context.Background(), request())
+
+	require.ErrorIs(t, err, handoff.ErrUncontained)
+	assert.Contains(t, res.Detail, "in relloyd/prutil but not on relloyd/prutil#42")
+	assert.NotContains(t, res.Detail, "(on relloyd/prutil#42")
+}
+
+func TestAnAutomaticHandoffDoesNotCrossToAnUnprofiledAgentKind(t *testing.T) {
+	control, checkouts := onTheBranch("codex", "codex")
+	box := claudeBox(strict)
+	dispatcher := dispatcherWithSandbox(t, control, checkouts, box, func(cfg *home.Config) {
+		cfg.Herdr.AgentKind = "claude"
+		cfg.Herdr.PreferActiveAgent = true
+	})
+
+	res, err := dispatcher.Dispatch(context.Background(), request())
+	require.ErrorIs(t, err, handoff.ErrUncontained, "an automatic handoff with agent_kind set does not cross to an unprofiled kind")
+	assert.Contains(t, res.Detail, "on relloyd/prutil#42, codex has no sandbox profile")
+	assert.Empty(t, control.created, "and does not start a second agent beside it")
+
+	req := request()
+	req.Manual = true
+	_, err = dispatcher.Dispatch(context.Background(), req)
+	require.NoError(t, err, "a manual handoff still reaches the active agent on the PR")
+	assert.Equal(t, []string{"w3:p1"}, control.prompted)
 }
 
 func TestASettingSavedWhilePrutilRunsDecidesTheNextHandoff(t *testing.T) {

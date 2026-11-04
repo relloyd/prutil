@@ -817,11 +817,18 @@ func (d *Dispatcher) contain(ctx context.Context, req Request, pane, fallbackDir
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not prepare the %s sandbox: %w", kind, err)
 	}
-	if !launch.Posture.Contained && d.security.RequireSandbox {
+	if !d.accepts(launch.Posture) && d.security.RequireSandbox {
 		return nil, &launch.Posture, fmt.Errorf("%w: prutil would start %s with %s; "+
 			"fix its policy, or set security.require_sandbox: false", ErrUncontained, kind, launch.Posture.Detail)
 	}
 	return launch.Args, &launch.Posture, nil
+}
+
+// accepts says whether a posture satisfies security.require_sandbox. A
+// best-effort sandbox does only when the reader opted in to it, and only agy
+// reports one.
+func (d *Dispatcher) accepts(p sandbox.Posture) bool {
+	return p.Contained || (p.BestEffort && d.security.AllowUnsafeAgy)
 }
 
 // posture asks what an agent already running was launched into. Anything
@@ -857,11 +864,18 @@ func uncontainedAgents(pr model.PullRequest, passed []candidate) error {
 		if c.posture != nil && c.posture.Detail != "" {
 			why = c.posture.Detail
 		}
-		seen = append(seen, agentLabel(c.agent)+" ("+why+")")
+		// With herdr.fallback: repo an agent can be passed over that is only
+		// in the repository, and saying it is on the pull request would send
+		// the reader looking for work that is not there.
+		where := "on " + pr.Key().String()
+		if c.score <= scoreSettled {
+			where = "in " + pr.Repo + " but not on " + pr.Key().String()
+		}
+		seen = append(seen, agentLabel(c.agent)+" ("+where+", "+why+")")
 	}
-	return fmt.Errorf("%w: %s is on %s but only a sandboxed agent is given work unasked; "+
+	return fmt.Errorf("%w: passed over %s; only a sandboxed agent is given work unasked; "+
 		"start it sandboxed, press W to use it anyway, or set security.require_sandbox: false",
-		ErrUncontained, strings.Join(seen, ", "), pr.Key())
+		ErrUncontained, strings.Join(seen, ", "))
 }
 
 // agentName derives a valid, stable herdr name from the pull request and adds
@@ -949,13 +963,19 @@ const (
 // sandboxed. Those that are not are returned apart, uncontained, rather than
 // among the passed, because they are on the pull request and the caller must
 // not start another agent beside them.
+//
+// herdr.agent_kind keeps out every agent of another kind unless
+// herdr.prefer_active_agent is on, and then lets in only one that is working
+// on the pull request: the repo fallback never reaches past the kind. Among
+// equally good agents, the configured kind wins.
 func (d *Dispatcher) pick(ctx context.Context, agents []herdr.Agent, pr model.PullRequest, automatic bool) (candidate, []candidate, []candidate, bool) {
 	var found, fallback, passed, uncontained []candidate
 	for _, agent := range agents {
 		if agent.PaneID != "" && agent.PaneID == d.selfPane {
 			continue
 		}
-		if d.cfg.AgentKind != "" && agent.Kind != d.cfg.AgentKind {
+		otherKind := d.cfg.AgentKind != "" && agent.Kind != d.cfg.AgentKind
+		if otherKind && !d.cfg.PreferActiveAgent {
 			continue
 		}
 		checkout := d.git.Identify(ctx, agent.Dir())
@@ -964,6 +984,11 @@ func (d *Dispatcher) pick(ctx context.Context, agents []herdr.Agent, pr model.Pu
 		}
 
 		c := d.assess(ctx, agent, checkout, pr)
+		if otherKind && c.score == 0 {
+			// prefer_active_agent reaches past agent_kind only for an agent
+			// on the pull request. The repo fallback keeps to the kind.
+			continue
+		}
 		if agent.Settled() {
 			c.score += scoreSettled
 		}
@@ -971,10 +996,17 @@ func (d *Dispatcher) pick(ctx context.Context, agents []herdr.Agent, pr model.Pu
 			passed = append(passed, c)
 			continue
 		}
-		if automatic && d.security.RequireSandbox && d.sandbox != nil && d.sandbox.Supports(agent.Kind) {
-			p := d.posture(ctx, agent)
-			c.posture = &p
-			if !p.Contained {
+		if automatic && d.security.RequireSandbox && d.sandbox != nil {
+			if d.sandbox.Supports(agent.Kind) {
+				p := d.posture(ctx, agent)
+				c.posture = &p
+				if !d.accepts(p) {
+					uncontained = append(uncontained, c)
+					continue
+				}
+			} else if otherKind {
+				p := sandbox.Posture{Known: true, Detail: agent.Kind + " has no sandbox profile"}
+				c.posture = &p
 				uncontained = append(uncontained, c)
 				continue
 			}
@@ -1003,6 +1035,13 @@ func (d *Dispatcher) pick(ctx context.Context, agents []herdr.Agent, pr model.Pu
 	sort.SliceStable(found, func(i, j int) bool {
 		if found[i].score != found[j].score {
 			return found[i].score > found[j].score
+		}
+		if d.cfg.AgentKind != "" {
+			iPref := found[i].agent.Kind == d.cfg.AgentKind
+			jPref := found[j].agent.Kind == d.cfg.AgentKind
+			if iPref != jPref {
+				return iPref
+			}
 		}
 		return found[i].agent.PaneID < found[j].agent.PaneID
 	})

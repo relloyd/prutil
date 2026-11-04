@@ -371,3 +371,30 @@ func TestTheListIntervalFallsBackToTheKeysItReplaced(t *testing.T) {
 		})
 	}
 }
+
+func TestPreferActiveAgentDefaultsToOffAndCanBeTurnedOn(t *testing.T) {
+	assert.False(t, home.DefaultConfig().Herdr.PreferActiveAgent)
+
+	unmentioned, err := home.ParseConfig([]byte("herdr:\n  agent_kind: opencode\n"))
+	require.NoError(t, err)
+	assert.False(t, unmentioned.Herdr.PreferActiveAgent,
+		"an installation that set agent_kind before the key existed keeps its restriction")
+
+	enabled, err := home.ParseConfig([]byte("herdr:\n  agent_kind: opencode\n  prefer_active_agent: true\n"))
+	require.NoError(t, err)
+	assert.True(t, enabled.Herdr.PreferActiveAgent)
+}
+
+func TestTheWrittenTemplateNamesPreferActiveAgent(t *testing.T) {
+	assert.Contains(t, string(home.DefaultConfigTemplate()), "prefer_active_agent: false")
+}
+
+func TestAllowUnsafeAgyIsOffUnlessTheReaderTurnsItOn(t *testing.T) {
+	assert.False(t, home.DefaultConfig().Security.AllowUnsafeAgy)
+	assert.Contains(t, string(home.DefaultConfigTemplate()), "allow_unsafe_agy: false")
+
+	cfg, err := home.ParseConfig([]byte("security:\n  allow_unsafe_agy: true\n"))
+	require.NoError(t, err)
+	assert.True(t, cfg.Security.AllowUnsafeAgy)
+	assert.True(t, cfg.Security.RequireSandbox, "opting in to agy does not switch the requirement off")
+}

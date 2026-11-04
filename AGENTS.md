@@ -294,6 +294,18 @@ agent in the repository. Keep the repo fallback in its own list inside `pick`:
 scored alongside the rest, being ready for input would put an agent on other
 work above one that is on the pull request.
 
+`herdr.agent_kind` filters every candidate unless `herdr.prefer_active_agent`
+is on, and then lets in another kind only when git puts that agent on the pull
+request. The repo fallback keeps to the kind either way: an agent of a kind the
+reader did not name, busy with other work, is the last thing the flag was meant
+to reach. `prefer_active_agent` is off by default because `config.yaml` is never
+rewritten, and an installation that set `agent_kind` to restrict handoffs must
+not lose that restriction by upgrading. Under `security.require_sandbox`, a
+cross-kind agent with no sandbox profile goes to `uncontained`, not to `found`:
+it is on the branch, so `fallback: new` must not start another beside it.
+`uncontainedAgents` says per agent whether it is on the pull request or only in
+the repository, because `fallback: repo` puts the second sort there too.
+
 Only an agent prutil has just started is prompted twice. herdr's status lags a
 prompt that did arrive, so re-sending to an agent that was already running
 delivers the same feedback again; and `done` is a resting state like `idle`, so
@@ -522,6 +534,17 @@ The rules, again each one a thing that looks like a tidy-up and is not:
   `pushInsteadOf` both, because a reader's host-level rewrite to SSH is as long
   as any host-level rule prutil could write.
   `TestTheGitRulesWinAgainstAReadersSSHRewrite` runs real git to pin it.
+- **agy's looser reading is `BestEffort`, never `Contained`.** agy's built-in
+  terminal sandbox is on by default, but agy cannot reach the network from it,
+  so a working agy needs `unsandboxed(git)` or `unsandboxed(gh)`, and both run
+  any command. The profile reports both verdicts and `Dispatcher.accepts`
+  decides, honouring `BestEffort` only under `security.allow_unsafe_agy`. Do
+  not fold the opt-in into the profile, and do not let it reach Claude or
+  Copilot: the profile has no config, the posture cache is shared, and the
+  WATCH history must say `best-effort sandbox` rather than `sandboxed`. Even
+  the best-effort reading requires `--sandbox` on the command line and refuses
+  any `unsandboxed(...)` rule holding a glob or `regex:` pattern or naming a
+  shell, an interpreter or a wrapper.
 - **A prompt line may not begin with `!`.** Claude Code runs it as a shell
   command without the model, and outside the sandbox. `herdr.Client.Prompt`
   refuses one, whichever vendor the prompt is for.

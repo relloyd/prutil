@@ -62,6 +62,7 @@ Replies, commits and re-run checks come from the agent.
 | Set up a workspace and agent when none is on the pull request | any send that finds no agent | `herdr.fallback`: `new`, `none` or `repo`; `W` always may | `new` |
 | [Hold work from untrusted commenters](#configuration) | every send; a second press of `W` or `F` sends once anyway | `security.trusted_associations`, `security.trusted_authors` | on |
 | [Require a sandboxed agent](#sandboxed-agents) | every automatic send | `security.require_sandbox` | on |
+| [Accept agy's best-effort sandbox (unsafe)](#sandboxed-agents) | every automatic send to agy, and every agy start | `security.allow_unsafe_agy` | off |
 | Post an AI review comment | `R`, pressed twice | `review.comment`, `review.repos` | `/gemini review` |
 | [Post a comment when checks pass](#posting-a-comment-when-checks-pass) | on its own once armed with `P`, once per head commit | `checks_passed.comment`, `checks_passed.repos` | off, no comment |
 | [Desktop notification on approval](#desktop-notifications) | on its own, every 2 minutes | `notifications.events.approved`, `watch.list_interval` | on |
@@ -550,9 +551,21 @@ branch tracks the pull request's head branch or has the same name, or when its
 checkout holds the pull request's latest commit. Branch names are never compared
 for a likeness: `fix/retry` and `feat/retry` are different work, and so are
 `main` and `chore/sync-main`. When more than one agent qualifies, the stronger
-evidence wins, then the one ready for input. The prompt carries a warning only
-when there is something true to say: the checkout is behind the pull request, or
-holds its commits on a branch that will not reach it.
+evidence wins, then the one ready for input, then an agent of `herdr.agent_kind`.
+The prompt carries a warning only when there is something true to say: the
+checkout is behind the pull request, or holds its commits on a branch that will
+not reach it.
+
+`herdr.agent_kind` restricts handoffs to one kind of agent. Turn
+`herdr.prefer_active_agent` on to let an agent of another kind take the work
+when it is already on the pull request, say a codex session you started on the
+branch yourself while `agent_kind` is `claude`. It reaches no further than
+that: the `repo` fallback below still keeps to `agent_kind`, and `agent_kind` is
+still what prutil starts. While `security.require_sandbox` is on, an agent of
+another kind that prutil has no sandbox profile for is passed over by the
+watcher, `F` and `N` as not sandboxed, and no second agent is started beside it;
+`W` can still use it. It is off by default, so turning it on is a decision to
+let the watcher hand work to kinds you did not name.
 
 What happens when no agent qualifies is `herdr.fallback`'s to decide:
 
@@ -651,6 +664,8 @@ optional, and these are the defaults:
 ```yaml
 herdr:
   agent_kind: claude        # required whenever prutil starts an agent
+  prefer_active_agent: false
+                            # let an agent of another kind already on the PR take it
   skill: pr-comment-triage  # the skill the default prompt invokes
   wait_for_idle: 15m        # how long to wait for a busy agent
   dry_run: false
@@ -700,6 +715,7 @@ security:
     - "gemini-code-assist[bot]"  # [bot] matches only a GitHub App
     - "copilot-pull-request-reviewer[bot]"  # GitHub Copilot code review
   require_sandbox: true        # automatic handoffs only to sandboxed agents
+  allow_unsafe_agy: false      # UNSAFE: accept agy on its built-in sandbox alone
 ```
 
 Discovery roots are walked four levels deep, and a checkout's origin remote is
@@ -818,18 +834,53 @@ or relocate sign-in.
 paths to `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.config/herdr` and
 `~/.config/prutil` in `sandbox.userPolicy.filesystem.deniedPaths`.
 
-**For agy**,
-set `enableTerminalSandbox: true`, `toolPermission: "proceed-in-sandbox"`,
-and restricted `read_url(domain)` entries in `permissions.allow`; do not
-allow `unsandboxed` or wildcard URL rules. With a missing or permissive
-policy, automatic handoffs are refused until you configure it.
+**For agy**, there are two levels, and only the first is on by default.
+
+- *Sandboxed.* Start agy with `--sandbox`, and in
+  `~/.gemini/antigravity-cli/settings.json` set `enableTerminalSandbox: true`,
+  `toolPermission: "proceed-in-sandbox"`, and restricted `read_url(domain)`
+  entries in `permissions.allow`, with no `unsandboxed` rule of any kind and no
+  wildcard or `regex:` URL rule. With a missing or looser policy, automatic
+  handoffs to agy are refused.
+- *Best effort, opt-in.* agy's built-in terminal sandbox has no network and no
+  domain proxy, so agy cannot push or reply on a thread without an
+  `unsandboxed(...)` rule for git or gh, which the first level forbids. Set
+  `security.allow_unsafe_agy: true` (or "Accept agy's best-effort sandbox" in
+  the `s` pane) to accept agy on its built-in sandbox alone. prutil still
+  requires `--sandbox` on the command line, and still refuses
+  `--dangerously-skip-permissions`, `enableTerminalSandbox: false`, a
+  `toolPermission` other than unset, `"ask"` or `"proceed-in-sandbox"`,
+  wildcard, `regex:` or empty `read_url` / `execute_url` rules, and any
+  `unsandboxed(...)` rule that is bare, empty, holds a glob, a `regex:` pattern
+  or shell syntax, or names a shell, an interpreter or a command wrapper
+  (`bash`, `python`, `node`, `env`, `xargs`, `sudo` and the like).
+
+  **This is not a sandbox you can rely on.** An `unsandboxed(git)` or
+  `unsandboxed(gh)` rule still lets the agent run any command outside the
+  sandbox (`git -c alias.x='!sh …'`, `core.sshCommand`, gh aliases and
+  extensions), so feedback that talks the agent into it reaches your SSH keys,
+  your cloud credentials, and the settings file prutil reads to decide all of
+  this. prutil reads only your user-level settings, so a project-level agy
+  setting in the pull request's own branch, if agy honours one, is not seen.
+  Turn it on only for repositories whose commenters you trust, and keep the
+  trust settings below strict. The WATCH history and `handoffs.jsonl` record
+  such a handoff as `best-effort sandbox`, not `sandboxed`.
 
 These checks
 are **not proof of OS isolation**: a live agent must still verify secret
 reads, network access, and herdr socket denial on your machine.
 
-The WATCH history says what each handoff went to, for example
-`claude w3:p1 · sandboxed, strict`. A sandboxed Claude agent's push goes over
+The WATCH history and `handoffs.jsonl` record what each handoff went to, for
+example `claude w3:p1 · sandboxed, strict`:
+
+| Posture | What establishes it | Automatic handoff (`require_sandbox: true`) |
+| --- | --- | --- |
+| `sandboxed, strict` | Claude with `allowUnsandboxedCommands: false` confirmed by `claude sandbox status`; Copilot with `--experimental --sandbox`, `allowBypass: false`, `allowLocalNetwork: false`, and secret paths in `deniedPaths` | accepted |
+| `sandboxed` | Claude with its sandbox on (`allowUnsandboxedCommands` not false); agy with `--sandbox`, `enableTerminalSandbox: true`, `toolPermission: "proceed-in-sandbox"`, restricted `read_url(domain)` rules, and no `unsandboxed` rules | accepted |
+| `best-effort sandbox` | agy with `--sandbox` and its built-in terminal sandbox not disabled, with no shell, interpreter, wrapper, glob or `regex:` in `unsandboxed(...)` | accepted only when `security.allow_unsafe_agy: true` |
+| `not sandboxed` / `sandbox unknown` | A profiled agent whose flags or settings fail the checks above, or whose command line could not be read | refused (`W` and `F` can still use it) |
+
+A sandboxed Claude agent's push goes over
 HTTPS through the sandbox's proxy; that has been checked with a real handoff,
 from finding the clone to the agent's reply on the thread. If a push fails for
 you, set `require_sandbox: false` and say what the agent reported.

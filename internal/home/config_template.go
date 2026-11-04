@@ -30,7 +30,10 @@ func DefaultConfigTemplate() []byte {
 
 	out.WriteString("herdr:\n")
 	out.WriteString("  # Optional: restrict handoffs to one agent kind (for example \"claude\" or \"copilot\").\n")
+	out.WriteString("  # Required whenever prutil starts an agent: it is the kind prutil starts.\n")
 	out.WriteString("  agent_kind: \"\"\n")
+	out.WriteString("  # Let an agent of another kind take the work when it is already on the pull request.\n")
+	_, _ = fmt.Fprintf(&out, "  prefer_active_agent: %t\n", cfg.Herdr.PreferActiveAgent)
 	out.WriteString("  # Optional: a herdr skill name that receives each pull request URL.\n")
 	out.WriteString("  skill: \"\"\n")
 	out.WriteString("  # Prompt template rendered with Repo, Number, URL, Title, HeadRef, BaseRef,\n")
@@ -136,9 +139,14 @@ func DefaultConfigTemplate() []byte {
 	out.WriteString("  # person who registers that name does not inherit its trust.\n")
 	writeSequence(&out, "trusted_authors", cfg.Security.TrustedAuthors)
 	out.WriteString("  # Hand work automatically only to agents their vendor's sandbox contains, and\n")
-	out.WriteString("  # refuse to start one whose policy does not sandbox it. Applies to Claude Code\n")
-	out.WriteString("  # today; W and F can still use an agent that is not sandboxed.\n")
+	out.WriteString("  # refuse to start one whose policy does not sandbox it. Applies to Claude Code,\n")
+	out.WriteString("  # Copilot CLI and agy; W and F can still use an agent that is not sandboxed.\n")
 	_, _ = fmt.Fprintf(&out, "  require_sandbox: %t\n", cfg.Security.RequireSandbox)
+	out.WriteString("  # UNSAFE. Let require_sandbox accept agy on its built-in terminal sandbox alone,\n")
+	out.WriteString("  # without an explicit restrictive policy. The commands agy must run unsandboxed\n")
+	out.WriteString("  # to reach the network, git and gh among them, can run anything. See\n")
+	out.WriteString("  # docs/security/prompt-injection.md before turning it on.\n")
+	_, _ = fmt.Fprintf(&out, "  allow_unsafe_agy: %t\n", cfg.Security.AllowUnsafeAgy)
 
 	return []byte(out.String())
 }

@@ -11,7 +11,8 @@
 // Claude Code verifies its policy with the vendor's status command. Copilot
 // and agy have no equivalent: their profiles infer posture from launch
 // arguments and the reader's settings, refusing to claim containment when
-// required settings are absent.
+// required settings are absent. agy also reports a best-effort posture, which
+// counts only for a reader who has opted in to it.
 package sandbox
 
 import (
@@ -37,6 +38,10 @@ type Posture struct {
 	// Strict says the agent cannot run a command outside the sandbox, not
 	// even with a person's approval.
 	Strict bool
+	// BestEffort says the vendor's sandbox is probably on but nothing short of
+	// the reader's opt-in (security.allow_unsafe_agy) makes that enough. It
+	// is never set alongside Contained.
+	BestEffort bool
 	// Detail says in a phrase what was found, for the handoff log and for the
 	// reader when prutil refuses to go on.
 	Detail string
@@ -51,6 +56,8 @@ func (p Posture) String() string {
 		return "sandboxed, strict"
 	case p.Contained:
 		return "sandboxed"
+	case p.BestEffort:
+		return "best-effort sandbox"
 	}
 	return "not sandboxed"
 }

@@ -1002,6 +1002,26 @@ func TestASavedSettingIsHandedToTheDispatcher(t *testing.T) {
 	assert.False(t, app.homeCfg.Security.RequireSandbox, "and matches what the pane is showing")
 }
 
+func TestPreferActiveAgentIsToggledFromTheSettingsPane(t *testing.T) {
+	app, _, _ := newTestApp(t, 120, 40)
+	dispatcher := dispatcherOf(t, app)
+	openSettingsPane(t, app)
+	cursorOn(t, app, "herdr.prefer_active_agent")
+
+	require.False(t, app.homeCfg.Herdr.PreferActiveAgent, "off by default")
+
+	send(t, app, press("space"))
+
+	assert.True(t, app.homeCfg.Herdr.PreferActiveAgent)
+	configs := dispatcher.configurations()
+	require.NotEmpty(t, configs)
+	assert.True(t, configs[len(configs)-1].Herdr.PreferActiveAgent)
+
+	saved, err := home.OpenIn(app.store.Dir()).LoadOrCreateConfig()
+	require.NoError(t, err)
+	assert.True(t, saved.Herdr.PreferActiveAgent)
+}
+
 // settingIndex is where the setting with id sits in the pane, so that a test
 // moving the cursor does not break each time a setting is added above it.
 func settingIndex(t *testing.T, id string) int {

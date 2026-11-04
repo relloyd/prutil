@@ -636,14 +636,25 @@ func allSettings() []settingDescriptor {
 		stringSetting(settingMeta{
 			id:      "herdr.agent_kind",
 			section: "CODING AGENT (HERDR)",
-			title:   "Agent kind filter",
-			detail:  "Restrict handoffs to one kind of agent (such as 'claude' or 'copilot'). Empty allows any agent.",
+			title:   "Agent kind",
+			detail:  "The kind of agent prutil starts (such as 'claude' or 'copilot'), and the only kind given work unless 'Prefer active agent on PR' is on. Empty allows any agent but starts none.",
 			def:     "(any)",
 			path:    []string{"herdr", "agent_kind"},
 		}, field[string]{
 			get: func(c *home.Config) string { return c.Herdr.AgentKind },
 			set: func(c *home.Config, v string) { c.Herdr.AgentKind = v },
-		}, "(any)", "Agent kind filter cleared (any agent allowed)"),
+		}, "(any)", "Agent kind cleared (any agent allowed)"),
+		boolSetting(settingMeta{
+			id:      "herdr.prefer_active_agent",
+			section: "CODING AGENT (HERDR)",
+			title:   "Prefer active agent on PR",
+			detail:  "Let an agent of another kind take the work when it is already on the pull request. Agent kind still decides what prutil starts and what the repo fallback reaches.",
+			def:     "off",
+			path:    []string{"herdr", "prefer_active_agent"},
+		}, field[bool]{
+			get: func(c *home.Config) bool { return c.Herdr.PreferActiveAgent },
+			set: func(c *home.Config, v bool) { c.Herdr.PreferActiveAgent = v },
+		}),
 		stringSetting(settingMeta{
 			id:      "herdr.skill",
 			section: "CODING AGENT (HERDR)",
@@ -742,12 +753,24 @@ func allSettings() []settingDescriptor {
 			section: "SECURITY",
 			title:   "Require a sandboxed agent",
 			detail: "Hand work automatically only to agents their vendor's sandbox contains, and refuse to start one " +
-				"whose policy does not sandbox it. Applies to Claude Code today. W and F can still use any agent.",
+				"whose policy does not sandbox it. Applies to Claude Code, Copilot CLI and agy. W and F can still use any agent.",
 			def:  "on",
 			path: []string{"security", "require_sandbox"},
 		}, field[bool]{
 			get: func(c *home.Config) bool { return c.Security.RequireSandbox },
 			set: func(c *home.Config, v bool) { c.Security.RequireSandbox = v },
+		}),
+		boolSetting(settingMeta{
+			id:      "security.allow_unsafe_agy",
+			section: "SECURITY",
+			title:   "Accept agy's best-effort sandbox (unsafe)",
+			detail: "Count agy as sandboxed on its built-in terminal sandbox alone, without a restrictive policy. " +
+				"Commands it runs unsandboxed, such as git and gh, can run anything.",
+			def:  "off",
+			path: []string{"security", "allow_unsafe_agy"},
+		}, field[bool]{
+			get: func(c *home.Config) bool { return c.Security.AllowUnsafeAgy },
+			set: func(c *home.Config, v bool) { c.Security.AllowUnsafeAgy = v },
 		}),
 		trustSetting(settingMeta{
 			id:      "security.trusted_associations",

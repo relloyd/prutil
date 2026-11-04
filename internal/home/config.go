@@ -167,8 +167,15 @@ type SecurityConfig struct {
 	// RequireSandbox keeps automatic handoffs to agents their vendor's
 	// sandbox contains, and stops prutil starting one whose policy does not
 	// sandbox it. It applies only to kinds prutil has a sandbox profile for,
-	// which today is Claude Code; the others are handled as they always were.
+	// which today are Claude Code, Copilot CLI and agy; the others are handled
+	// as they always were.
 	RequireSandbox bool `yaml:"require_sandbox"`
+	// AllowUnsafeAgy lets RequireSandbox accept agy on its built-in terminal
+	// sandbox alone, without the explicit restrictive policy it otherwise
+	// needs. agy cannot be asked whether its sandbox is on, and the commands it
+	// must run unsandboxed to reach the network, git and gh among them, can
+	// run anything. Off by default.
+	AllowUnsafeAgy bool `yaml:"allow_unsafe_agy"`
 }
 
 // TrustPolicy is the whole trust question as the model asks it: whose feedback
@@ -199,8 +206,16 @@ type DiscoveryConfig struct {
 // HerdrConfig governs what prutil says to a coding agent, and to which one.
 type HerdrConfig struct {
 	// AgentKind restricts handoffs to one kind of agent, such as "claude" or
-	// "copilot". Empty means any agent herdr recognises will do.
+	// "copilot", and is the kind prutil starts when it provisions a workspace.
+	// Empty means any agent herdr recognises will do, and that prutil cannot
+	// start one.
 	AgentKind string `yaml:"agent_kind"`
+	// PreferActiveAgent lets an agent of another kind take the work when it is
+	// already working on the pull request. AgentKind still decides what prutil
+	// starts, what the repo fallback reaches, and which of two equally good
+	// agents wins. Off by default, so an installation that set AgentKind to
+	// restrict handoffs keeps that restriction.
+	PreferActiveAgent bool `yaml:"prefer_active_agent"`
 	// Fallback governs the action taken when no active agent matches the
 	// pull request's head branch ("new", "none", or "repo").
 	Fallback FallbackStrategy `yaml:"fallback"`
