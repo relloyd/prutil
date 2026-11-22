@@ -4,9 +4,9 @@ go 1.26.0
 
 require (
 	charm.land/bubbles/v2 v2.2.1
-	charm.land/bubbletea/v2 v2.1.1
-	charm.land/lipgloss/v2 v2.0.6
-	github.com/charmbracelet/x/ansi v0.11.9
+	charm.land/bubbletea/v2 v2.1.2
+	charm.land/lipgloss/v2 v2.1.1
+	github.com/charmbracelet/x/ansi v0.11.10
 	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20260902165432-6f6ad8b37b0a
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/stretchr/testify v1.12.1
